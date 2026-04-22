@@ -1,0 +1,617 @@
+package com.cdp.remote.data.cdp
+
+import android.util.Log
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import kotlinx.coroutines.delay
+
+/**
+ * Windsurf IDE 专用 CDP 命令集
+ *
+ * 继承 [AntigravityCommands]，复用消息发送、回复获取、Accept/Reject 等通用逻辑。
+ * 仅 override Windsurf 独有的差异方法：
+ *   - pasteImage: Windsurf 容器选择器优先级不同
+ *   - isGenerating: 额外检测 lucide-square SVG 停止按钮
+ *   - stopGeneration: Windsurf 圆形停止按钮
+ *   - startNewSession: Windsurf Cascade 快捷键 Cmd+L
+ *   - showRecentSessions: Windsurf 时钟 SVG 按钮
+ *   - switchSession / getRecentSessionsList / switchSessionByIndex: Windsurf 标签栏
+ *   - getCurrentModel / switchModel: Windsurf chat-client-root 模型选择器
+ */
+class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
+
+    companion object {
+        private const val TAG = "WindsurfCmds"
+    }
+
+    // ─────────────────── 图片粘贴 (Windsurf 容器优先) ───────────────────
+
+    override suspend fun pasteImage(base64Data: String, mimeType: String, fileName: String): CdpResult<Boolean> {
+        focusInput().let { if (it is CdpResult.Error) return CdpResult.Error("聚焦失败: ${it.message}") }
+        delay(100)
+
+        val chunkSize = 50000
+        val chunks = base64Data.chunked(chunkSize)
+        cdp.evaluate("window.__pasteImageB64 = '';")
+        for (chunk in chunks) {
+            val escaped = chunk.replace("'", "\\'")
+            cdp.evaluate("window.__pasteImageB64 += '$escaped';")
+        }
+
+        val result = cdp.evaluate("""
+            (function() {
+                try {
+                    var editableDiv = null;
+                    // 1. Windsurf: #chat 内的 contenteditable
+                    var chatDiv = document.getElementById('chat');
+                    if (chatDiv) {
+                        editableDiv = chatDiv.querySelector('[contenteditable="true"]');
+                    }
+                    // 2. Windsurf: #windsurf.cascadePanel
+                    if (!editableDiv) {
+                        var panel = document.getElementById('windsurf.cascadePanel');
+                        if (panel) editableDiv = panel.querySelector('[contenteditable="true"]');
+                    }
+                    // 3. Antigravity 兼容
+                    if (!editableDiv) {
+                        var agBox = document.getElementById('$INPUT_BOX_ID');
+                        if (agBox) editableDiv = agBox.querySelector('[contenteditable="true"]');
+                    }
+                    // 4. 通用: role=textbox 或 min-h- 类名的 contenteditable
+                    if (!editableDiv) {
+                        var ces = document.querySelectorAll('div[contenteditable="true"]');
+                        for (var i = 0; i < ces.length; i++) {
+                            var el = ces[i];
+                            if (!el.offsetParent) continue;
+                            var cls = el.className || '';
+                            var role = el.getAttribute('role') || '';
+                            if (role === 'textbox' || cls.indexOf('min-h-') >= 0 || cls.indexOf('outline-none') >= 0) {
+                                editableDiv = el;
+                                break;
+                            }
+                        }
+                    }
+                    if (!editableDiv) return 'no-container';
+                    
+                    editableDiv.focus();
+                    
+                    var base64 = window.__pasteImageB64;
+                    if (!base64 || base64.length === 0) return 'no-data';
+                    
+                    var binary = atob(base64);
+                    var bytes = new Uint8Array(binary.length);
+                    for (var i = 0; i < binary.length; i++) {
+                        bytes[i] = binary.charCodeAt(i);
+                    }
+                    
+                    var blob = new Blob([bytes], {type: '$mimeType'});
+                    var file = new File([blob], '$fileName', {type: '$mimeType', lastModified: Date.now()});
+                    
+                    var dt = new DataTransfer();
+                    dt.items.add(file);
+                    
+                    try {
+                        var pasteEvent = new ClipboardEvent('paste', {
+                            clipboardData: dt,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        editableDiv.dispatchEvent(pasteEvent);
+                    } catch(e1) {
+                        var dropEvent = new DragEvent('drop', {
+                            dataTransfer: dt,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        editableDiv.dispatchEvent(dropEvent);
+                    }
+                    
+                    window.__pasteImageB64 = null;
+                    return 'ok';
+                } catch(e) {
+                    window.__pasteImageB64 = null;
+                    return 'error:' + e.message;
+                }
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val value = result.getOrNull() ?: ""
+        return when {
+            value == "ok" -> CdpResult.Success(true)
+            value.startsWith("error:") -> CdpResult.Error("粘贴图片失败: ${value.removePrefix("error:")}")
+            else -> CdpResult.Error("粘贴图片失败: $value")
+        }
+    }
+
+    // ─────────────────── 停止生成 (Windsurf 圆形按钮) ───────────────────
+
+    override suspend fun stopGeneration(): CdpResult<Unit> {
+        val result = cdp.evaluate("""
+            (function(){
+                // 1. Windsurf 专属: 圆形停止按钮 (rounded-full, 内含 lucide-square rect)
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (panel) {
+                    var roundBtns = panel.querySelectorAll('button[class*="rounded-full"]');
+                    for (var i = 0; i < roundBtns.length; i++) {
+                        var btn = roundBtns[i];
+                        if (!btn.offsetParent) continue;
+                        var rect = btn.querySelector('rect');
+                        var svg = btn.querySelector('svg');
+                        if (rect && svg) {
+                            var cls = (typeof svg.className === 'object' && svg.className.baseVal) 
+                                ? svg.className.baseVal : (svg.getAttribute('class') || '');
+                            if (cls.includes('lucide-square') || cls.includes('square')) {
+                                btn.click();
+                                return 'clicked';
+                            }
+                        }
+                    }
+                    var stopBtn = panel.querySelector('button[class*="h-[20px]"][class*="w-[20px]"][class*="rounded-full"][class*="bg-ide-input-color"]');
+                    if (stopBtn && stopBtn.offsetParent) {
+                        stopBtn.click();
+                        return 'clicked';
+                    }
+                }
+                
+                // 2. Antigravity 专有逻辑
+                var inputArea = document.getElementById('$INPUT_BOX_ID');
+                if (inputArea) {
+                    var stopDivs = inputArea.querySelectorAll('div.shrink-0 > div[class*="bg-gray-500"] > div');
+                    for (var j = 0; j < stopDivs.length; j++) {
+                        if (stopDivs[j].offsetParent) {
+                            stopDivs[j].click();
+                            return 'clicked';
+                        }
+                    }
+                }
+                
+                // 3. 通用逻辑
+                function docs(d) {
+                    var out = [d];
+                    var ifr = d.querySelectorAll('iframe');
+                    for (var i = 0; i < ifr.length; i++) {
+                        try { if(ifr[i].contentDocument) out.push(ifr[i].contentDocument); } catch(e){}
+                    }
+                    return out;
+                }
+                var all = docs(document);
+                for (var di = 0; di < all.length; di++) {
+                    var doc = all[di];
+                    if (!doc || !doc.querySelectorAll) continue;
+                    var btns = doc.querySelectorAll('button, div.send-with-mode span, [aria-label*="cancel" i], [aria-label*="stop" i], [class*="stop" i], [class*="cancel" i]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var b = btns[i];
+                        if (!b.offsetParent) continue;
+                        var t = (b.textContent||'').trim().toLowerCase();
+                        var a = (b.getAttribute('aria-label')||'').toLowerCase();
+                        var c = (typeof b.className === 'string' ? b.className : '').toLowerCase();
+                        if (t === 'stop' || t === '停止生成' || t === '停止会话' || t === 'cancel' || a.includes('stop') || a.includes('cancel') || a.includes('停止') || c.includes('stop-button') || c.includes('cancel-button')) {
+                            b.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+                            b.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                            b.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}));
+                            b.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                            b.click();
+                            return 'clicked';
+                        }
+                    }
+                }
+                return 'no-button';
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return CdpResult.Success(Unit)
+    }
+
+    // ─────────────────── 新建会话 (Windsurf Cmd+L) ───────────────────
+
+    override suspend fun startNewSession(): CdpResult<Unit> {
+        val result = cdp.evaluate("""
+            (function(){
+                // Windsurf 专用: Cascade 面板顶部的 + 按钮
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (panel) {
+                    var btns = panel.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        var btn = btns[i];
+                        if (!btn.offsetParent) continue;
+                        var svg = btn.querySelector('svg.lucide-plus');
+                        if (svg) {
+                            var rect = btn.getBoundingClientRect();
+                            if (rect.y < 100) {
+                                btn.click();
+                                return 'clicked';
+                            }
+                        }
+                    }
+                }
+                // Windsurf: 标题栏的 Cascade 按钮
+                var allBtns = document.querySelectorAll('button');
+                for (var b = 0; b < allBtns.length; b++) {
+                    if (!allBtns[b].offsetParent) continue;
+                    var svg2 = allBtns[b].querySelector('svg.lucide-plus');
+                    if (svg2) {
+                        var r2 = allBtns[b].getBoundingClientRect();
+                        if (r2.y < 100) {
+                            allBtns[b].click();
+                            return 'clicked';
+                        }
+                    }
+                }
+                var cascadeEl = document.querySelector('a[aria-label*="Cascade"], a[aria-label*="cascade"]');
+                if (cascadeEl && cascadeEl.offsetParent) {
+                    cascadeEl.click();
+                    return 'clicked';
+                }
+                return 'no-button';
+            })()
+        """.trimIndent())
+
+        if (result.getOrNull() == "clicked") return CdpResult.Success(Unit)
+
+        // 降级: Cmd+L 快捷键 (Windsurf 的 New Cascade 快捷键)
+        Log.d(TAG, "未找到新建按钮，使用 Cmd+L")
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyDown")
+            addProperty("key", "l")
+            addProperty("code", "KeyL")
+            addProperty("modifiers", 4) // Meta only
+            addProperty("windowsVirtualKeyCode", 76)
+        })
+        delay(50)
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyUp")
+            addProperty("key", "l")
+            addProperty("code", "KeyL")
+            addProperty("modifiers", 4)
+            addProperty("windowsVirtualKeyCode", 76)
+        })
+
+        return CdpResult.Success(Unit)
+    }
+
+    // ─────────────────── 历史会话 (Windsurf SVG 时钟按钮) ───────────────────
+
+    override suspend fun showRecentSessions(): CdpResult<Unit> {
+        val result = cdp.evaluate("""
+            (function() {
+                var panel = document.getElementById('windsurf.cascadePanel') || document.body;
+                var btns = panel.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    if (!btns[i].offsetParent) continue;
+                    var paths = btns[i].querySelectorAll('path');
+                    for (var p = 0; p < paths.length; p++) {
+                        var d = (paths[p].getAttribute('d') || '');
+                        if (d.startsWith('M3 12a9 9 0 1 0 9-9')) {
+                            btns[i].click();
+                            return 'clicked';
+                        }
+                    }
+                }
+                return 'no-button';
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "clicked" -> CdpResult.Success(Unit)
+            else -> CdpResult.Error("未找到历史记录按钮")
+        }
+    }
+
+    // ─────────────────── 会话切换 (Windsurf 标签栏) ───────────────────
+
+    override suspend fun switchSession(isNext: Boolean): CdpResult<Unit> {
+        val script = """
+            (function() {
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (!panel) return 'no-panel';
+                var tabs = panel.querySelectorAll('[class*="h-[34px]"][class*="min-w-[80px]"][class*="cursor-pointer"]');
+                var items = [];
+                var seen = {};
+                for (var i = 0; i < tabs.length; i++) {
+                    var tab = tabs[i];
+                    if (!tab.offsetParent) continue;
+                    var text = (tab.textContent || '').trim();
+                    if (!text) continue;
+                    if (!seen[text]) { seen[text] = true; items.push(tab); }
+                }
+                if (items.length < 2) return 'no-items';
+                var activeIdx = -1;
+                for (var i = 0; i < items.length; i++) {
+                    var cls = (typeof items[i].className === 'string') ? items[i].className : '';
+                    if (cls.includes('scale-x-100') || cls.includes('border-b')) { activeIdx = i; break; }
+                }
+                if (activeIdx === -1) activeIdx = items.length - 1;
+                var targetIdx = ${isNext} ? activeIdx + 1 : activeIdx - 1;
+                if (targetIdx < 0) targetIdx = items.length - 1;
+                if (targetIdx >= items.length) targetIdx = 0;
+                items[targetIdx].click();
+                return 'clicked';
+            })()
+        """.trimIndent()
+        
+        val result = cdp.evaluate(script)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "clicked" -> CdpResult.Success(Unit)
+            else -> CdpResult.Error("未找到可切换的历史会话")
+        }
+    }
+
+    override suspend fun getRecentSessionsList(): CdpResult<List<String>> {
+        val script = """
+            (function() {
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (!panel) return JSON.stringify({status: 'no-panel'});
+                var tabs = panel.querySelectorAll('[class*="h-[34px]"][class*="min-w-[80px]"][class*="cursor-pointer"]');
+                var sessions = [];
+                var seen = {};
+                for (var i = 0; i < tabs.length; i++) {
+                    var tab = tabs[i];
+                    if (!tab.offsetParent) continue;
+                    var text = (tab.textContent || '').trim();
+                    if (!text) continue;
+                    if (text.length > 50) text = text.substring(0, 50) + '...';
+                    if (!seen[text]) { seen[text] = true; sessions.push(text); }
+                }
+                if (sessions.length > 0) return JSON.stringify({status: 'found', sessions: sessions});
+                return JSON.stringify({status: 'no-items'});
+            })()
+        """.trimIndent()
+        
+        val result = cdp.evaluate(script)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val jsonStr = result.getOrNull() ?: return CdpResult.Error("无返回结果")
+        return try {
+            val root = JsonParser.parseString(jsonStr).asJsonObject
+            if (root.get("status")?.asString == "found") {
+                val sessionsArray = root.getAsJsonArray("sessions")
+                val list = mutableListOf<String>()
+                sessionsArray.forEach { list.add(it.asString) }
+                CdpResult.Success(list)
+            } else {
+                CdpResult.Error("未找到会话列表")
+            }
+        } catch (e: Exception) {
+            CdpResult.Error("解析会话列表失败")
+        }
+    }
+
+    override suspend fun switchSessionByIndex(index: Int): CdpResult<Unit> {
+        val script = """
+            (function() {
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (!panel) return 'no-panel';
+                var tabs = panel.querySelectorAll('[class*="h-[34px]"][class*="min-w-[80px]"][class*="cursor-pointer"]');
+                var items = [];
+                var seen = {};
+                for (var i = 0; i < tabs.length; i++) {
+                    var tab = tabs[i];
+                    if (!tab.offsetParent) continue;
+                    var text = (tab.textContent || '').trim();
+                    if (!text) continue;
+                    if (!seen[text]) { seen[text] = true; items.push(tab); }
+                }
+                if (items.length > $index) {
+                    items[$index].click();
+                    return 'clicked';
+                }
+                return 'no-items';
+            })()
+        """.trimIndent()
+        
+        val result = cdp.evaluate(script)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "clicked" -> CdpResult.Success(Unit)
+            else -> CdpResult.Error("索引超出范围或未找到会话")
+        }
+    }
+
+    // ─────────────────── 模型切换 (Windsurf cascadePanel) ───────────────────
+
+    /**
+     * Windsurf 模型选择器 DOM 结构:
+     * - 当前模型按钮: cascadePanel 内, class 含 "cursor-pointer" + "flex-row" + "items-center"
+     * - 模型下拉菜单项: class 含 "flex w-full flex-col gap-1" + "cursor-pointer"
+     * - 菜单项结构: 第一个文本节点 = 模型名（如 "Claude Sonnet 4.6"），
+     *   后续文本节点 = 标签（"Thinking", "New", "Free", "BYOK" 等）
+     * - 有 "See more" 按钮可展开完整列表（46+ 模型）
+     */
+
+    override suspend fun getCurrentModel(): CdpResult<String> {
+        val result = cdp.evaluate("""
+            (function() {
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (panel) {
+                    var btns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (!btns[i].offsetParent) continue;
+                        var t = (btns[i].textContent || '').trim();
+                        if (t.length > 0 && t.length < 40) return t;
+                    }
+                }
+                var roots = document.querySelectorAll('[class*="chat-client-root"]');
+                for (var ri = 0; ri < roots.length; ri++) {
+                    var rBtns = roots[ri].querySelectorAll('button');
+                    for (var rb = 0; rb < rBtns.length; rb++) {
+                        if (!rBtns[rb].offsetParent) continue;
+                        var rt = (rBtns[rb].textContent || '').trim();
+                        if (rt.length > 0 && rt.length < 40) {
+                            var rl = rt.toLowerCase();
+                            var kw = ['adaptive','claude','gpt','gemini','sonnet','opus','haiku','deepseek','o1','o3','o4','flash','swe','kimi','codestral','mistral','llama','glm','grok','minimax'];
+                            for (var k = 0; k < kw.length; k++) {
+                                if (rl.indexOf(kw[k]) >= 0) return rt;
+                            }
+                        }
+                    }
+                }
+                return '';
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val model = result.getOrNull() ?: ""
+        return if (model.isNotEmpty()) CdpResult.Success(model)
+        else CdpResult.Error("无法获取当前模型")
+    }
+
+    override suspend fun switchModel(modelName: String): CdpResult<Unit> {
+        val params = JsonObject().apply {
+            addProperty("expression", """
+                (async function() {
+                    try {
+                        var input = ${com.google.gson.JsonPrimitive(modelName.lowercase())};
+                        var panel = document.getElementById('windsurf.cascadePanel');
+                        if (!panel) return JSON.stringify({ok:false, err:'找不到 cascadePanel'});
+
+                        // Step 1: 找到并点击当前模型按钮（打开下拉菜单）
+                        var modelBtn = null;
+                        // 精确匹配: cursor-pointer + flex-row + items-center
+                        var precBtns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
+                        for (var pb = 0; pb < precBtns.length; pb++) {
+                            if (!precBtns[pb].offsetParent) continue;
+                            var pt = (precBtns[pb].textContent || '').trim();
+                            if (pt.length > 0 && pt.length < 40) { modelBtn = precBtns[pb]; break; }
+                        }
+                        // 降级: chat-client-root 内关键词匹配
+                        if (!modelBtn) {
+                            var kw = ['adaptive','claude','gpt','gemini','sonnet','opus','haiku','deepseek','o1','o3','o4','flash','swe','kimi','codestral','mistral','llama','glm','grok','minimax'];
+                            var roots = document.querySelectorAll('[class*="chat-client-root"]');
+                            for (var ri = 0; ri < roots.length && !modelBtn; ri++) {
+                                var rBtns = roots[ri].querySelectorAll('button');
+                                for (var rb = 0; rb < rBtns.length; rb++) {
+                                    if (!rBtns[rb].offsetParent) continue;
+                                    var rt = (rBtns[rb].textContent || '').trim().toLowerCase();
+                                    for (var rk = 0; rk < kw.length; rk++) {
+                                        if (rt.indexOf(kw[rk]) >= 0 && rt.length < 40) { modelBtn = rBtns[rb]; break; }
+                                    }
+                                    if (modelBtn) break;
+                                }
+                            }
+                        }
+                        if (!modelBtn) return JSON.stringify({ok:false, err:'找不到模型选择按钮'});
+
+                        modelBtn.click();
+                        await new Promise(function(r) { setTimeout(r, 500); });
+
+                        // Step 2: 点击 "See more" 展开完整列表
+                        var allBtns = panel.querySelectorAll('button');
+                        for (var sm = 0; sm < allBtns.length; sm++) {
+                            if (!allBtns[sm].offsetParent) continue;
+                            if ((allBtns[sm].textContent || '').trim() === 'See more') {
+                                allBtns[sm].click();
+                                await new Promise(function(r) { setTimeout(r, 400); });
+                                break;
+                            }
+                        }
+
+                        // Step 3: 在菜单项中匹配模型
+                        // 菜单项: class 含 "flex w-full flex-col" 的 button
+                        var menuItems = panel.querySelectorAll('button[class*="flex"][class*="w-full"][class*="flex-col"]');
+                        var bestMatch = null;
+                        var bestScore = -1;
+                        var available = [];
+
+                        for (var mi = 0; mi < menuItems.length; mi++) {
+                            var item = menuItems[mi];
+                            if (!item.offsetParent) continue;
+                            var rect = item.getBoundingClientRect();
+                            if (rect.y < 0) continue;
+
+                            // 提取第一个文本节点作为模型名
+                            var walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, null, false);
+                            var firstText = '';
+                            var node;
+                            while (node = walker.nextNode()) {
+                                var nt = node.textContent.trim();
+                                if (nt) { firstText = nt; break; }
+                            }
+                            if (!firstText) continue;
+
+                            var modelName = firstText.toLowerCase();
+                            available.push(firstText);
+
+                            // 精确匹配: 输入完全等于模型名
+                            if (modelName === input) {
+                                bestMatch = item;
+                                bestScore = 100;
+                                break;
+                            }
+                            // 包含匹配: 模型名包含输入
+                            if (modelName.indexOf(input) >= 0 && bestScore < 50) {
+                                bestMatch = item;
+                                bestScore = 50;
+                            }
+                            // 反向包含: 输入包含模型名
+                            if (input.indexOf(modelName) >= 0 && bestScore < 40) {
+                                bestMatch = item;
+                                bestScore = 40;
+                            }
+                            // 部分匹配: 按空格分词后所有词都匹配
+                            if (bestScore < 30) {
+                                var inputWords = input.split(/[\s\-\.]+/).filter(function(w){return w.length>0;});
+                                var nameWords = modelName.split(/[\s\-\.]+/).filter(function(w){return w.length>0;});
+                                var allMatch = inputWords.length > 0;
+                                for (var iw = 0; iw < inputWords.length && allMatch; iw++) {
+                                    var found = false;
+                                    for (var nw = 0; nw < nameWords.length; nw++) {
+                                        if (nameWords[nw].indexOf(inputWords[iw]) >= 0 || inputWords[iw].indexOf(nameWords[nw]) >= 0) { found = true; break; }
+                                    }
+                                    if (!found) allMatch = false;
+                                }
+                                if (allMatch) {
+                                    bestMatch = item;
+                                    bestScore = 30;
+                                }
+                            }
+                        }
+
+                        if (bestMatch) {
+                            bestMatch.click();
+                            // 提取点击项的第一个文本节点
+                            var w2 = document.createTreeWalker(bestMatch, NodeFilter.SHOW_TEXT, null, false);
+                            var clickedName = '';
+                            var n2;
+                            while (n2 = w2.nextNode()) { var t2 = n2.textContent.trim(); if (t2) { clickedName = t2; break; } }
+                            return JSON.stringify({ok:true, info: clickedName || bestMatch.textContent.trim()});
+                        }
+
+                        // 没找到 → 关闭菜单,返回可用模型列表
+                        document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', code:'Escape', bubbles:true}));
+                        return JSON.stringify({ok:false, err:'找不到匹配模型: ' + input, available: available.slice(0, 20)});
+                    } catch(e) { return JSON.stringify({ok:false, err: e.message}); }
+                })()
+            """.trimIndent())
+            addProperty("awaitPromise", true)
+            addProperty("returnByValue", true)
+            addProperty("timeout", 15000)
+        }
+
+        val result = cdp.call("Runtime.evaluate", params)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+
+        val data = result.getOrThrow()
+        val value = data.getAsJsonObject("result")?.get("value")?.asString ?: ""
+        return try {
+            val json = JsonParser.parseString(value).asJsonObject
+            if (json.get("ok")?.asBoolean == true) {
+                val info = json.get("info")?.asString ?: ""
+                Log.d(TAG, "Windsurf 切换模型成功: $info")
+                CdpResult.Success(Unit)
+            } else {
+                val err = json.get("err")?.asString ?: "切换失败"
+                val avail = json.getAsJsonArray("available")
+                if (avail != null && avail.size() > 0) {
+                    val list = (0 until avail.size()).map { avail[it].asString }
+                    Log.w(TAG, "可用模型: $list")
+                }
+                CdpResult.Error(err)
+            }
+        } catch (e: Exception) {
+            CdpResult.Error("解析切换结果失败: $value")
+        }
+    }
+}

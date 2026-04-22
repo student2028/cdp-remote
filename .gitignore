@@ -1,0 +1,35 @@
+# Android / Gradle
+*.iml
+.gradle/
+/build/
+app/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+.DS_Store
+
+# IDE
+/.idea/
+/.vscode/
+.gemini/
+
+# Build artifacts
+*.apk
+*.class
+*.dex
+*.log
+apk/
+
+# Node.js
+node_modules/
+
+# OTA (local build counter)
+.ota_build_counter
+
+# Debug artifacts
+relay-dev/dom_dump.json
+relay-dev/shot.png
+
+# Robolectric
+app/${user.home}/
