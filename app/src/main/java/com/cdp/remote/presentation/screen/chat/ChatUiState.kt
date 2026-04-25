@@ -2,15 +2,18 @@ package com.cdp.remote.presentation.screen.chat
 
 import com.cdp.remote.data.cdp.ChatMessage
 import com.cdp.remote.data.cdp.ConnectionState
+import java.util.concurrent.atomic.AtomicLong
 
 data class PendingImage(
-    val id: Long = pendingImageIdCounter++,
+    val id: Long = idCounter.getAndIncrement(),
     val base64: String,
     val mimeType: String,
     val thumbnailBytes: ByteArray? = null  // compressed small preview
-)
-
-private var pendingImageIdCounter = 1L
+) {
+    companion object {
+        private val idCounter = AtomicLong(1)
+    }
+}
 
 data class ChatUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,

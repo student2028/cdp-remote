@@ -286,7 +286,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
             try {
                 val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
                 withContext(Dispatchers.IO) {
-                    val emptyBody = okhttp3.RequestBody.create(null, ByteArray(0))
+                    val emptyBody = ByteArray(0).toRequestBody(null)
                     val request = Request.Builder()
                         .url("$relayBase/cwd_history?path=$encodedPath")
                         .delete(emptyBody)

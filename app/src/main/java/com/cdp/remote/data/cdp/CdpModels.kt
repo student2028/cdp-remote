@@ -38,7 +38,18 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
         fun fromAppName(name: String?): ElectronAppType {
             val n = name?.trim().orEmpty()
             if (n.isEmpty()) return UNKNOWN
-            return values().firstOrNull { it.displayName.equals(n, ignoreCase = true) } ?: UNKNOWN
+            // 优先精确匹配
+            val exact = values().firstOrNull { it.displayName.equals(n, ignoreCase = true) }
+            if (exact != null) return exact
+            // 降级：包含匹配（appName 可能带端口后缀如 "Windsurf (9443)"）
+            val nl = n.lowercase()
+            return when {
+                nl.contains("codex") -> CODEX
+                nl.contains("cursor") -> CURSOR
+                nl.contains("windsurf") -> WINDSURF
+                nl.contains("antigravity") -> ANTIGRAVITY
+                else -> UNKNOWN
+            }
         }
     }
 }

@@ -123,10 +123,9 @@ class ChatViewModel(
 
         when (result) {
             is CdpResult.Success -> {
-                val n = appName.lowercase()
-                isCodex = n.contains("codex")
-                isWindsurf = n.contains("windsurf")
-                val isCursor = n.contains("cursor")
+                val appType = ElectronAppType.fromAppName(appName)
+                isCodex = appType == ElectronAppType.CODEX
+                isWindsurf = appType == ElectronAppType.WINDSURF
                 if (isCodex) {
                     codexCommands = CodexCommands(cdpClient)
                     commands = null
@@ -136,7 +135,7 @@ class ChatViewModel(
                 } else {
                     // Cursor 走 CursorCommands（继承自 AntigravityCommands，仅覆写 switchModel）；
                     // 其它 IDE 保留反重力实现，行为保持不变。
-                    commands = if (isCursor) CursorCommands(cdpClient, appName)
+                    commands = if (appType == ElectronAppType.CURSOR) CursorCommands(cdpClient, appName)
                                else AntigravityCommands(cdpClient, appName)
                     codexCommands = null
                 }

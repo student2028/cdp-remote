@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class HostListViewModel : ViewModel() {
@@ -101,7 +102,7 @@ class HostListViewModel : ViewModel() {
                 val host = uiState.hosts.firstOrNull() ?: return@launch
                 val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
                 withContext(Dispatchers.IO) {
-                    val emptyBody = okhttp3.RequestBody.create(null, ByteArray(0))
+                    val emptyBody = ByteArray(0).toRequestBody(null)
                     val request = Request.Builder()
                         .url("${host.httpUrl}/cwd_history?path=$encodedPath")
                         .delete(emptyBody)
