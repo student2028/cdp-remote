@@ -387,12 +387,19 @@ function getIdePortByName(ideName) {
 const WATCHDOG_INTERVAL_MS = 15_000;
 // 大脑回复解析至少等 30 秒再开始（给 AI 生成时间）
 const BRAIN_REPLY_MIN_WAIT_MS = 30_000;
+// 超时降级阈值：超过此时间未解析到标记，启用 fallback 模式
+const BRAIN_PLAN_FALLBACK_MS = 3 * 60 * 1000;   // BRAIN_PLAN 3 分钟后降级
+const BRAIN_REVIEW_FALLBACK_MS = 5 * 60 * 1000;  // BRAIN_REVIEW 5 分钟后降级
 // 上次处理的 commit hash 追踪（已移入 currentPipeline 持久化）
 // 防止并发执行
 let _watchdogRunning = false;
 // 大脑回复已处理标记（每次进入 BRAIN_REVIEW 重置）
 let _brainReplyProcessed = false;
 let _brainReviewEnteredAt = 0;
+// 回复稳定检测：连续 N 轮读到相同内容 → AI 已停止生成
+let _lastReplySnapshot = '';
+let _replyStableCount = 0;
+const REPLY_STABLE_THRESHOLD = 2; // 连续 2 轮（30s）相同 → 认为生成完成
 
 /** 安全执行 git 命令，失败返回 null */
 function gitRevParse(ref, cwd) {
@@ -625,16 +632,38 @@ async function workflowWatchdogTick() {
             const reply = await readBrainLastReply(brainPort);
             if (!reply || reply.length < 30) return;
 
-            const taskContent = parseBrainTask(reply);
+            // 回复稳定检测：连续 N 轮内容相同 → 生成已完成
+            const replyHash = reply.substring(0, 200) + '|' + reply.length;
+            if (replyHash === _lastReplySnapshot) {
+                _replyStableCount++;
+            } else {
+                _lastReplySnapshot = replyHash;
+                _replyStableCount = 0;
+            }
+            const replyStable = _replyStableCount >= REPLY_STABLE_THRESHOLD;
+
+            // 超时降级：超过阈值 + 回复已稳定 → 启用 fallbackFull
+            const useFallback = planElapsed > BRAIN_PLAN_FALLBACK_MS && replyStable;
+            const taskContent = parseBrainTask(reply, { fallbackFull: useFallback });
+
             if (!taskContent) {
-                log(`👁️ watchdog BRAIN_PLAN: 未检测到 ---TASK_START--- 标记（大脑可能还在生成）`);
+                if (useFallback) {
+                    log(`⏰ watchdog BRAIN_PLAN: 超时 ${Math.round(planElapsed/1000)}s + 回复已稳定，但内容过短无法降级`);
+                } else if (replyStable) {
+                    log(`👁️ watchdog BRAIN_PLAN: 回复已稳定但未检测到标记（等待超时降级，剩余 ${Math.round((BRAIN_PLAN_FALLBACK_MS - planElapsed)/1000)}s）`);
+                } else {
+                    log(`👁️ watchdog BRAIN_PLAN: 未检测到标记（回复仍在变化中）`);
+                }
                 return;
             }
 
-            log(`👁️ watchdog BRAIN_PLAN: 检测到任务，自动派发给工人`);
+            const method = useFallback ? '超时降级(完整回复)' : '标记解析';
+            log(`👁️ watchdog BRAIN_PLAN: 检测到任务（${method}），自动派发给工人`);
             try {
                 await execOrchestra('task', taskContent, cwd);
                 _brainReplyProcessed = true;
+                _lastReplySnapshot = '';
+                _replyStableCount = 0;
                 log(`✅ watchdog 已自动执行 orchestra task，流水线推进到 WORKER_CODE`);
             } catch (err) {
                 log(`⚠️ watchdog BRAIN_PLAN 自动派发失败: ${err.message}`);
@@ -662,9 +691,34 @@ async function workflowWatchdogTick() {
             const reply = await readBrainLastReply(brainPort);
             if (!reply || reply.length < 50) return; // 回复太短，可能还在生成
 
-            const parsed = parseBrainVerdict(reply);
+            // 回复稳定检测（复用 BRAIN_PLAN 的变量）
+            const replyHash = reply.substring(0, 200) + '|' + reply.length;
+            if (replyHash === _lastReplySnapshot) {
+                _replyStableCount++;
+            } else {
+                _lastReplySnapshot = replyHash;
+                _replyStableCount = 0;
+            }
+            const replyStable = _replyStableCount >= REPLY_STABLE_THRESHOLD;
+
+            let parsed = parseBrainVerdict(reply);
+
+            // 超时降级：超过阈值 + 回复已稳定 + 未解析到 VERDICT → 默认 NEEDS_REWORK
+            if (!parsed && reviewElapsed > BRAIN_REVIEW_FALLBACK_MS && replyStable) {
+                log(`⏰ watchdog BRAIN_REVIEW: 超时 ${Math.round(reviewElapsed/1000)}s + 回复已稳定，降级为 NEEDS_REWORK`);
+                parsed = {
+                    verdict: 'NEEDS_REWORK',
+                    issues: '（审查超时降级）大脑未输出标准 VERDICT 格式，请根据上次审查意见继续改进',
+                    summary: '超时降级',
+                };
+            }
+
             if (!parsed) {
-                log(`👁️ watchdog: 大脑回复中未检测到 VERDICT（可能还在生成或格式不匹配）`);
+                if (replyStable) {
+                    log(`👁️ watchdog: 大脑回复已稳定但未检测到 VERDICT（等待超时降级，剩余 ${Math.round((BRAIN_REVIEW_FALLBACK_MS - reviewElapsed)/1000)}s）`);
+                } else {
+                    log(`👁️ watchdog: 大脑回复中未检测到 VERDICT（可能还在生成或格式不匹配）`);
+                }
                 return;
             }
 
@@ -694,6 +748,8 @@ async function workflowWatchdogTick() {
 
                 if (success) {
                     _brainReplyProcessed = true; // 仅在成功推进流水线后标记
+                    _lastReplySnapshot = '';
+                    _replyStableCount = 0;
                 }
             } catch (err) {
                 log(`⚠️ watchdog 自动推进流水线失败: ${err.message}`);

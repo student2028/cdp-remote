@@ -32,12 +32,27 @@ function parseBrainVerdict(replyText) {
  * @param {string} replyText
  * @returns {string|null} 任务内容，未找到返回 null
  */
-function parseBrainTask(replyText) {
+function parseBrainTask(replyText, { fallbackFull = false } = {}) {
     if (!replyText || replyText.length < 20) return null;
-    const m = replyText.match(/---TASK_START---\s*([\s\S]*?)\s*---TASK_END---/);
-    if (!m) return null;
-    const task = m[1].trim();
-    return task.length > 5 ? task : null;
+
+    // 1. 精确匹配：---TASK_START---...---TASK_END---
+    let m = replyText.match(/---TASK_START---\s*([\s\S]*?)\s*---TASK_END---/);
+    if (m && m[1].trim().length > 5) return m[1].trim();
+
+    // 2. 宽松匹配：带空格、少横线、全角横线、代码块包裹
+    m = replyText.match(/[-—–]{2,}\s*TASK[\s_]*START\s*[-—–]{2,}\s*([\s\S]*?)\s*[-—–]{2,}\s*TASK[\s_]*END/i);
+    if (m && m[1].trim().length > 5) return m[1].trim();
+
+    // 3. 单边匹配：只有 TASK_START 没有 TASK_END（AI 可能省略了结尾标记）
+    m = replyText.match(/[-—–]{2,}\s*TASK[\s_]*START\s*[-—–]{2,}\s*([\s\S]+)/i);
+    if (m && m[1].trim().length > 30) return m[1].trim();
+
+    // 4. fallbackFull 模式（超时降级时启用）：回复足够长且含任务关键词，整篇当 task
+    if (fallbackFull && replyText.length > 150) {
+        return replyText;
+    }
+
+    return null;
 }
 
 module.exports = { parseBrainVerdict, parseBrainTask };
