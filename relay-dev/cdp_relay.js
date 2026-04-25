@@ -343,6 +343,12 @@ const WORKFLOW_TRANSITIONS = {
         pipeline: ['TASK', 'ABORT'],
         next: { TASK: 'WORKER_CODE', ABORT: 'ABORT' },
     },
+    // DONE 是终态，但允许 TASK 回退（Brain 竞态：先 done 后 task）
+    DONE: {
+        main: false,
+        pipeline: ['TASK'],
+        next: { TASK: 'WORKER_CODE' },
+    },
 };
 
 function isTransitionAllowed(state, isMainCommit, verb) {
@@ -356,8 +362,9 @@ function isTransitionAllowed(state, isMainCommit, verb) {
 const { TERMINAL_VERBS, maybeSelfHealTerminalState } = require('./workflow_state.js');
 
 function nextWorkflowState(state, isMainCommit, verb) {
-    // 终态自愈交给 /workflow/status 的延迟逻辑处理，这里不干预
-    if (TERMINAL_VERBS.has(state)) return state;
+    // 终态自愈交给 /workflow/status 的延迟逻辑处理
+    // 但 DONE + TASK 是 Brain 竞态（先 done 后 task），需要允许回退
+    if (TERMINAL_VERBS.has(state) && !(state === 'DONE' && verb === 'TASK')) return state;
     const rule = WORKFLOW_TRANSITIONS[state];
     if (!rule) return state;
     return isMainCommit ? rule.next.__main__ : (rule.next[verb] || state);
