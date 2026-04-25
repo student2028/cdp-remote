@@ -418,8 +418,11 @@ function gitLogMessage(hash, cwd) {
     } catch (_) { return ''; }
 }
 
-/** 通过 CDP 读取指定端口 IDE 的最后回复（Cursor 专用 DOM） */
-async function readBrainLastReply(cdpPort) {
+/** 通过 CDP 读取指定端口 IDE 的最后回复
+ * @param {number} cdpPort
+ * @param {string} [cwdHint] - pipeline 的 cwd，用于按 page title 精确定位窗口
+ */
+async function readBrainLastReply(cdpPort, cwdHint) {
     // Cursor 的 getLastReply DOM 查询（移植自 CursorCommands.kt）
     const CURSOR_LAST_REPLY_EXPR = `(function(){
         try {
@@ -452,37 +455,109 @@ async function readBrainLastReply(cdpPort) {
         } catch (e) { return ''; }
     })()`;
 
-    // Antigravity / Windsurf 通用的 getLastReply
+    // Antigravity / Windsurf 通用的 getLastReply（移植自 AntigravityCommands.kt）
     const GENERIC_LAST_REPLY_EXPR = `(function(){
         try {
-            function allDocs() {
-                var out = [document];
-                var ifr = document.querySelectorAll('iframe');
-                for (var i = 0; i < ifr.length; i++) {
-                    try { if (ifr[i].contentDocument) out.push(ifr[i].contentDocument); } catch(e) {}
+            function visible(el) {
+                if (!el) return false;
+                var r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            }
+            function classStr(el) {
+                var c = el.className;
+                return (typeof c === 'string' ? c : (el.getAttribute && el.getAttribute('class')) || '') || '';
+            }
+            function matchesProse(el) {
+                var c = classStr(el);
+                return c.indexOf('select-text') >= 0 && c.indexOf('leading-relaxed') >= 0;
+            }
+            function hasSelectText(el) {
+                return classStr(el).indexOf('select-text') >= 0;
+            }
+            function inUserTurn(el) {
+                return el.closest && el.closest('[data-message-author-role="user"]');
+            }
+            function inChatInputArea(el) {
+                if (!el || !el.closest) return false;
+                var ta = el.closest('textarea');
+                if (ta) return true;
+                var ce = el.closest('[contenteditable="true"]');
+                if (ce) {
+                    var p = ce.closest('[class*="composer"], [class*="chat-input"], [class*="interactive"], [class*="aichat"]');
+                    if (p) return true;
                 }
+                return false;
+            }
+            function isAssistantCandidate(el) {
+                if (inChatInputArea(el) || inUserTurn(el)) return false;
+                return true;
+            }
+            function flattenElements(root) {
+                var out = [];
+                function walk(node) {
+                    if (!node) return;
+                    if (node.nodeType === 1) {
+                        out.push(node);
+                        if (node.shadowRoot) walk(node.shadowRoot);
+                    }
+                    for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+                }
+                walk(root);
                 return out;
             }
-            var docs = allDocs();
-            for (var di = 0; di < docs.length; di++) {
-                var doc = docs[di];
+            function tryInPanel(panelNode) {
+                var flat = flattenElements(panelNode);
+                var combo = flat.filter(function(el) {
+                    return matchesProse(el) && visible(el) && isAssistantCandidate(el);
+                });
+                if (combo.length) {
+                    var t = (combo[combo.length - 1].innerText || '').trim();
+                    if (t.length) return t;
+                }
+                var all = flat.filter(function(el) {
+                    return hasSelectText(el) && visible(el) && isAssistantCandidate(el);
+                });
+                if (all.length) {
+                    var t2 = (all[all.length - 1].innerText || '').trim();
+                    if (t2.length) return t2;
+                }
+                var articles = panelNode.querySelectorAll('[role="article"], [class*="markdown"], [class*="rendered-markdown"]');
+                for (var j = articles.length - 1; j >= 0; j--) {
+                    var ar = articles[j];
+                    if (inChatInputArea(ar) || !visible(ar)) continue;
+                    var txt = (ar.innerText || '').trim();
+                    if (txt.length > 2) return txt;
+                }
+                return null;
+            }
+            // 遍历所有文档（含 iframe）
+            var roots = [document];
+            var iframes = document.querySelectorAll('iframe');
+            for (var i = 0; i < iframes.length; i++) {
+                try { if (iframes[i].contentDocument) roots.push(iframes[i].contentDocument); } catch(e) {}
+            }
+            for (var di = 0; di < roots.length; di++) {
+                var doc = roots[di];
                 var asst = doc.querySelectorAll('[data-message-author-role="assistant"]');
                 if (asst.length) {
                     var lastA = asst[asst.length - 1];
                     var prose = lastA.querySelector('[class*="select-text"]') || lastA;
-                    var t = (prose.innerText || '').trim();
-                    if (t.length) return t;
+                    if (prose && visible(prose) && !inChatInputArea(prose)) {
+                        var ta = (prose.innerText || '').trim();
+                        if (ta.length) return ta;
+                    }
                 }
-                var panel = doc.querySelector('[class*="composer"]')
+                var p = doc.querySelector('.antigravity-agent-side-panel')
+                    || doc.querySelector('[class*="antigravity-agent"]')
                     || doc.querySelector('[class*="interactive-session"]')
                     || doc.querySelector('[class*="aichat"]')
+                    || doc.querySelector('[class*="composer"]')
                     || doc.querySelector('[class*="chat-view"]')
+                    || doc.querySelector('[class*="cascade-scrollbar"]')
+                    || doc.querySelector('[class*="chat-client-root"]')
                     || doc.body || doc;
-                var mds = panel.querySelectorAll('[class*="markdown"], [role="article"]');
-                for (var j = mds.length - 1; j >= 0; j--) {
-                    var txt = (mds[j].innerText || '').trim();
-                    if (txt.length > 10) return txt;
-                }
+                var r0 = tryInPanel(p);
+                if (r0) return r0;
             }
             return '';
         } catch (e) { return ''; }
@@ -495,8 +570,16 @@ async function readBrainLastReply(cdpPort) {
             res.on('end', () => {
                 try {
                     const pages = JSON.parse(data);
-                    const wb = pages.find(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
-                    if (!wb) { resolve(''); return; }
+                    const wbs = pages.filter(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
+                    if (wbs.length === 0) { resolve(''); return; }
+
+                    // 按 cwd basename 匹配 page title（精确定位打开了目标项目的窗口）
+                    let wb = wbs[0]; // fallback: 第一个
+                    if (cwdHint) {
+                        const dirName = cwdHint.split('/').filter(Boolean).pop() || '';
+                        const matched = wbs.find(p => p.title && p.title.toLowerCase().includes(dirName.toLowerCase()));
+                        if (matched) wb = matched;
+                    }
 
                     // 根据 IDE 类型选择 DOM 查询
                     const target = activeCdpTargets.get(cdpPort);
@@ -626,11 +709,23 @@ async function workflowWatchdogTick() {
 
         const brainPort = (pl.brain?.port && activeCdpTargets.has(pl.brain.port))
             ? pl.brain.port : getIdePortByName(pl.brain?.ide);
-        if (!brainPort) return;
+        if (!brainPort) { log(`👁️ watchdog BRAIN_PLAN: brain IDE 不在线 (port=${pl.brain?.port})`); return; }
 
         try {
-            const reply = await readBrainLastReply(brainPort);
-            if (!reply || reply.length < 30) return;
+            const reply = await readBrainLastReply(brainPort, cwd);
+            if (!reply || reply.length < 30) {
+                log(`👁️ watchdog BRAIN_PLAN: 回复太短或为空 (len=${reply?.length ?? 0}, port=${brainPort}, elapsed=${Math.round(planElapsed/1000)}s)`);
+                // 超时后即使回复短，也尝试降级
+                if (planElapsed > BRAIN_PLAN_FALLBACK_MS && reply && reply.length > 10) {
+                    log(`⏰ watchdog BRAIN_PLAN: 超时降级（短回复），直接作为任务派发`);
+                    try {
+                        await execOrchestra('task', reply, cwd);
+                        _brainReplyProcessed = true;
+                        log(`✅ watchdog 超时降级成功`);
+                    } catch (err) { log(`⚠️ 超时降级失败: ${err.message}`); }
+                }
+                return;
+            }
 
             // 回复稳定检测：连续 N 轮内容相同 → 生成已完成
             const replyHash = reply.substring(0, 200) + '|' + reply.length;
@@ -688,7 +783,7 @@ async function workflowWatchdogTick() {
         if (!brainPort) return;
 
         try {
-            const reply = await readBrainLastReply(brainPort);
+            const reply = await readBrainLastReply(brainPort, cwd);
             if (!reply || reply.length < 50) return; // 回复太短，可能还在生成
 
             // 回复稳定检测（复用 BRAIN_PLAN 的变量）
