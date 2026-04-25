@@ -70,12 +70,14 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         val savedBrain = prefs.getString("brainIde", null)
         val savedWorker = prefs.getString("workerIde", null)
         val savedCwd = prefs.getString("cwd", null)
+        val savedTask = prefs.getString("initialTask", null)
         uiState = uiState.copy(
             brainIde = savedBrain ?: uiState.brainIde,
             brainSelectedPort = prefs.getInt("brainPort", 0),
             workerIde = savedWorker ?: uiState.workerIde,
             workerSelectedPort = prefs.getInt("workerPort", 0),
             cwd = savedCwd ?: uiState.cwd,
+            initialTask = savedTask ?: uiState.initialTask,
         )
     }
 
@@ -86,6 +88,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
             .putString("workerIde", uiState.workerIde)
             .putInt("workerPort", uiState.workerSelectedPort)
             .putString("cwd", uiState.cwd)
+            .putString("initialTask", uiState.initialTask)
             .apply()
     }
 
@@ -116,7 +119,10 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         )
         saveFormState()
     }
-    fun updateInitialTask(text: String) { uiState = uiState.copy(initialTask = text) }
+    fun updateInitialTask(text: String) {
+        uiState = uiState.copy(initialTask = text)
+        saveFormState()
+    }
     fun updateCwd(path: String) {
         uiState = uiState.copy(cwd = path)
         saveFormState()

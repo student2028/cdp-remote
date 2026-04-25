@@ -89,6 +89,7 @@ enum class AttachmentType {
  */
 enum class WorkflowState(val displayName: String, val badgeEmoji: String) {
     IDLE(          "空闲",         "💤"),
+    BRAIN_PLAN(    "大脑规划中",    "📋"),
     WORKER_CODE(   "工人编码中",    "👷"),
     BRAIN_REVIEW(  "大脑审查中",    "🧠"),
     BRAIN_RECOVER( "大脑决策中",    "🩺"),

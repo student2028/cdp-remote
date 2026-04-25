@@ -313,6 +313,7 @@ private fun StatusCard(state: WorkflowUiState) {
     // IDLE 用主题紫色而非灰色，让"就绪待命"读起来是正向的
     val accent = when (state.pipelineState) {
         WorkflowState.IDLE          -> purpleAccent
+        WorkflowState.BRAIN_PLAN    -> purpleAccent
         WorkflowState.WORKER_CODE   -> emeraldAccent
         WorkflowState.BRAIN_REVIEW  -> purpleAccent
         WorkflowState.BRAIN_RECOVER -> Color(0xFFE17055)
@@ -542,6 +543,7 @@ private fun PipelineStepBar(current: WorkflowState, accent: Color) {
         Step("完成", "✅"),
     )
     val activeIndex = when (current) {
+        WorkflowState.BRAIN_PLAN    -> 0
         WorkflowState.WORKER_CODE   -> 1
         WorkflowState.BRAIN_REVIEW, WorkflowState.BRAIN_RECOVER -> 2
         WorkflowState.DONE          -> 3
@@ -1066,6 +1068,7 @@ private fun ActionRow(
                     Spacer(Modifier.width(6.dp))
                     val label = when (state.pipelineState) {
                         WorkflowState.IDLE -> "启动流水线"
+                        WorkflowState.BRAIN_PLAN -> "规划中…"
                         WorkflowState.WORKER_CODE -> "编码中…"
                         WorkflowState.BRAIN_REVIEW -> "审查中…"
                         WorkflowState.BRAIN_RECOVER -> "决策中…"
