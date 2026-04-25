@@ -1742,6 +1742,7 @@ const server = http.createServer(async (req, res) => {
                     ? Math.max(1, Math.min(parsed.min_review_rounds, MAX_REVIEW_ROUNDS))
                     : DEFAULT_MIN_REVIEW_ROUNDS;
                 currentPipeline.lastReviewVerdict = null;
+                currentPipeline.initialTask = initialTask; // 保存原始完整需求，REVIEW 时用于判断是否全部完成
                 currentPipeline.lastSeenPipelineHash = gitRevParse('refs/orchestra/pipeline', cwd);
                 currentPipeline.lastSeenMasterHash = gitRevParse('refs/heads/master', cwd) || gitRevParse('refs/heads/main', cwd);
                 savePipelineState(currentPipeline); // 持久化初始状态
@@ -2009,6 +2010,9 @@ const server = http.createServer(async (req, res) => {
                         const prompt = [
                             `工人提交了代码：「${firstLine}」`,
                             ``,
+                            `━━ 原始完整需求 ━━`,
+                            `${pl.initialTask || '（未记录）'}`,
+                            ``,
                             `━━ 第 ${round} 轮审查（共需至少 ${minRounds} 轮）━━`,
                             ``,
                             `第一步：git show ${hash}`,
@@ -2041,12 +2045,17 @@ const server = http.createServer(async (req, res) => {
                             `- 全部 minor 或 NONE → 可以 PASS`,
                             ``,
                             `⚠️ 核心规则（非常重要）：`,
-                            `- 审查完成后，你必须在终端执行对应命令来推进流水线：`,
-                            `  - 如果 VERDICT 是 NEEDS_REWORK：执行 scripts/orchestra.sh review "你的 ISSUES 内容"`,
-                            `  - 如果 VERDICT 是 PASS：执行 scripts/orchestra.sh done`,
-                            `- Relay 会通过 Git Hook 自动收到你的指令并推进流水线`,
+                            `审查完成后，你必须在终端执行命令推进流水线，根据以下逻辑判断：`,
                             ``,
-                            `⚠️ 宁可多审一轮，也不要放过低质量代码。DONE 是质量闭环的结果，不是收尾的借口。`,
+                            `1. 如果 VERDICT 是 NEEDS_REWORK：`,
+                            `   执行 scripts/orchestra.sh review "你的 ISSUES 内容"`,
+                            ``,
+                            `2. 如果 VERDICT 是 PASS，请对照上面的「原始完整需求」检查：`,
+                            `   - 所有需求都已实现？→ 执行 scripts/orchestra.sh done`,
+                            `   - 还有未实现的需求？→ 执行 scripts/orchestra.sh task "下一个子任务的完整描述"`,
+                            `     （把尚未完成的部分作为新任务派发给工人）`,
+                            ``,
+                            `⚠️ 不要遗漏原始需求的任何一项。DONE 意味着整个需求 100% 完成，不是当前子任务完成。`,
                         ].join('\n');
                         await sendWithRetry(port, prompt, 'brain');
                         if (pl.lastError) return;
