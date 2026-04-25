@@ -2096,6 +2096,11 @@ const server = http.createServer(async (req, res) => {
                     } else if (verb === 'TASK' || verb === 'REVIEW') {
                         const port = requireIde(pl.worker);
                         if (!port) return;
+                        // P1 修复：新子任务(TASK)重置 reviewRound；返工(REVIEW)才累加
+                        if (verb === 'TASK') {
+                            log(`🔄 新子任务到来，reviewRound 重置: ${pl.reviewRound} → 0`);
+                            pl.reviewRound = 0;
+                        }
                         // 返工提交后会触发下一轮审查；把目标轮号告诉 worker 让它写进 commit
                         const nextRound = (pl.reviewRound || 0) + 1;
                         const isRework = verb === 'REVIEW';
@@ -2212,6 +2217,10 @@ const server = http.createServer(async (req, res) => {
                     pl.state = nextWorkflowState(prevState, isMainCommit, verb);
                     pl.state_entered_at = Date.now();
                     pl.warned = false;
+                    // P0 增强：DONE→WORKER_CODE 回退（Brain 追发 TASK）打明确日志
+                    if (prevState === 'DONE' && pl.state === 'WORKER_CODE') {
+                        log(`🔄 DONE→WORKER_CODE 回退成功：Brain 在 DONE 保留窗口内追发了 TASK，pipeline 上下文完整保留`);
+                    }
                     if (isMainCommit) pl.lastSeenMasterHash = hash;
                     else pl.lastSeenPipelineHash = hash;
                     // 进入 BRAIN_REVIEW 时重置 watchdog 大脑回复追踪

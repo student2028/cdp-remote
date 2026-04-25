@@ -8,9 +8,11 @@
 // 进入终态后会保留一段时间，让前端（App）有机会轮询到，再自愈回 IDLE。
 const TERMINAL_VERBS = new Set(['DONE', 'ABORT']);
 
-// 终态保留时长：10 秒。期间 /workflow/status 会返回 DONE/ABORT，
+// 终态保留时长：120 秒。期间 /workflow/status 会返回 DONE/ABORT，
 // 超过后被访问才自愈为 IDLE，并把原终态记入 lastFinishedState。
-const TERMINAL_RETENTION_MS = 10_000;
+// 必须 >= 120s：Brain AI 可能在 DONE 后 40~60 秒才追发 TASK（先 done 后 task 竞态），
+// 保留窗口内 TASK 走正式的 DONE→WORKER_CODE 转移路径，不丢 pipeline 上下文。
+const TERMINAL_RETENTION_MS = 120_000;
 
 /**
  * 终态延迟自愈：若 pipeline 处于 DONE/ABORT 且已停留 ≥ TERMINAL_RETENTION_MS，
