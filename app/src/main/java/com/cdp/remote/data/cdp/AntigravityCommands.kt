@@ -436,7 +436,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     /**
      * 获取最后一条助手回复 - 完整移植 skill 脚本的 extractExpression
      */
-    suspend fun getLastReply(): CdpResult<String> {
+    open suspend fun getLastReply(): CdpResult<String> {
         val result = cdp.evaluate("""
             (function(){
                 try {
@@ -1617,6 +1617,14 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
         return CdpResult.Success(Unit)
     }
 
+    /**
+     * 取消正在运行的任务（如长时间运行的 Step/Tool）
+     * 默认实现：返回不支持的错误，子类（如 WindsurfCommands）应覆盖此方法
+     */
+    open suspend fun cancelRunningTask(): CdpResult<Unit> {
+        return CdpResult.Error("当前 IDE 不支持取消任务功能")
+    }
+
     // ─────────────────── 模型切换 ───────────────────
     // 移植自: antigravity_switch_model.js
 
@@ -1789,18 +1797,22 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                     }
                     return out;
                 }
-                function flattenElements(root) {
-                    var out = [];
-                    function walk(node) {
-                        if (!node) return;
-                        if (node.nodeType === 1) {
-                            out.push(node);
-                            if (node.shadowRoot) walk(node.shadowRoot);
-                        }
-                        for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+                function findChatPanel(doc) {
+                    var selectors = [
+                        '.antigravity-agent-side-panel',
+                        '[class*="antigravity-agent"]',
+                        '[class*="interactive-session"]',
+                        '[class*="aichat"]',
+                        '[class*="composer"]',
+                        '[class*="chat-view"]',
+                        '[class*="cascade-scrollbar"]',
+                        '[class*="chat-client-root"]'
+                    ];
+                    for (var i = 0; i < selectors.length; i++) {
+                        var el = doc.querySelector(selectors[i]);
+                        if (el) return el;
                     }
-                    walk(root);
-                    return out;
+                    return null;
                 }
 
                 var allDocs = docs(document);
@@ -1824,11 +1836,13 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                     'error 429', 'error 500', 'error 502', 'error 503', 'error 504'
                 ];
 
-                // 在所有文档中搜索错误文本
+                // 只在 AI 对话面板内搜索错误文本，不搜全页
                 for (var di = 0; di < allDocs.length; di++) {
-                    var bodyText = ((allDocs[di].body || allDocs[di]).innerText || '').toLowerCase();
+                    var chatPanel = findChatPanel(allDocs[di]);
+                    if (!chatPanel) continue;
+                    var panelText = (chatPanel.innerText || '').toLowerCase();
                     for (var i = 0; i < errorPatterns.length; i++) {
-                        if (bodyText.includes(errorPatterns[i])) {
+                        if (panelText.includes(errorPatterns[i])) {
                             hasError = true;
                             break;
                         }
@@ -1837,24 +1851,28 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                 }
                 if (!hasError) return JSON.stringify({status:'ok'});
 
-                // 找到错误后，尝试点击 Retry 按钮
-                var buttons = document.querySelectorAll('button');
-                var retryPatterns = [
-                    'retry', '重试', 'try again', 'regenerate',
-                    'resend', 'resubmit', '重新生成', '再试一次'
-                ];
-                for (var j = 0; j < buttons.length; j++) {
-                    var btn = buttons[j];
-                    if (!btn.offsetParent) continue; // 跳过不可见按钮
-                    var btnText = (btn.textContent || '').toLowerCase().trim();
-                    var btnAria = (btn.getAttribute('aria-label') || '').toLowerCase();
-                    var btnTitle = (btn.title || '').toLowerCase();
-                    var combined = btnText + ' ' + btnAria + ' ' + btnTitle;
-                    for (var k = 0; k < retryPatterns.length; k++) {
-                        if (combined.includes(retryPatterns[k])) {
-                            var rect = btn.getBoundingClientRect();
-                            btn.click();
-                            return JSON.stringify({status:'retried', x: rect.x + rect.width/2, y: rect.y + rect.height/2});
+                // 找到错误后，在 chat panel 内尝试点击 Retry 按钮
+                for (var di = 0; di < allDocs.length; di++) {
+                    var chatPanel = findChatPanel(allDocs[di]);
+                    if (!chatPanel) continue;
+                    var buttons = chatPanel.querySelectorAll('button');
+                    var retryPatterns = [
+                        'retry', '重试', 'try again', 'regenerate',
+                        'resend', 'resubmit', '重新生成', '再试一次'
+                    ];
+                    for (var j = 0; j < buttons.length; j++) {
+                        var btn = buttons[j];
+                        if (!btn.offsetParent) continue;
+                        var btnText = (btn.textContent || '').toLowerCase().trim();
+                        var btnAria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        var btnTitle = (btn.title || '').toLowerCase();
+                        var combined = btnText + ' ' + btnAria + ' ' + btnTitle;
+                        for (var k = 0; k < retryPatterns.length; k++) {
+                            if (combined.includes(retryPatterns[k])) {
+                                var rect = btn.getBoundingClientRect();
+                                btn.click();
+                                return JSON.stringify({status:'retried', x: rect.x + rect.width/2, y: rect.y + rect.height/2});
+                            }
                         }
                     }
                 }
@@ -1884,6 +1902,180 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
             }
         } catch (e: Exception) {
             CdpResult.Error("解析重试结果失败: \${e.message}")
+        }
+    }
+
+    // ─────────────────── Agent 全局规则（Customizations → Rules → Global）──────────────────
+    // 通过 CDP 在侧栏打开「Customizations」，写入 Global 规则，等同远程点击保存。
+
+    /**
+     * 将 [text] 写入侧栏 **Customization → Rules → Global** 编辑框，并触发 input/change 以便 IDE 持久化。
+     * 依赖 Antigravity / Windsurf 系侧栏 DOM；若反重力更新 UI，需按报错调整选择器。
+     */
+    open suspend fun setGlobalAgentRule(text: String): CdpResult<Unit> {
+        val ruleLiteral = com.google.gson.JsonPrimitive(text).toString()
+        val params = JsonObject().apply {
+            addProperty("expression", """
+                (async function() {
+                    try {
+                        var ruleText = $ruleLiteral;
+
+                        function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+
+                        function findSidePanel() {
+                            var a = document.getElementById('antigravity.agentSidePanelInputBox');
+                            if (a) {
+                                var s = a.closest('section, [class*="side"], [class*="panel"]');
+                                if (s) return s;
+                            }
+                            return document.querySelector('.antigravity-agent-side-panel')
+                                || document.querySelector('[class*="antigravity-agent"]')
+                                || document.getElementById('windsurf.cascadePanel');
+                        }
+
+                        function clickElement(el) {
+                            if (!el) return;
+                            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                            el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                            if (typeof el.click === 'function') el.click();
+                        }
+
+                        function findMenuButton(panel) {
+                            if (!panel) return null;
+                            var buttons = Array.from(panel.querySelectorAll('button')).filter(function(b) { return b.offsetParent; });
+                            if (buttons.length === 0) return null;
+                            var minT = Math.min.apply(null, buttons.map(function(b) { return b.getBoundingClientRect().top; }));
+                            var topRow = buttons.filter(function(b) { return Math.abs(b.getBoundingClientRect().top - minT) < 10; });
+                            topRow.sort(function(a, b) { return b.getBoundingClientRect().right - a.getBoundingClientRect().right; });
+                            for (var i = 0; i < topRow.length; i++) {
+                                var br = topRow[i].getBoundingClientRect();
+                                if (br.width < 56 && br.height < 48) return topRow[i];
+                            }
+                            return topRow.length ? topRow[0] : null;
+                        }
+
+                        function clickMenuItemByText(keywords) {
+                            var all = document.querySelectorAll('button, [role="menuitem"], [role="option"], a, [class*="menu"] div, [class*="MenuItem"]');
+                            for (var i = 0; i < all.length; i++) {
+                                if (!all[i].offsetParent) continue;
+                                var tx = (all[i].textContent || '').replace(/\s+/g, ' ').trim();
+                                for (var k = 0; k < keywords.length; k++) {
+                                    if (tx === keywords[k] || (keywords[k].length > 2 && tx.indexOf(keywords[k]) >= 0)) {
+                                        clickElement(all[i]);
+                                        return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        }
+
+                        function clickTabIfNeeded() {
+                            var tabWords = [ ['Rules', '规则'], ['Workflows', '工作流'] ];
+                            for (var t = 0; t < tabWords.length; t++) {
+                                var kws = tabWords[t];
+                                var all = document.querySelectorAll('[role="tab"], button, [class*="tab"]');
+                                for (var i = 0; i < all.length; i++) {
+                                    if (!all[i].offsetParent) continue;
+                                    var tx = (all[i].textContent || '').trim();
+                                    for (var j = 0; j < kws.length; j++) {
+                                        if (tx === kws[j] || tx.indexOf(kws[j]) === 0) {
+                                            if (all[i].getAttribute('aria-selected') === 'false' || (all[i].getAttribute('data-state') && all[i].getAttribute('data-state') !== 'active')) {
+                                                clickElement(all[i]);
+                                            }
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                            return true;
+                        }
+
+                        function findGlobalTextarea() {
+                            var i, t, p, j;
+                            var labelWords = ['Global', '全局', 'Global Rule', 'Global rule'];
+                            var labs = document.querySelectorAll('div, span, p, label, h1, h2, h3, h4');
+                            for (i = 0; i < labs.length; i++) {
+                                if (!labs[i].offsetParent) continue;
+                                var te = (labs[i].textContent || '').replace(/\s+/g, ' ').trim();
+                                for (t = 0; t < labelWords.length; t++) {
+                                    if (te === labelWords[t] || (labelWords[t].length > 1 && te.indexOf(labelWords[t]) >= 0)) {
+                                        p = labs[i];
+                                        for (j = 0; j < 10 && p; j++) {
+                                            var ta = p.querySelector('textarea');
+                                            if (ta && ta.offsetParent) return ta;
+                                            p = p.parentElement;
+                                        }
+                                    }
+                                }
+                            }
+                            var tas = document.querySelectorAll('textarea');
+                            var best = null, bestArea = 0;
+                            for (i = 0; i < tas.length; i++) {
+                                if (!tas[i].offsetParent) continue;
+                                var r = tas[i].getBoundingClientRect();
+                                var ar = r.width * r.height;
+                                if (ar > 4000 && ar > bestArea) { best = tas[i]; bestArea = ar; }
+                            }
+                            return best;
+                        }
+
+                        function setTextareaValue(ta) {
+                            if (!ta) return false;
+                            ta.focus();
+                            var proto = window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : null;
+                            if (proto) {
+                                var d = Object.getOwnPropertyDescriptor(proto, 'value');
+                                if (d && d.set) d.set.call(ta, ruleText);
+                            } else {
+                                ta.value = ruleText;
+                            }
+                            ta.dispatchEvent(new Event('input', { bubbles: true }));
+                            ta.dispatchEvent(new Event('change', { bubbles: true }));
+                            return true;
+                        }
+
+                        var panel = findSidePanel();
+                        var mbtn = findMenuButton(panel);
+                        if (!mbtn) {
+                            return JSON.stringify({ ok: false, err: '找不到侧栏菜单（⋯）按钮' });
+                        }
+                        clickElement(mbtn);
+                        await sleep(400);
+
+                        var opened = clickMenuItemByText(['Customization', 'Customizations', '自定义', 'Customize', 'Customise']);
+                        if (!opened) {
+                            return JSON.stringify({ ok: false, err: '未找到 Customization 菜单项，请侧栏为英文/中文与当前版本一致' });
+                        }
+                        await sleep(550);
+                        clickTabIfNeeded();
+                        await sleep(250);
+
+                        var targetTa = findGlobalTextarea();
+                        if (!setTextareaValue(targetTa)) {
+                            return JSON.stringify({ ok: false, err: '未找到 Global 规则输入框' });
+                        }
+                        targetTa.dispatchEvent(new Event('blur', { bubbles: true }));
+                        return JSON.stringify({ ok: true });
+                    } catch (e) {
+                        return JSON.stringify({ ok: false, err: e && e.message ? e.message : String(e) });
+                    }
+                })()
+            """.trimIndent())
+            addProperty("awaitPromise", true)
+            addProperty("returnByValue", true)
+            addProperty("timeout", 25000)
+        }
+
+        val result = cdp.call("Runtime.evaluate", params)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val data = result.getOrThrow()
+        val value = data.getAsJsonObject("result")?.get("value")?.asString ?: ""
+        return try {
+            val json = JsonParser.parseString(value).asJsonObject
+            if (json.get("ok")?.asBoolean == true) CdpResult.Success(Unit)
+            else CdpResult.Error(json.get("err")?.asString ?: "保存全局规则失败")
+        } catch (e: Exception) {
+            CdpResult.Error("解析全局规则结果失败: $value")
         }
     }
 }

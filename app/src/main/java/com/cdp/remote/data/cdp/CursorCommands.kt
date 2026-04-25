@@ -195,6 +195,76 @@ class CursorCommands(cdp: ICdpClient, appName: String = "Cursor") : AntigravityC
     }
 
     /**
+     * 获取最后一条助手回复 — Cursor 专属覆写
+     *
+     * Cursor 的聊天 DOM 与 Antigravity 完全不同：
+     * - 消息对容器: `.composer-human-ai-pair-container`
+     * - 用户消息: `.composer-rendered-message.composer-sticky-human-message`
+     * - AI 回复: `.composer-rendered-message`（不带 sticky-human 标记）
+     * - 最终文本回复: 最后一个 AI `.composer-rendered-message` 中的 `.markdown-root`
+     *
+     * 继承的 `AntigravityCommands.getLastReply()` 查找 `[data-message-author-role]`
+     * 和 `select-text` + `leading-relaxed` 类，Cursor 中不存在这些，导致常常返回空。
+     */
+    override suspend fun getLastReply(): CdpResult<String> {
+        val result = cdp.evaluate("""
+            (function() {
+                try {
+                    // Cursor 不用 iframe，直接在主文档中查找
+                    var conv = document.querySelector('.conversations');
+                    if (!conv) {
+                        // 降级：尝试 composer-bar（非空）
+                        conv = document.querySelector('.composer-bar:not(.empty)');
+                    }
+                    if (!conv) return '';
+
+                    // 从最后一个 pair 的最后一个非人类 rendered-message 中提取 markdown
+                    var pairs = conv.querySelectorAll('.composer-human-ai-pair-container');
+                    for (var pi = pairs.length - 1; pi >= 0; pi--) {
+                        var pair = pairs[pi];
+                        var msgs = pair.querySelectorAll('.composer-rendered-message');
+                        // 从后往前找最后一个非人类消息
+                        for (var mi = msgs.length - 1; mi >= 0; mi--) {
+                            var msg = msgs[mi];
+                            // 跳过人类消息
+                            var cls = (msg.className || '').toString();
+                            if (cls.indexOf('composer-sticky-human-message') >= 0) continue;
+                            if (msg.querySelector('.composer-human-message')) continue;
+                            if (msg.querySelector('.human-message')) continue;
+
+                            // 优先取 markdown-root 的文本（最终的文字回复）
+                            var md = msg.querySelector('.markdown-root');
+                            if (md) {
+                                var t = (md.innerText || '').trim();
+                                if (t.length > 0) return t;
+                            }
+                            // 否则取整个消息的文本
+                            var t2 = (msg.innerText || '').trim();
+                            if (t2.length > 2) return t2;
+                        }
+                    }
+
+                    // 兜底：直接找最后一个 markdown-root
+                    var allMd = conv.querySelectorAll('.markdown-root');
+                    if (allMd.length > 0) {
+                        var last = allMd[allMd.length - 1];
+                        var t3 = (last.innerText || '').trim();
+                        if (t3.length > 0) return t3;
+                    }
+
+                    return '';
+                } catch (e) {
+                    return '';
+                }
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val text = result.getOrNull() ?: ""
+        return CdpResult.Success(text)
+    }
+
+    /**
      * 打开历史会话列表 — Cursor 专属
      * 按钮: `a[aria-label="Show Chat History"]` / class `codicon-history-two`
      */

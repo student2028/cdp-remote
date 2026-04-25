@@ -38,13 +38,18 @@ fun ActionToolbar(
     isGenerating: Boolean,
     tvMode: Boolean,
     currentModel: String,
+    isWindsurf: Boolean = false,
     onNewSession: () -> Unit,
     onStopGeneration: () -> Unit,
+    onCancelRunningTask: () -> Unit = {},
     onScrollUp: () -> Unit,
     onScrollDown: () -> Unit,
     onAcceptAll: () -> Unit,
     onRejectAll: () -> Unit,
     onSwitchModel: () -> Unit,
+    /** 反重力系：打开「全局规则」弹窗，经 CDP 写入 Customizations → Global */
+    showGlobalRuleButton: Boolean = false,
+    onGlobalRule: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -74,6 +79,17 @@ fun ActionToolbar(
                 iconColor = Accent,
                 onClick = onStopGeneration
             )
+            // Windsurf 专属：取消运行中任务按钮
+            // 不依赖 isGenerating（任务可能从 IDE 直接发起，手机端状态未同步）
+            if (isWindsurf) {
+                ToolbarBtn(
+                    icon = Icons.Default.Close,
+                    label = "取消任务",
+                    enabled = isConnected,
+                    iconColor = Color(0xFFE53935),
+                    onClick = onCancelRunningTask
+                )
+            }
             ToolbarBtn(
                 icon = Icons.Default.KeyboardArrowUp,
                 label = "上翻",
@@ -107,6 +123,15 @@ fun ActionToolbar(
                 iconColor = Primary,
                 onClick = onSwitchModel
             )
+            if (showGlobalRuleButton) {
+                ToolbarBtn(
+                    icon = Icons.Default.Tune,
+                    label = "全局",
+                    enabled = isConnected,
+                    iconColor = Color(0xFF7E57C2),
+                    onClick = onGlobalRule
+                )
+            }
         }
     }
 }

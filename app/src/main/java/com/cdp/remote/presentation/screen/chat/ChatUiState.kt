@@ -40,5 +40,7 @@ data class ChatUiState(
     val pendingOtaRelayUrl: String? = null,
     // Keep legacy fields for backward compat during transition
     val pendingImageBase64: String? = null,
-    val pendingImageMimeType: String? = null
+    val pendingImageMimeType: String? = null,
+    /** 当前是否为 Windsurf IDE，用于显示专属功能（如取消任务按钮） */
+    val isWindsurf: Boolean = false
 )

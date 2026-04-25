@@ -192,6 +192,92 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // WindsurfCommands — cancelRunningTask (多级降级: hover:text-red-500 → aria-label/title → textContent)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    fun `Windsurf cancelRunningTask uses hover-text-red-500 selector`() = runBlocking {
+        mockServer.onRequest { req ->
+            val method = req.get("method")?.asString
+            if (method == "Runtime.evaluate") {
+                JsonObject().apply {
+                    add("result", JsonObject().apply {
+                        addProperty("type", "string")
+                        addProperty("value", "clicked")
+                    })
+                }
+            } else null
+        }
+
+        val result = windsurf.cancelRunningTask()
+        assertTrue(result.isSuccess)
+
+        val js = mockServer.receivedExpressions
+        assertTrue("应包含 hover:text-red-500 选择器",
+            js.any { it.contains("hover:text-red-500") })
+        assertTrue("应检查 cascadePanel",
+            js.any { it.contains("windsurf.cascadePanel") })
+        assertTrue("应检查 lucide SVG 图标",
+            js.any { it.contains("lucide") || (it.contains("circle") && it.contains("rect")) })
+        // 验证新增的降级策略也在 JS 中存在
+        assertTrue("应包含 aria-label stop/abort 降级",
+            js.any { it.contains("aria-label") && (it.contains("stop") || it.contains("abort")) })
+        assertTrue("应包含 title 属性降级",
+            js.any { it.contains("title") && it.contains("cancel") })
+        assertTrue("应包含 textContent 文本降级",
+            js.any { it.contains("'cancel'") || it.contains("'取消'") })
+    }
+
+    @Test
+    fun `Windsurf cancelRunningTask returns error when no panel`() = runBlocking {
+        mockServer.onRequest { req ->
+            val method = req.get("method")?.asString
+            if (method == "Runtime.evaluate") {
+                JsonObject().apply {
+                    add("result", JsonObject().apply {
+                        addProperty("type", "string")
+                        addProperty("value", "no-panel")
+                    })
+                }
+            } else null
+        }
+
+        val result = windsurf.cancelRunningTask()
+        assertTrue("无面板时应返回 Error", result is CdpResult.Error)
+        val msg = (result as CdpResult.Error).message
+        assertTrue("错误消息应提及面板", msg.contains("面板"))
+    }
+
+    @Test
+    fun `Windsurf cancelRunningTask returns descriptive error when no cancel button`() = runBlocking {
+        mockServer.onRequest { req ->
+            val method = req.get("method")?.asString
+            if (method == "Runtime.evaluate") {
+                JsonObject().apply {
+                    add("result", JsonObject().apply {
+                        addProperty("type", "string")
+                        addProperty("value", "no-cancel-btn")
+                    })
+                }
+            } else null
+        }
+
+        val result = windsurf.cancelRunningTask()
+        assertTrue("无取消按钮时应返回 Error", result is CdpResult.Error)
+        val msg = (result as CdpResult.Error).message
+        assertTrue("错误消息应提示确认任务状态", msg.contains("确认") || msg.contains("取消按钮"))
+    }
+
+    @Test
+    fun `AntigravityCommands cancelRunningTask returns not supported by default`() = runBlocking {
+        val baseCommands = AntigravityCommands(cdpClient, "Test")
+        val result = baseCommands.cancelRunningTask()
+        assertTrue("基类应返回不支持的错误", result is CdpResult.Error)
+        val msg = (result as CdpResult.Error).message
+        assertTrue("错误消息应提及不支持", msg.contains("不支持") || msg.contains("not supported"))
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // WindsurfCommands — getRecentSessionsList (标签栏)
     // ═══════════════════════════════════════════════════════════════
 

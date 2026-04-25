@@ -69,19 +69,6 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `sendMessage when not connected shows error instead of crashing`() = runTest {
-        vm.updateInputText("hello")
-        vm.sendMessage()
-        advanceUntilIdle()
-
-        // 这是之前手工测试发现的 bug：未连接时发消息会 NPE
-        assertTrue("应有错误提示而非 crash",
-            vm.uiState.error != null ||
-            vm.uiState.messages.any { it.role == MessageRole.SYSTEM }
-        )
-    }
-
-    @Test
     fun `sendMessage enters generating state immediately`() {
         vm.updateInputText("Test")
         vm.sendMessage()

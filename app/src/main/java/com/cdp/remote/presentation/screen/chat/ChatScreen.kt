@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.cdp.remote.data.AppOrderStore
 import com.cdp.remote.data.cdp.ConnectionState
 import com.cdp.remote.data.cdp.ElectronAppType
 import com.cdp.remote.data.cdp.RELAY_OTA_HTTP_PORT
@@ -45,6 +46,48 @@ import com.cdp.remote.presentation.screen.chat.components.InputBar
 import com.cdp.remote.presentation.screen.chat.components.MessageBubble
 import com.cdp.remote.presentation.screen.chat.components.TvLiveView
 import kotlinx.coroutines.launch
+
+/**
+ * Cursor 桌面端「模型选择器」预置列表。
+ *
+ * **设计原则**：故意**只保留品牌/系列级关键词**，不写死版本号（如 `GPT-5.5`、`Sonnet 4.6`）。
+ * Cursor 每隔几周就会上新小版本，写死版本号会导致「菜单里只剩新版 → 旧版 key 匹配不到 → 切换失败」
+ * 这种低级回归（参见 2026-04 的 `GPT-5.4 → GPT-5.5` 事故）。
+ *
+ * 列表中的字符串既作为按钮显示文案，也作为 [com.cdp.remote.data.cdp.CursorCommands.switchModel]
+ * 的关键词参数（子串匹配菜单 `<li>` 的 textContent，不区分大小写）。
+ * 每一项必须在当前 [CURSOR_PRESET_CANONICAL_NAMES] 中**唯一**命中 1 行，否则行为不确定。
+ *
+ * 维护方式：当 Cursor 上线**新品牌**（不是小版本升级，而是全新模型系列）时，跑一遍
+ * `~/.agents/skills/cursor/scripts/cursor_dump_model_picker_dom.js` 拿到最新菜单，
+ * 同步更新本列表与 [CURSOR_PRESET_CANONICAL_NAMES]。
+ */
+val CURSOR_PRESET_MODELS: List<String> = listOf(
+    "Auto",
+    "Premium",
+    // Composer 同时存在 2.x / 1.5 两档，必须保留区分号
+    "Composer 2",
+    "Composer 1.5",
+    "GPT",
+    "Codex",
+    "Sonnet",
+    "Opus"
+)
+
+/**
+ * 当前 Cursor 模型选择菜单的「真实展示名」（textContent，已折叠空白），
+ * 用于校验 [CURSOR_PRESET_MODELS] 中的每一项都能在菜单里命中。
+ */
+val CURSOR_PRESET_CANONICAL_NAMES: List<String> = listOf(
+    "Auto Efficiency",
+    "Premium Intelligence",
+    "Composer 2 Fast",
+    "Composer 1.5",
+    "GPT-5.5 Medium",
+    "Codex 5.3 Medium",
+    "Sonnet 4.6 Medium",
+    "Opus 4.7 Extra High"
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +127,9 @@ fun ChatScreen(
     var showModelDialog by remember { mutableStateOf(false) }
     var showScreenshotDialog by remember { mutableStateOf(false) }
     var showSessionDialog by remember { mutableStateOf(false) }
+    var showGlobalRuleDialog by remember { mutableStateOf(false) }
+    var globalRuleDraft by remember { mutableStateOf("") }
+    val showAntigravityGlobalRule = appName.contains("Antigravity", ignoreCase = true)
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -196,7 +242,11 @@ fun ChatScreen(
                         if (state.availableApps.isEmpty()) {
                             DropdownMenuItem(text = { Text("加载中...") }, onClick = {})
                         } else {
-                            state.availableApps.filter { it.isWorkbench }.forEach { page ->
+                            val hostAddr = "$hostIp:$hostPort"
+                            val sortedMenuApps = AppOrderStore.sortApps(
+                                hostAddr, state.availableApps.filter { it.isWorkbench }
+                            )
+                            sortedMenuApps.forEach { page ->
                                 DropdownMenuItem(
                                     text = { 
                                         val portLabel = page.cdpPort?.let { ":$it " } ?: ""
@@ -223,13 +273,17 @@ fun ChatScreen(
                     isGenerating = state.isGenerating,
                     tvMode = state.tvMode,
                     currentModel = state.currentModel,
+                    isWindsurf = state.isWindsurf,
                     onNewSession = { viewModel.startNewSession() },
                     onStopGeneration = { viewModel.stopGeneration() },
+                    onCancelRunningTask = { viewModel.cancelRunningTask() },
                     onScrollUp = { viewModel.scrollUp() },
                     onScrollDown = { viewModel.scrollDown() },
                     onAcceptAll = { viewModel.acceptAll() },
                     onRejectAll = { viewModel.rejectAll() },
-                    onSwitchModel = { showModelDialog = true }
+                    onSwitchModel = { showModelDialog = true },
+                    showGlobalRuleButton = showAntigravityGlobalRule,
+                    onGlobalRule = { showGlobalRuleDialog = true }
                 )
                 InputBar(
                     text = state.inputText,
@@ -332,8 +386,11 @@ fun ChatScreen(
                 )
             }
 
-            // 浮动上下切换按钮
-            val workbenches = state.availableApps.filter { it.isWorkbench }
+            // 浮动上下切换按钮（按主页拖拽排序顺序）
+            val hostAddr = "$hostIp:$hostPort"
+            val workbenches = AppOrderStore.sortApps(
+                hostAddr, state.availableApps.filter { it.isWorkbench }
+            )
             if (workbenches.size > 1) {
                 val currentIndex = workbenches.indexOfFirst { it.webSocketDebuggerUrl == wsUrl }
                 if (currentIndex >= 0) {
@@ -390,6 +447,45 @@ fun ChatScreen(
                 showModelDialog = false
                 viewModel.onModelSwitchDialogClosed()
                 viewModel.switchModel(model)
+            }
+        )
+    }
+
+    // 反重力：全局规则（对端侧栏 Customizations → Global，经 CDP 远程写入）
+    if (showGlobalRuleDialog) {
+        AlertDialog(
+            onDismissRequest = { showGlobalRuleDialog = false },
+            title = { Text("全局规则") },
+            text = {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        "将写入对端反重力：侧栏 ⋯ → Customization → Rules → Global，与在电脑上操作等效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = globalRuleDraft,
+                        onValueChange = { globalRuleDraft = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp, max = 360.dp),
+                        minLines = 4,
+                        maxLines = 16,
+                        placeholder = { Text("例如：使用中文回复…") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showGlobalRuleDialog = false
+                        viewModel.applyGlobalAgentRule(globalRuleDraft)
+                    }
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGlobalRuleDialog = false }) { Text("取消") }
             }
         )
     }
@@ -486,7 +582,7 @@ fun ModelSwitchDialog(
     onSelect: (String) -> Unit
 ) {
     val isCursor = appName.contains("Cursor", ignoreCase = true)
-    val cursorFixedModels = listOf("Opus", "GPT", "Auto", "Composer 2")
+    val cursorFixedModels = CURSOR_PRESET_MODELS
 
     AlertDialog(
         onDismissRequest = onDismiss,

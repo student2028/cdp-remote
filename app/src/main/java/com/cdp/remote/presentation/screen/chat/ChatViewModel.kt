@@ -32,6 +32,7 @@ class ChatViewModel(
     private var pollCount: Int = 0
     private var tvJob: Job? = null
     private var reconnectJob: Job? = null
+    private var errorWatchdogJob: Job? = null
     private var reconnectAttempts: Int = 0
 
     // ─── Connection ─────────────────────────────────────────────────
@@ -58,6 +59,9 @@ class ChatViewModel(
                     for (targetElem in targetsArray) {
                         val target = targetElem.asJsonObject
                         val pagesArray = target.getAsJsonArray("pages") ?: continue
+                        // target.appName 是中继按端口映射出的**权威** IDE 标识；走唯一通道
+                        // ElectronAppType.fromAppName 转成枚举一次性钉死，下游不再做任何推断。
+                        val pageAppType = ElectronAppType.fromAppName(target.get("appName")?.asString)
                         for (pageElem in pagesArray) {
                             val obj = pageElem.asJsonObject
                             allPages.add(CdpPage(
@@ -66,7 +70,8 @@ class ChatViewModel(
                                 title = obj.get("title")?.asString ?: "",
                                 url = obj.get("url")?.asString ?: "",
                                 webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
-                                devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: ""
+                                devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
+                                appType = pageAppType
                             ))
                         }
                     }
@@ -135,12 +140,13 @@ class ChatViewModel(
                                else AntigravityCommands(cdpClient, appName)
                     codexCommands = null
                 }
-                uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null)
+                uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null, isWindsurf = isWindsurf)
                 reconnectAttempts = 0
                 addSystemMessage("已连接到 $appName")
                 fetchAvailableApps(host.ip, host.port)
                 startBackgroundSync()
                 startTvMode()
+                startErrorWatchdog()
             }
             is CdpResult.Error -> {
                 uiState = uiState.copy(connectionState = ConnectionState.ERROR, error = result.message)
@@ -240,6 +246,84 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 向任意端口的 IDE 发送消息（Orchestra 跨 IDE 协作）。
+     *
+     * 流程：
+     * 1. 通过 relay `/cdp/{port}/json` 获取目标 IDE 的 workbench 页面；
+     * 2. 用临时 CdpClient 直连该页面的 webSocketDebuggerUrl；
+     * 3. 复用 AntigravityCommands.sendMessage 输入并提交消息；
+     * 4. finally 中断开临时连接，防止泄漏。
+     */
+    fun sendToIde(port: Int, message: String) {
+        viewModelScope.launch {
+            addSystemMessage("正在向 IDE(:$port) 发送消息...")
+            val host = connectHost
+            if (host == null) {
+                addSystemMessage("发送失败: 当前未连接 relay ❌")
+                return@launch
+            }
+            var tempClient: ICdpClient? = null
+            try {
+                // 1. 通过 relay 发现目标 IDE 的 workbench 页面
+                val wsUrl = withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("http://${host.ip}:${host.port}/cdp/$port/json")
+                        .build()
+                    val response = httpClient.newCall(request).execute()
+                    val body = response.body?.string()
+                        ?: throw IllegalStateException("relay 返回空响应")
+                    val parsed = com.google.gson.JsonParser.parseString(body)
+                    val pagesArray = when {
+                        parsed.isJsonArray -> parsed.asJsonArray
+                        parsed.isJsonObject && parsed.asJsonObject.has("pages") ->
+                            parsed.asJsonObject.getAsJsonArray("pages")
+                        else -> throw IllegalStateException("relay 返回格式异常")
+                    }
+                    var found: String? = null
+                    for (elem in pagesArray) {
+                        val obj = elem.asJsonObject
+                        val type = obj.get("type")?.asString ?: ""
+                        val url = obj.get("url")?.asString ?: ""
+                        if (type == "page" && url.contains("workbench")) {
+                            found = obj.get("webSocketDebuggerUrl")?.asString
+                            if (!found.isNullOrBlank()) break
+                        }
+                    }
+                    found ?: throw IllegalStateException("未找到 workbench 页面")
+                }
+
+                // 2. 创建临时 CdpClient 连接
+                val client = CdpClient()
+                tempClient = client
+                val connectResult = client.connectDirect(wsUrl)
+                if (connectResult is CdpResult.Error) {
+                    throw IllegalStateException("连接目标 IDE 失败: ${connectResult.message}")
+                }
+
+                // 3. 使用 AntigravityCommands 发送消息
+                val tempCommands = AntigravityCommands(client, "remote")
+                val sendResult = tempCommands.sendMessage(message)
+                if (sendResult is CdpResult.Error) {
+                    throw IllegalStateException("发送消息失败: ${sendResult.message}")
+                }
+
+                // 4. 等待片刻让目标 IDE 处理
+                delay(1000)
+
+                // 5. UI 状态
+                addSystemMessage("已向 IDE(:$port) 发送消息 ✅")
+            } catch (e: Exception) {
+                Log.e(TAG, "sendToIde 失败", e)
+                addSystemMessage("向 IDE(:$port) 发送失败: ${e.message} ❌")
+            } finally {
+                try { tempClient?.disconnect() } catch (e: Exception) {
+                    Log.w(TAG, "断开临时连接异常: ${e.message}")
+                }
+            }
+        }
+    }
+
     private fun hasCommands(): Boolean = when {
         isCodex -> codexCommands != null
         else -> commands != null
@@ -304,14 +388,21 @@ class ChatViewModel(
 
                     if (!isStillGenerating) {
                         // Antigravity 独有：生成结束后最终错误检查
+                        // 多次尝试，因为 Retry 按钮可能还没渲染出来
                         if (!isCodex && !isWindsurf) {
-                            val retryResult = commands!!.checkAndRetryIfBusy()
-                            if (retryResult is CdpResult.Success && retryResult.data) {
-                                addSystemMessage("检测到错误，已自动重试 🔄")
-                                pollCount = 0
-                                delay(2000)
-                                continue
+                            var retried = false
+                            for (retryAttempt in 1..3) {
+                                val retryResult = commands!!.checkAndRetryIfBusy()
+                                if (retryResult is CdpResult.Success && retryResult.data) {
+                                    addSystemMessage("检测到错误，已自动重试 🔄 (第${retryAttempt}次检测)")
+                                    pollCount = 0
+                                    retried = true
+                                    delay(2000)
+                                    break
+                                }
+                                delay(1000) // 等待 Retry 按钮渲染
                             }
+                            if (retried) continue
                         }
 
                         val finalMsgs = uiState.messages.toMutableList()
@@ -464,6 +555,34 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 取消 Windsurf 中正在运行的长时间任务（如 Step、Tool 执行）
+     * 仅在 Windsurf IDE 中有效
+     */
+    fun cancelRunningTask() {
+        viewModelScope.launch {
+            val cmds = commands
+            if (cmds == null || !isWindsurf) {
+                addSystemMessage("取消任务仅在 Windsurf IDE 中可用")
+                return@launch
+            }
+            val result = cmds.cancelRunningTask()
+            when (result) {
+                is CdpResult.Success -> {
+                    addSystemMessage("已取消运行中的任务 ⛔")
+                    // 等待 Windsurf UI 响应取消操作
+                    delay(500)
+                    // 取消后如果仍在生成状态，同步重置
+                    if (uiState.isGenerating) {
+                        pollJob?.cancel()
+                        uiState = uiState.copy(isGenerating = false)
+                    }
+                }
+                is CdpResult.Error -> addSystemMessage("取消任务失败: ${result.message}")
+            }
+        }
+    }
+
     fun acceptAll() {
         viewModelScope.launch {
             if (!hasCommands()) return@launch
@@ -488,6 +607,27 @@ class ChatViewModel(
             when (result) {
                 is CdpResult.Success -> addSystemMessage("已拒绝变更 ❌")
                 is CdpResult.Error -> addSystemMessage("拒绝失败: ${result.message}")
+            }
+        }
+    }
+
+    /**
+     * 将文本写入对端侧栏 **Customizations → Rules → Global**（与在反重力里点开并编辑等效，见 [AntigravityCommands.setGlobalAgentRule]）。
+     */
+    fun applyGlobalAgentRule(text: String) {
+        viewModelScope.launch {
+            if (isCodex) {
+                addSystemMessage("Codex 无侧栏全局规则，已跳过 ❌")
+                return@launch
+            }
+            if (!hasCommands()) {
+                addSystemMessage("未连接 IDE ❌")
+                return@launch
+            }
+            addSystemMessage("正在写入全局规则（远程 CDP）…")
+            when (val result = commands!!.setGlobalAgentRule(text)) {
+                is CdpResult.Success -> addSystemMessage("全局规则已保存 ✓")
+                is CdpResult.Error -> addSystemMessage("全局规则失败: ${result.message} ❌")
             }
         }
     }
@@ -560,6 +700,8 @@ class ChatViewModel(
                     for (var di = 0; di < all.length; di++) {
                         var doc = all[di];
                         var p = doc.querySelector('.antigravity-agent-side-panel')
+                          || doc.querySelector('.conversations')
+                          || doc.querySelector('.composer-bar:not(.empty)')
                           || doc.querySelector('[class*="interactive-session"]')
                           || doc.querySelector('[class*="aichat"]')
                           || doc.querySelector('[class*="composer"]')
@@ -598,12 +740,16 @@ class ChatViewModel(
 
     private suspend fun scrollWithMouse(direction: String) {
         val (x, y) = getTargetCoords()
-        val deltaY = if (direction == "up") -300.0 else 300.0
-        
-        // 1. Move mouse to the calculated coordinates
+        val deltaY = if (direction == "up") -600.0 else 600.0
+
+        // 1. Click to focus the chat area first (required for Cursor's Monaco virtual scroll)
         cdpClient.dispatchMouseEvent("mouseMoved", x, y, button = "none", clickCount = 0)
-        delay(50)
-        
+        delay(30)
+        cdpClient.dispatchMouseEvent("mousePressed", x, y, button = "left", clickCount = 1)
+        delay(30)
+        cdpClient.dispatchMouseEvent("mouseReleased", x, y, button = "left", clickCount = 1)
+        delay(80)
+
         // 2. Dispatch native mouse wheel event
         cdpClient.dispatchScrollEvent(deltaY, x, y)
     }
@@ -708,6 +854,37 @@ class ChatViewModel(
         pollJob?.cancel()
         tvJob?.cancel()
         reconnectJob?.cancel()
+        errorWatchdogJob?.cancel()
+    }
+
+    private fun startErrorWatchdog() {
+        errorWatchdogJob?.cancel()
+        errorWatchdogJob = viewModelScope.launch {
+            while (isActive) {
+                delay(8000)
+                // 只在非 Antigravity 连接中跳过
+                if (isCodex || isWindsurf) continue
+                // 轮询已在管的时候跳过
+                if (uiState.isGenerating) continue
+                // 未连接时跳过
+                if (uiState.connectionState != ConnectionState.CONNECTED) continue
+                if (commands == null) continue
+
+                try {
+                    val retryResult = commands!!.checkAndRetryIfBusy()
+                    if (retryResult is CdpResult.Success && retryResult.data) {
+                        addSystemMessage("看门狗检测到错误，已自动重试 🔄")
+                        // 触发后启动轮询跟踪
+                        uiState = uiState.copy(isGenerating = true)
+                        lastReplyText = ""
+                        pollCount = 0
+                        startBackgroundSync()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "看门狗检查异常: ${e.message}")
+                }
+            }
+        }
     }
 
     override fun onCleared() {

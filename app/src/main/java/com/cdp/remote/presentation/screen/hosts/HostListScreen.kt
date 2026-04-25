@@ -14,12 +14,16 @@ import kotlinx.coroutines.launch
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -29,9 +33,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cdp.remote.data.cdp.CdpPage
@@ -46,6 +54,8 @@ import com.cdp.remote.presentation.theme.SuccessGreen
 @Composable
 fun HostListScreen(
     onNavigateToChat: (hostIp: String, hostPort: Int, wsUrl: String, appName: String) -> Unit,
+    onNavigateToScheduler: (hostIp: String, hostPort: Int) -> Unit = { _, _ -> },
+    onNavigateToWorkflow: (hostIp: String, hostPort: Int) -> Unit = { _, _ -> },
     viewModel: HostListViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -121,6 +131,26 @@ fun HostListScreen(
             TopAppBar(
                 title = { Text("CDP Remote", style = MaterialTheme.typography.headlineMedium) },
                 actions = {
+                    IconButton(onClick = {
+                        val host = state.hosts.firstOrNull()
+                        if (host != null) onNavigateToWorkflow(host.ip, host.port)
+                    }) {
+                        Icon(
+                            Icons.Default.AccountTree,
+                            contentDescription = "Git 流水线",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(onClick = {
+                        val host = state.hosts.firstOrNull()
+                        if (host != null) onNavigateToScheduler(host.ip, host.port)
+                    }) {
+                        Icon(
+                            Icons.Default.Schedule,
+                            contentDescription = "任务调度",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(onClick = { viewModel.toggleTvMode() }) {
                         Icon(
                             Icons.Default.Tv,
@@ -219,6 +249,10 @@ fun HostListScreen(
                         if (cdpPort != null) {
                             viewModel.killPortProcess(host.ip, host.port, cdpPort)
                         }
+                    },
+                    appOrder = state.appOrder[host.address] ?: emptyList(),
+                    onReorder = { orderedWsUrls ->
+                        viewModel.reorderApps(host.address, orderedWsUrls)
                     }
                 )
             }
@@ -282,6 +316,7 @@ fun HostListScreen(
     // Launch IDE Dialog
     if (state.showLaunchDialog) {
         LaunchIdeDialog(
+            launchStep = state.launchStep,
             launchStatus = state.launchStatus,
             cwd = launchCwd,
             onCwdChange = { launchCwd = it },
@@ -392,8 +427,20 @@ fun HostCard(
     onRemove: () -> Unit,
     onAppClick: (CdpPage) -> Unit,
     onAppClose: (CdpPage) -> Unit,
-    onAppKill: (CdpPage) -> Unit = {}
+    onAppKill: (CdpPage) -> Unit = {},
+    appOrder: List<String> = emptyList(),
+    onReorder: (List<String>) -> Unit = {}
 ) {
+    val workbenchApps = apps.filter { it.isWorkbench }
+    // 按用户自定义顺序排序；未出现在 appOrder 中的排在末尾
+    val sortedApps = remember(workbenchApps, appOrder) {
+        if (appOrder.isEmpty()) workbenchApps
+        else {
+            val orderMap = appOrder.withIndex().associate { (i, ws) -> ws to i }
+            workbenchApps.sortedBy { orderMap[it.webSocketDebuggerUrl] ?: Int.MAX_VALUE }
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp)
@@ -436,14 +483,19 @@ fun HostCard(
                 }
             }
 
-            // Discovered apps
-            if (apps.isNotEmpty()) {
+            // Discovered apps — drag-to-reorder
+            if (sortedApps.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Divider()
                 Spacer(modifier = Modifier.height(8.dp))
-                apps.filter { it.isWorkbench }.forEach { page ->
-                    AppItem(page = page, onClick = { onAppClick(page) }, onCloseClick = { onAppClose(page) })
-                }
+                DraggableAppList(
+                    apps = sortedApps,
+                    onAppClick = onAppClick,
+                    onAppClose = onAppClose,
+                    onReorder = { reordered ->
+                        onReorder(reordered.map { it.webSocketDebuggerUrl })
+                    }
+                )
             } else if (isScanning) {
                 Spacer(modifier = Modifier.height(8.dp))
                 CircularProgressIndicator(modifier = Modifier.size(20.dp))
@@ -459,8 +511,103 @@ fun HostCard(
     }
 }
 
+/**
+ * 支持长按拖拽排序的 IDE 应用列表。
+ * 拖拽时被拖项半透明 + 缩放，其余项自动让位。
+ */
 @Composable
-fun AppItem(page: CdpPage, onClick: () -> Unit, onCloseClick: () -> Unit) {
+fun DraggableAppList(
+    apps: List<CdpPage>,
+    onAppClick: (CdpPage) -> Unit,
+    onAppClose: (CdpPage) -> Unit,
+    onReorder: (List<CdpPage>) -> Unit
+) {
+    var draggedIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    var currentList by remember(apps) { mutableStateOf(apps) }
+    val itemHeightPx = remember { mutableFloatStateOf(0f) }
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        currentList.forEachIndexed { index, page ->
+            val isDragged = draggedIndex == index
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coords ->
+                        if (itemHeightPx.floatValue == 0f) {
+                            itemHeightPx.floatValue = coords.size.height.toFloat()
+                        }
+                    }
+                    .then(
+                        if (isDragged)
+                            Modifier
+                                .zIndex(10f)
+                                .graphicsLayer {
+                                    translationY = dragOffset
+                                    scaleX = 1.04f
+                                    scaleY = 1.04f
+                                    alpha = 0.85f
+                                    shadowElevation = 12f
+                                    shape = RoundedCornerShape(10.dp)
+                                    clip = true
+                                }
+                        else Modifier
+                            .zIndex(0f)
+                            .graphicsLayer {
+                                // 非拖拽项自然位置
+                                alpha = if (draggedIndex != null) 0.7f else 1f
+                            }
+                    )
+                    .pointerInput(Unit) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                draggedIndex = index
+                                dragOffset = 0f
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                dragOffset += dragAmount.y
+                                // 计算目标位置
+                                if (itemHeightPx.floatValue > 0f) {
+                                    val targetIndex = (index + (dragOffset / (itemHeightPx.floatValue + 6.dp.toPx())).toInt())
+                                        .coerceIn(0, currentList.size - 1)
+                                    if (targetIndex != index && draggedIndex == index) {
+                                        val newList = currentList.toMutableList()
+                                        val item = newList.removeAt(index)
+                                        newList.add(targetIndex, item)
+                                        currentList = newList
+                                        draggedIndex = targetIndex
+                                        dragOffset = 0f
+                                    }
+                                }
+                            },
+                            onDragEnd = {
+                                draggedIndex = null
+                                dragOffset = 0f
+                                onReorder(currentList)
+                            },
+                            onDragCancel = {
+                                draggedIndex = null
+                                dragOffset = 0f
+                            }
+                        )
+                    }
+            ) {
+                AppItem(
+                    page = page,
+                    onClick = { onAppClick(page) },
+                    onCloseClick = { onAppClose(page) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AppItem(page: CdpPage, onClick: () -> Unit, onCloseClick: () -> Unit, showDragHandle: Boolean = false) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -470,6 +617,16 @@ fun AppItem(page: CdpPage, onClick: () -> Unit, onCloseClick: () -> Unit) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Drag handle (长按拖拽提示)
+        if (showDragHandle) {
+            Icon(
+                Icons.Default.DragHandle,
+                contentDescription = "长按拖拽排序",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+        }
         // App icon with tinted background circle
         Box(
             modifier = Modifier
@@ -731,9 +888,59 @@ fun RemoteFolderBrowserDialog(
     }
 }
 
+private data class IdeAppOption(
+    val name: String,
+    val defaultPort: Int,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val iconColor: Color,
+    val bgColor: Color
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IdeAppCard(
+    app: IdeAppOption,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .then(
+                if (isSelected) Modifier.border(2.dp, app.iconColor, RoundedCornerShape(16.dp))
+                else Modifier
+            ),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = app.bgColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 2.dp else 0.dp),
+        onClick = onClick
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(app.iconColor.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(app.icon, contentDescription = null, tint = app.iconColor, modifier = Modifier.size(20.dp))
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(app.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+            Text(":${app.defaultPort}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LaunchIdeDialog(
+    launchStep: LaunchStep = LaunchStep.IDLE,
     launchStatus: String?,
     cwd: String,
     onCwdChange: (String) -> Unit,
@@ -743,183 +950,205 @@ fun LaunchIdeDialog(
     cwdHistory: List<CwdHistoryItem> = emptyList(),
     onHistoryDelete: (String) -> Unit = {}
 ) {
-    val appOptions = listOf("Antigravity", "Codex", "Windsurf", "Cursor")
-    var selectedApp by remember { mutableStateOf(appOptions[0]) }
-    var expanded by remember { mutableStateOf(false) }
+    val purpleAccent = Color(0xFF6C5CE7)
+    val appOptions = remember {
+        listOf(
+            IdeAppOption("Antigravity", 9333, Icons.Default.AutoAwesome, Color(0xFF6C5CE7), Color(0xFFF3F0FF)),
+            IdeAppOption("Windsurf", 9444, Icons.Default.Air, Color(0xFF00B894), Color(0xFFECFDF5)),
+            IdeAppOption("Cursor", 9555, Icons.Default.Mouse, Color(0xFF00CEC9), Color(0xFFE0F7FA)),
+            IdeAppOption("Codex", 9666, Icons.Default.Code, Color(0xFFE17055), Color(0xFFFFF0ED))
+        )
+    }
+    var selectedIndex by remember { mutableStateOf(0) }
     var cdpPort by remember { mutableStateOf("9333") }
+    
+    // 记录最近一次启动时的状态，若用户切换选项则自动重置成功状态
+    var launchedIndex by remember { mutableStateOf(-1) }
+    var launchedPort by remember { mutableStateOf<String?>(null) }
+    var launchedCwd by remember { mutableStateOf<String?>(null) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            modifier = Modifier.fillMaxWidth()
+    val scrollState = rememberScrollState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        dragHandle = { BottomSheetDefaults.DragHandle() }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 32.dp)
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text(
-                    text = "远程启动 IDE",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(12.dp))
+            // ── App Grid (2×2) ──
 
-                // App name dropdown
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = !expanded }
-                ) {
-                    OutlinedTextField(
-                        value = selectedApp,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("应用名称") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        singleLine = true
+            // (app grid continued)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                appOptions.take(2).forEachIndexed { i, app ->
+                    IdeAppCard(
+                        app = app, isSelected = selectedIndex == i,
+                        onClick = { selectedIndex = i; cdpPort = app.defaultPort.toString() },
+                        modifier = Modifier.weight(1f)
                     )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                appOptions.drop(2).forEachIndexed { i, app ->
+                    val idx = i + 2
+                    IdeAppCard(
+                        app = app, isSelected = selectedIndex == idx,
+                        onClick = { selectedIndex = idx; cdpPort = app.defaultPort.toString() },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── 工作目录 ──
+            Text("工作目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = cwd,
+                    onValueChange = onCwdChange,
+                    placeholder = { Text("选择或输入路径…", style = MaterialTheme.typography.bodySmall) },
+                    modifier = Modifier.weight(1f).height(46.dp),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(onClick = onBrowseFolder) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = "浏览", tint = purpleAccent)
+                }
+            }
+
+            // ── 最近使用 ──
+            if (cwdHistory.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(20.dp))
+                Text(
+                    "最近使用",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                cwdHistory.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                onCwdChange(item.path)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        appOptions.forEach { app ->
-                            DropdownMenuItem(
-                                text = { Text(app) },
-                                onClick = {
-                                    selectedApp = app
-                                    expanded = false
-                                    cdpPort = when (app) {
-                                        "Antigravity" -> "9333"
-                                        "Windsurf" -> "9444"
-                                        "Cursor" -> "9555"
-                                        "Codex" -> "9666"
-                                        else -> "9444"
-                                    }
-                                }
+                        Icon(
+                            Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = purpleAccent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            val parts = item.path.split("/").filter { it.isNotEmpty() }
+                            val shortPath = if (parts.size > 2) {
+                                ".../${parts.takeLast(2).joinToString("/")}"
+                            } else {
+                                item.path
+                            }
+                            Text(shortPath, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable { onHistoryDelete(item.path) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "删除",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                modifier = Modifier.size(14.dp)
                             )
                         }
                     }
                 }
+            }
+
+            // ── CDP 端口（直接显示，不折叠） ──
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = cdpPort,
+                onValueChange = { cdpPort = it },
+                label = { Text("CDP 端口", style = MaterialTheme.typography.bodySmall) },
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            // ── 状态 ──
+            launchStatus?.let {
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = cdpPort,
-                    onValueChange = { cdpPort = it },
-                    label = { Text("CDP 端口") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = cwd,
-                        onValueChange = onCwdChange,
-                        label = { Text("工作目录") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    IconButton(onClick = onBrowseFolder) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = "浏览")
-                    }
-                }
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
 
-                // ── 历史目录列表 ──
-                if (cwdHistory.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "历史目录",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 200.dp)
-                    ) {
-                        items(cwdHistory) { item ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        onCwdChange(item.path)
-                                    }
-                                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Folder,
-                                    contentDescription = null,
-                                    tint = AccentCyan,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    // 显示目录路径的最后两段以提高辨识度
-                                    val parts = item.path.split("/").filter { it.isNotEmpty() }
-                                    val shortPath = if (parts.size > 2) {
-                                        ".../${parts.takeLast(2).joinToString("/")}"
-                                    } else {
-                                        item.path
-                                    }
-                                    Text(
-                                        text = shortPath,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    if (item.app.isNotEmpty()) {
-                                        Text(
-                                            text = item.app,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                                // 删除按钮
-                                Box(
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .clickable { onHistoryDelete(item.path) },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = "删除",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                launchStatus?.let {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                // ── 底部按钮 ──
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onDismiss) { Text("取消") }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    TextButton(onClick = {
-                        onLaunch(selectedApp, cdpPort.toIntOrNull() ?: 9444, cwd)
-                    }) { Text("启动") }
-                }
+            // ── 底部按钮 ──
+            Spacer(modifier = Modifier.height(16.dp))
+            val isLaunching = launchStep == LaunchStep.CONNECTING || launchStep == LaunchStep.LAUNCHING
+            // 只有当当前选择的选项与启动时完全一致，才视为“当前应用已启动成功”
+            val isSuccess = launchStep == LaunchStep.SUCCESS &&
+                    selectedIndex == launchedIndex &&
+                    cdpPort == launchedPort &&
+                    cwd == launchedCwd
+            val isFailed = launchStep == LaunchStep.FAILED
+            val buttonColor = when {
+                isSuccess -> Color(0xFF00B894)
+                isFailed -> Color(0xFFE17055)
+                else -> purpleAccent
+            }
+            val buttonText = when {
+                isSuccess -> "✅ 启动成功"
+                isFailed -> "⚠ 点击重试"
+                isLaunching -> "启动中..."
+                else -> "启动"
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    enabled = !isLaunching,
+                    border = ButtonDefaults.outlinedButtonBorder
+                ) { Text("取消") }
+                Button(
+                    onClick = {
+                        val app = appOptions[selectedIndex]
+                        launchedIndex = selectedIndex
+                        launchedPort = cdpPort
+                        launchedCwd = cwd
+                        onLaunch(app.name, cdpPort.toIntOrNull() ?: app.defaultPort, cwd)
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    enabled = !isLaunching && !isSuccess,
+                    colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
+                ) { Text(buttonText, color = Color.White) }
             }
         }
     }

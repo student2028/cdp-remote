@@ -133,10 +133,35 @@ class OtaUpdateManager(
             val onComplete = object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context, intent: Intent) {
                     val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-                    if (id == downloadId) {
-                        installApk(destination)
-                        ctx.unregisterReceiver(this)
+                    if (id != downloadId) return
+                    try {
+                        // 查询 DownloadManager 确认下载成功，并使用其 content URI（与通知栏点击一致）
+                        val query = DownloadManager.Query().setFilterById(downloadId)
+                        val cursor = downloadManager.query(query)
+                        if (cursor != null && cursor.moveToFirst()) {
+                            val statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                            val status = if (statusIdx >= 0) cursor.getInt(statusIdx) else -1
+                            cursor.close()
+                            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                                // 使用 DownloadManager 提供的 content URI，保证文件已完全写入
+                                val dmUri = downloadManager.getUriForDownloadedFile(downloadId)
+                                if (dmUri != null) {
+                                    installApkFromUri(dmUri)
+                                } else {
+                                    // fallback：DownloadManager URI 不可用时用文件路径
+                                    installApk(destination)
+                                }
+                            } else {
+                                Log.w(TAG, "下载未成功，状态码: $status")
+                            }
+                        } else {
+                            cursor?.close()
+                            Log.w(TAG, "无法查询下载状态")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "处理下载完成事件失败", e)
                     }
+                    ctx.unregisterReceiver(this)
                 }
             }
 
@@ -166,13 +191,21 @@ class OtaUpdateManager(
                 "${context.applicationContext.packageName}.fileprovider",
                 file
             )
+            installApkFromUri(uri)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to install APK", e)
+        }
+    }
+
+    private fun installApkFromUri(uri: Uri) {
+        try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
             }
             context.startActivity(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to install APK", e)
+            Log.e(TAG, "Failed to install APK from URI", e)
         }
     }
 }

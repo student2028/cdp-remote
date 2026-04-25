@@ -7,19 +7,18 @@ app/build/
 .externalNativeBuild/
 .cxx/
 local.properties
-.DS_Store
 
 # IDE
 /.idea/
 /.vscode/
 .gemini/
+.DS_Store
 
 # Build artifacts
 *.apk
 *.class
 *.dex
 *.log
-apk/
 
 # Node.js
 node_modules/
@@ -30,6 +29,14 @@ node_modules/
 # Debug artifacts
 relay-dev/dom_dump.json
 relay-dev/shot.png
+relay-dev/ag_screenshot*.jpg
+relay-dev/scratch_start_payload.json
 
-# Robolectric
+# Robolectric Maven cache
 app/${user.home}/
+
+# Orchestra (multi-agent internal config)
+.orchestra/
+
+# Temp
+tmp/

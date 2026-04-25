@@ -17,11 +17,16 @@ if [[ "$N" -le "$BASE" ]]; then N=$((BASE + 1)); fi
 echo "$N" > "$COUNTER_FILE"
 
 export JAVA_HOME="${JAVA_HOME:-}"
-if [[ -z "$JAVA_HOME" || ! -x "$JAVA_HOME/bin/java" ]]; then
-  if [[ -x /usr/libexec/java_home ]]; then
-    JAVA_HOME="$(/usr/libexec/java_home -v 17 2>/dev/null || /usr/libexec/java_home -v 21 2>/dev/null || /usr/libexec/java_home 2>/dev/null || true)"
-    export JAVA_HOME
+# Android Gradle Plugin 需要 JDK 17+；环境若仍是 11，java_home 自动切到 17/21
+_java_ok=0
+if [[ -n "$JAVA_HOME" && -x "$JAVA_HOME/bin/java" ]]; then
+  if "$JAVA_HOME/bin/java" -version 2>&1 | grep -qE 'version "(1[7-9]|[2-9][0-9])'; then
+    _java_ok=1
   fi
+fi
+if [[ "$_java_ok" -eq 0 ]] && [[ -x /usr/libexec/java_home ]]; then
+  JAVA_HOME="$(/usr/libexec/java_home -v 17 2>/dev/null || /usr/libexec/java_home -v 21 2>/dev/null || /usr/libexec/java_home 2>/dev/null || true)"
+  export JAVA_HOME
 fi
 
 MODE="${1:-debug}"

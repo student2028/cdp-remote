@@ -22,6 +22,25 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
     CODEX("Codex", "📦"),
     VSCODE_LIKE("VS Code", "💻"),
     UNKNOWN("Unknown", "❓");
+
+    companion object {
+        /**
+         * 把权威来源给的 IDE 名字（中继 `/targets` 的 `appName` 字段、或用户在
+         * `LaunchIdeDialog` 选中的项）映射到枚举。
+         *
+         * **这是项目里唯一允许「字符串 → IDE 类型」转换的地方**。其它地方一律
+         * 直接拿 [ElectronAppType] 用 `when` 分发，禁止再写 `name.contains("cursor")`
+         * 这种启发式 —— 那种写法在 2026-04 的 9444 事故里已经栽过一次
+         * （把 Windsurf 里打开的 `CursorPresetModelsTest.kt` 误识别成 Cursor）。
+         *
+         * 不区分大小写，首尾空白会被去除；不认识的名字（包括 null/空串）一律落到 [UNKNOWN]。
+         */
+        fun fromAppName(name: String?): ElectronAppType {
+            val n = name?.trim().orEmpty()
+            if (n.isEmpty()) return UNKNOWN
+            return values().firstOrNull { it.displayName.equals(n, ignoreCase = true) } ?: UNKNOWN
+        }
+    }
 }
 
 // ─── Result Sealed Class ────────────────────────────────────────────
@@ -64,10 +83,26 @@ data class CdpPage(
     val title: String,
     val url: String,
     val webSocketDebuggerUrl: String,
-    val devtoolsFrontendUrl: String = ""
+    val devtoolsFrontendUrl: String = "",
+    /**
+     * IDE 身份。**由数据入口（解析中继 `/targets`、或用户在 `LaunchIdeDialog` 选中之处）
+     * 一次性钉死**，CdpPage 自身不做任何推断 —— 没有 getter 计算、没有 title.contains、
+     * 没有 URL 关键字嗅探。
+     *
+     * 入口转换走唯一通道 [ElectronAppType.fromAppName]。上游没告诉我们就老老实实是
+     * [ElectronAppType.UNKNOWN]，绝不"猜"。
+     *
+     * 历史上这里是个 computed property，先看 title.contains 再看 URL 里的 .app
+     * bundle —— 结果是用户在 Windsurf 里打开 `CursorPresetModelsTest.kt` 就被误判成
+     * Cursor（2026-04 的 9444 事故）。教训：身份是上游告诉我们的事实，不是从 page 的
+     * url/title 里反推的猜测。
+     */
+    val appType: ElectronAppType = ElectronAppType.UNKNOWN
 ) {
     val isWorkbench: Boolean
-        get() = type == "page" && "workbench.html" in url && "jetski" !in url
+        get() = type == "page" && "jetski" !in url && (
+            "workbench.html" in url || url.startsWith("app://")  // Codex 用 app://-/index.html
+        )
 
     val cdpPort: Int?
         get() {
@@ -75,16 +110,6 @@ data class CdpPage(
             if (relayMatch != null) return relayMatch.groupValues[1].toIntOrNull()
             val directMatch = Regex("://[^:/]+:(\\d+)/").find(webSocketDebuggerUrl)
             return directMatch?.groupValues?.get(1)?.toIntOrNull()
-        }
-
-    val appType: ElectronAppType
-        get() = when {
-            title.contains("Antigravity", ignoreCase = true) || url.contains("Antigravity.app", ignoreCase = true) -> ElectronAppType.ANTIGRAVITY
-            title.contains("Cursor", ignoreCase = true) || url.contains("Cursor.app", ignoreCase = true) -> ElectronAppType.CURSOR
-            title.contains("Windsurf", ignoreCase = true) || url.contains("Windsurf.app", ignoreCase = true) -> ElectronAppType.WINDSURF
-            title.contains("Codex", ignoreCase = true) -> ElectronAppType.CODEX
-            "workbench.html" in url -> ElectronAppType.VSCODE_LIKE
-            else -> ElectronAppType.UNKNOWN
         }
 }
 
@@ -120,7 +145,17 @@ data class ChatMessage(
 
 // ─── Utility Functions ──────────────────────────────────────────────
 
-fun parsePages(json: String): List<CdpPage> {
+/**
+ * 解析 CDP `/json` 返回的 pages 数组。
+ *
+ * @param appType 若调用方已知本次请求针对的 IDE（例如启动时用户在 `LaunchIdeDialog`
+ *  已选好），传入对应枚举；不传则视为 [ElectronAppType.UNKNOWN]。这里**不做**任何
+ *  从 URL/title 反推 IDE 的逻辑，要靠 IDE 身份分发的下游一律读 [CdpPage.appType]。
+ */
+fun parsePages(
+    json: String,
+    appType: ElectronAppType = ElectronAppType.UNKNOWN
+): List<CdpPage> {
     return try {
         val array = JsonParser.parseString(json).asJsonArray!!
         array.map { elem ->
@@ -131,7 +166,8 @@ fun parsePages(json: String): List<CdpPage> {
                 title = obj.get("title")?.asString ?: "",
                 url = obj.get("url")?.asString ?: "",
                 webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
-                devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: ""
+                devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
+                appType = appType
             )
         }
     } catch (e: Exception) {

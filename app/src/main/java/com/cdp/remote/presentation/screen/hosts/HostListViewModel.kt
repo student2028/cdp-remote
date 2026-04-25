@@ -9,10 +9,13 @@ import androidx.lifecycle.viewModelScope
 import com.cdp.remote.data.cdp.*
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -21,6 +24,8 @@ class HostListViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "HostListVM"
+        private const val TV_SCREENSHOT_TIMEOUT_MS = 3000L
+        private const val TV_RECONNECT_THRESHOLD = 3
     }
 
     var uiState by mutableStateOf(HostUiState())
@@ -53,7 +58,7 @@ class HostListViewModel : ViewModel() {
         uiState = uiState.copy(showLaunchDialog = true)
         fetchCwdHistory()
     }
-    fun hideLaunchDialog() { uiState = uiState.copy(showLaunchDialog = false) }
+    fun hideLaunchDialog() { uiState = uiState.copy(showLaunchDialog = false, launchStep = LaunchStep.IDLE, launchStatus = null) }
 
     // ─── CWD History ────────────────────────────────────────────────
 
@@ -66,9 +71,12 @@ class HostListViewModel : ViewModel() {
                         .url("${host.httpUrl}/cwd_history")
                         .build()
                     val res = httpClient.newCall(request).execute()
-                    Pair(res, res.body?.string())
+                    val b = res.body?.string()
+                    val successful = res.isSuccessful
+                    res.close()
+                    Pair(successful, b)
                 }
-                if (result.isSuccessful && body != null) {
+                if (result && body != null) {
                     val root = JsonParser.parseString(body).asJsonObject
                     val historyArray = root.getAsJsonArray("history") ?: return@launch
                     val items = historyArray.map { elem ->
@@ -98,7 +106,7 @@ class HostListViewModel : ViewModel() {
                         .url("${host.httpUrl}/cwd_history?path=$encodedPath")
                         .delete(emptyBody)
                         .build()
-                    httpClient.newCall(request).execute()
+                    httpClient.newCall(request).execute().close()
                 }
                 uiState = uiState.copy(
                     cwdHistory = uiState.cwdHistory.filter { it.path != path }
@@ -160,12 +168,16 @@ class HostListViewModel : ViewModel() {
                             uiState = uiState.copy(isScanning = false, discoveredApps = apps)
                         }
                         is CdpResult.Error -> {
-                            uiState = uiState.copy(isScanning = false, scanError = result.message)
+                            val isProxyError = result.message.contains("502") || result.message.contains("503") || result.message.contains("504")
+                            uiState = uiState.copy(
+                                isScanning = false, 
+                                scanError = if (isProxyError) null else "扫描失败: ${result.message}"
+                            )
                         }
                     }
                 }
             } catch (e: Exception) {
-                uiState = uiState.copy(isScanning = false, scanError = "扫描失败: ${e.message}")
+                uiState = uiState.copy(isScanning = false, scanError = "扫描异常: ${e.message}")
             }
         }
     }
@@ -177,7 +189,7 @@ class HostListViewModel : ViewModel() {
                     .url("${host.httpUrl}/targets")
                     .build()
                 val response = httpClient.newCall(request).execute()
-                val body = response.body?.string() ?: return@withContext emptyList()
+                val body = response.use { it.body?.string() } ?: return@withContext emptyList()
 
                 // /targets returns: { "targets": [{ "cdpPort": 9333, "appName": "Antigravity", "pages": [...] }, ...] }
                 val root = JsonParser.parseString(body).asJsonObject
@@ -187,6 +199,11 @@ class HostListViewModel : ViewModel() {
                 for (targetElem in targetsArray) {
                     val target = targetElem.asJsonObject
                     val pagesArray = target.getAsJsonArray("pages") ?: continue
+                    // target.appName 是中继按端口映射出的**权威** IDE 标识；走唯一通道
+                    // ElectronAppType.fromAppName 转成枚举一次性钉死，下游不再做任何推断。
+                    // 不这样做的话，用户在 Windsurf 里打开 "CursorPresetModelsTest.kt" 就会
+                    // 被启发式误判为 Cursor（2026-04 的 9444 事故）。
+                    val pageAppType = ElectronAppType.fromAppName(target.get("appName")?.asString)
                     for (pageElem in pagesArray) {
                         val obj = pageElem.asJsonObject
                         allPages.add(CdpPage(
@@ -195,7 +212,8 @@ class HostListViewModel : ViewModel() {
                             title = obj.get("title")?.asString ?: "",
                             url = obj.get("url")?.asString ?: "",
                             webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
-                            devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: ""
+                            devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
+                            appType = pageAppType
                         ))
                     }
                 }
@@ -216,26 +234,29 @@ class HostListViewModel : ViewModel() {
 
     fun remoteLaunchOnPort(cdpPort: Int, appName: String, cwd: String) {
         viewModelScope.launch {
-            uiState = uiState.copy(launchStatus = "正在启动 $appName :$cdpPort...")
+            uiState = uiState.copy(launchStep = LaunchStep.CONNECTING, launchStatus = "正在连接 Relay...")
             try {
-                val host = uiState.hosts.firstOrNull() ?: return@launch
-                val result = withContext(Dispatchers.IO) {
+                val host = uiState.hosts.firstOrNull()
+                if (host == null) {
+                    uiState = uiState.copy(launchStep = LaunchStep.FAILED, launchStatus = "未找到主机")
+                    return@launch
+                }
+                uiState = uiState.copy(launchStep = LaunchStep.LAUNCHING, launchStatus = "正在启动 $appName :$cdpPort...")
+                val isSuccess = withContext(Dispatchers.IO) {
                     val request = Request.Builder()
                         .url("${host.httpUrl}/launch?port=$cdpPort&app=$appName&cwd=$cwd")
                         .build()
-                    httpClient.newCall(request).execute()
+                    httpClient.newCall(request).execute().use { it.isSuccessful }
                 }
-                uiState = if (result.isSuccessful) {
-                    uiState.copy(launchStatus = "启动成功", showLaunchDialog = false).also {
-                        // Schedule auto-refresh after 5s
-                        delay(5000)
-                        scanAllHosts()
-                    }
+                if (isSuccess) {
+                    uiState = uiState.copy(launchStep = LaunchStep.SUCCESS, launchStatus = "✅ 启动成功")
+                    delay(4000)
+                    scanAllHosts()
                 } else {
-                    uiState.copy(launchStatus = "无法连接 Relay")
+                    uiState = uiState.copy(launchStep = LaunchStep.FAILED, launchStatus = "无法连接 Relay")
                 }
             } catch (e: Exception) {
-                uiState = uiState.copy(scanError = "无法连接到 Relay 服务。\n请在 Mac 上运行: bash install.sh")
+                uiState = uiState.copy(launchStep = LaunchStep.FAILED, launchStatus = "无法连接到 Relay 服务")
             }
         }
     }
@@ -265,15 +286,18 @@ class HostListViewModel : ViewModel() {
         )
         viewModelScope.launch {
             try {
-                val (result, body) = withContext(Dispatchers.IO) {
+                val (isSuccess, body, code) = withContext(Dispatchers.IO) {
                     val request = Request.Builder()
                         .url("$hostUrl/dirs?path=$path")
                         .build()
                     val res = httpClient.newCall(request).execute()
                     val b = res.body?.string()
-                    Pair(res, b)
+                    val s = res.isSuccessful
+                    val c = res.code
+                    res.close()
+                    Triple(s, b, c)
                 }
-                if (body != null && result.isSuccessful) {
+                if (body != null && isSuccess) {
                     val jsonObj = JsonParser.parseString(body).asJsonObject
                     val dirsArray = jsonObj.getAsJsonArray("dirs")
                     
@@ -304,7 +328,7 @@ class HostListViewModel : ViewModel() {
                     uiState = uiState.copy(
                         folderBrowserState = uiState.folderBrowserState.copy(
                             isLoading = false,
-                            error = "加载失败: 服务器响应异常 (Code: ${result.code})"
+                            error = "加载失败: 服务器响应异常 (Code: $code)"
                         )
                     )
                 }
@@ -330,7 +354,7 @@ class HostListViewModel : ViewModel() {
                     val request = Request.Builder()
                         .url("$hostUrl/mkdir?path=$encodedPath")
                         .build()
-                    httpClient.newCall(request).execute()
+                    httpClient.newCall(request).execute().close()
                 }
                 loadDirectory(hostUrl, parentPath)
             } catch (e: Exception) {
@@ -358,7 +382,7 @@ class HostListViewModel : ViewModel() {
                     }
                     Log.d(TAG, "关闭页面: $closeUrl")
                     val request = Request.Builder().url(closeUrl).build()
-                    httpClient.newCall(request).execute()
+                    httpClient.newCall(request).execute().close()
                 }
                 // Refresh after close
                 val host = uiState.hosts.firstOrNull { it.ip == hostIp && it.port == hostPort }
@@ -374,6 +398,8 @@ class HostListViewModel : ViewModel() {
     // ─── TV Mode ─────────────────────────────────────────────────────
 
     private val tvClients = mutableMapOf<String, CdpClient>()
+    /** 每个 wsUrl 的连续失败计数，超过阈值触发重连 */
+    private val tvFailCounts = mutableMapOf<String, Int>()
     private var tvJob: kotlinx.coroutines.Job? = null
 
     fun toggleTvMode() {
@@ -390,31 +416,55 @@ class HostListViewModel : ViewModel() {
             if (pages.isEmpty()) return@launch
 
             // 为每个 IDE 建连
-            for (page in pages) {
-                val ws = page.webSocketDebuggerUrl
-                if (ws.isBlank() || tvClients.containsKey(ws)) continue
-                val client = CdpClient()
-                val result = client.connectDirect(ws)
-                if (result is CdpResult.Success) {
-                    tvClients[ws] = client
-                    Log.d(TAG, "TV 已连接: ${page.appType.displayName}")
-                } else {
-                    Log.w(TAG, "TV 连接失败: ${page.appType.displayName}")
-                }
-            }
+            connectTvClients(pages)
 
-            // 周期截屏
+            // 周期截屏（并行 + 超时）
             while (isActive && uiState.tvMode) {
-                val newFrames = uiState.tvFrames.toMutableMap()
-                for ((ws, client) in tvClients) {
-                    try {
-                        val r = client.captureScreenshot(uiState.tvQuality)
-                        if (r is CdpResult.Success) {
-                            newFrames[ws] = r.data
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "TV 截图失败: ${e.message}")
+                val entries = tvClients.entries.toList()
+                if (entries.isEmpty()) {
+                    // 所有连接都断了，尝试重连
+                    connectTvClients(pages)
+                    if (tvClients.isEmpty()) {
+                        delay(3000)
+                        continue
                     }
+                }
+
+                // 并行截屏：每个 IDE 独立超时，互不阻塞
+                val results = entries.map { (ws, client) ->
+                    async(Dispatchers.IO) {
+                        try {
+                            val frame = withTimeoutOrNull(TV_SCREENSHOT_TIMEOUT_MS) {
+                                client.captureScreenshot(uiState.tvQuality)
+                            }
+                            if (frame is CdpResult.Success<ByteArray>) {
+                                tvFailCounts[ws] = 0
+                                Pair(ws, frame.data)
+                            } else {
+                                val count = (tvFailCounts[ws] ?: 0) + 1
+                                tvFailCounts[ws] = count
+                                if (count >= TV_RECONNECT_THRESHOLD) {
+                                    Log.w(TAG, "TV 连续 $count 次失败，重连: $ws")
+                                    reconnectTvClient(ws, pages)
+                                }
+                                null
+                            }
+                        } catch (e: Exception) {
+                            val count = (tvFailCounts[ws] ?: 0) + 1
+                            tvFailCounts[ws] = count
+                            Log.e(TAG, "TV 截图异常(${count}次): ${e.message}")
+                            if (count >= TV_RECONNECT_THRESHOLD) {
+                                reconnectTvClient(ws, pages)
+                            }
+                            null
+                        }
+                    }
+                }.awaitAll()
+
+                // 仅更新成功截到的帧
+                val newFrames = uiState.tvFrames.toMutableMap()
+                for (pair in results.filterNotNull()) {
+                    newFrames[pair.first] = pair.second
                 }
                 uiState = uiState.copy(tvFrames = newFrames)
                 delay(uiState.tvIntervalMs)
@@ -422,12 +472,62 @@ class HostListViewModel : ViewModel() {
         }
     }
 
+    /** 为所有未连接的 workbench 页面建立 WebSocket 连接 */
+    private suspend fun connectTvClients(pages: List<CdpPage>) {
+        for (page in pages) {
+            val ws = page.webSocketDebuggerUrl
+            if (ws.isBlank() || tvClients.containsKey(ws)) continue
+            val client = CdpClient()
+            val result = withTimeoutOrNull(5000) { client.connectDirect(ws) }
+            if (result is CdpResult.Success) {
+                tvClients[ws] = client
+                tvFailCounts[ws] = 0
+                Log.d(TAG, "TV 已连接: ${page.appType.displayName}")
+            } else {
+                Log.w(TAG, "TV 连接失败: ${page.appType.displayName}")
+            }
+        }
+    }
+
+    /** 断开旧连接并尝试重连单个 IDE */
+    private suspend fun reconnectTvClient(ws: String, pages: List<CdpPage>) {
+        try {
+            tvClients.remove(ws)?.disconnect()
+        } catch (_: Exception) {}
+        tvFailCounts[ws] = 0
+        val page = pages.find { it.webSocketDebuggerUrl == ws } ?: return
+        val client = CdpClient()
+        val result = withTimeoutOrNull(5000) { client.connectDirect(ws) }
+        if (result is CdpResult.Success) {
+            tvClients[ws] = client
+            Log.d(TAG, "TV 重连成功: ${page.appType.displayName}")
+        } else {
+            Log.w(TAG, "TV 重连失败: ${page.appType.displayName}")
+        }
+    }
+
     private fun stopTvMode() {
         tvJob?.cancel()
         tvJob = null
-        tvClients.values.forEach { it.disconnect() }
+        tvClients.values.forEach { try { it.disconnect() } catch (_: Exception) {} }
         tvClients.clear()
+        tvFailCounts.clear()
         uiState = uiState.copy(tvFrames = emptyMap())
+    }
+
+    // ─── App Reorder ─────────────────────────────────────────────────
+
+    /**
+     * 保存用户手动拖拽排序后的 IDE 应用顺序。
+     * @param hostAddress 主机地址（如 "100.106.253.39:19336"）
+     * @param orderedWsUrls 排序后的 webSocketDebuggerUrl 列表
+     */
+    fun reorderApps(hostAddress: String, orderedWsUrls: List<String>) {
+        val newOrder = uiState.appOrder.toMutableMap()
+        newOrder[hostAddress] = orderedWsUrls
+        uiState = uiState.copy(appOrder = newOrder)
+        // 同步写入全局单例，ChatScreen 切换按钮也能读到
+        com.cdp.remote.data.AppOrderStore.setOrder(hostAddress, orderedWsUrls)
     }
 
     override fun onCleared() {
@@ -442,7 +542,7 @@ class HostListViewModel : ViewModel() {
                     val killUrl = "http://$hostIp:$hostPort/kill?port=$cdpPort"
                     Log.d(TAG, "终止进程: $killUrl")
                     val request = Request.Builder().url(killUrl).build()
-                    httpClient.newCall(request).execute()
+                    httpClient.newCall(request).execute().close()
                 }
                 // Refresh after kill
                 delay(1000)

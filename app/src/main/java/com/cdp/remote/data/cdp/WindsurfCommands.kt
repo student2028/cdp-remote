@@ -204,6 +204,85 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         return CdpResult.Success(Unit)
     }
 
+    // ─────────────────── 取消运行中的任务 (Windsurf 专属) ───────────────────
+
+    /**
+     * 取消 Windsurf Cascade 中正在运行的长时间任务（如 Step、Tool 执行）
+     *
+     * DOM 定位策略（按优先级）：
+     * 1. `hover:text-red-500` CSS class + lucide SVG 图标 (circle+rect)
+     * 2. `aria-label` 包含 cancel/stop/abort
+     * 3. `title` 属性包含 cancel/stop
+     * 4. 可见文本 "Cancel" / "取消"
+     *
+     * 注意: 选择器依赖 Windsurf Cascade 前端结构，版本更新后可能需要调整。
+     * 已验证版本: Windsurf 2025.4.x
+     */
+    override suspend fun cancelRunningTask(): CdpResult<Unit> {
+        val result = cdp.evaluate("""
+            (function(){
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (!panel) return 'no-panel';
+                
+                // 策略1: hover:text-red-500 类 + SVG 图标验证（取消按钮特有样式）
+                var redHoverBtns = panel.querySelectorAll('button[class*="hover:text-red-500"]');
+                for (var i = 0; i < redHoverBtns.length; i++) {
+                    var btn = redHoverBtns[i];
+                    if (!btn.offsetParent) continue;
+                    
+                    var svg = btn.querySelector('svg');
+                    if (!svg) continue;
+                    
+                    // lucide cancel icon: circle+rect 组合，或 lucide-* class
+                    var svgClass = (typeof svg.className === 'object' && svg.className.baseVal) 
+                        ? svg.className.baseVal : (svg.getAttribute('class') || '');
+                    var hasStopIcon = (svg.querySelector('circle') && svg.querySelector('rect'))
+                        || svgClass.includes('lucide')
+                        || svg.querySelector('path[d*="M18 6"], path[d*="M6 18"]') != null;
+                    
+                    if (hasStopIcon) {
+                        btn.click();
+                        return 'clicked';
+                    }
+                }
+                
+                // 策略2: aria-label / title 属性匹配
+                var attrBtns = panel.querySelectorAll(
+                    '[aria-label*="cancel" i], [aria-label*="Cancel" i], '
+                    + '[aria-label*="stop" i], [aria-label*="abort" i], '
+                    + '[title*="cancel" i], [title*="Cancel" i], '
+                    + '[title*="stop" i]'
+                );
+                for (var j = 0; j < attrBtns.length; j++) {
+                    if (attrBtns[j].offsetParent) {
+                        attrBtns[j].click();
+                        return 'clicked';
+                    }
+                }
+                
+                // 策略3: 可见文本匹配 (最后的降级方案)
+                var allBtns = panel.querySelectorAll('button');
+                for (var k = 0; k < allBtns.length; k++) {
+                    if (!allBtns[k].offsetParent) continue;
+                    var text = (allBtns[k].textContent || '').trim().toLowerCase();
+                    if (text === 'cancel' || text === '取消' || text === '取消任务') {
+                        allBtns[k].click();
+                        return 'clicked';
+                    }
+                }
+                
+                return 'no-cancel-btn';
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "clicked" -> CdpResult.Success(Unit)
+            "no-panel" -> CdpResult.Error("未找到 Windsurf Cascade 面板")
+            else -> CdpResult.Error("未找到取消按钮，请确认 Cascade 中有正在运行的任务")
+        }
+    }
+
     // ─────────────────── 新建会话 (Windsurf Cmd+L) ───────────────────
 
     override suspend fun startNewSession(): CdpResult<Unit> {

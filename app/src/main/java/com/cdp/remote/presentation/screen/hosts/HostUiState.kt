@@ -26,6 +26,10 @@ data class FolderBrowserState(
     val error: String? = null
 )
 
+enum class LaunchStep {
+    IDLE, CONNECTING, LAUNCHING, SUCCESS, FAILED
+}
+
 data class HostUiState(
     val hosts: List<HostInfo> = listOf(
         HostInfo("100.106.253.39", 19336, "MacBook (Tailscale)")
@@ -35,6 +39,7 @@ data class HostUiState(
     val scanError: String? = null,
     val showAddDialog: Boolean = false,
     val showLaunchDialog: Boolean = false,
+    val launchStep: LaunchStep = LaunchStep.IDLE,
     val launchStatus: String? = null,
     val folderBrowserState: FolderBrowserState = FolderBrowserState(),
     val cwdHistory: List<CwdHistoryItem> = emptyList(),
@@ -43,5 +48,8 @@ data class HostUiState(
     /** 每个 IDE 的实时帧，key = wsUrl */
     val tvFrames: Map<String, ByteArray> = emptyMap(),
     val tvQuality: Int = 50,
-    val tvIntervalMs: Long = 1200L
+    val tvIntervalMs: Long = 1200L,
+    // ─── App 手动排序 ───
+    /** 用户自定义的 IDE 应用顺序，key = 主机地址, value = wsUrl 列表（按显示顺序） */
+    val appOrder: Map<String, List<String>> = emptyMap()
 )

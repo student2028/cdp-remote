@@ -102,70 +102,73 @@ class CdpModelsTest {
         assertEquals(9334, page.cdpPort)
     }
 
+    // ─── ElectronAppType.fromAppName：唯一允许「字符串 → IDE 类型」的入口 ─────
+
     @Test
-    fun `CdpPage appType identifies Antigravity`() {
+    fun `fromAppName maps known names to enum values`() {
+        assertEquals(ElectronAppType.ANTIGRAVITY, ElectronAppType.fromAppName("Antigravity"))
+        assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("Cursor"))
+        assertEquals(ElectronAppType.WINDSURF, ElectronAppType.fromAppName("Windsurf"))
+        assertEquals(ElectronAppType.CODEX, ElectronAppType.fromAppName("Codex"))
+    }
+
+    @Test
+    fun `fromAppName is case-insensitive and trims whitespace`() {
+        assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("cursor"))
+        assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("CURSOR"))
+        assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("  Cursor  "))
+    }
+
+    @Test
+    fun `fromAppName returns UNKNOWN for null, empty, blank, or unrecognized`() {
+        assertEquals(ElectronAppType.UNKNOWN, ElectronAppType.fromAppName(null))
+        assertEquals(ElectronAppType.UNKNOWN, ElectronAppType.fromAppName(""))
+        assertEquals(ElectronAppType.UNKNOWN, ElectronAppType.fromAppName("   "))
+        assertEquals(ElectronAppType.UNKNOWN, ElectronAppType.fromAppName("SomeFutureIDE"))
+    }
+
+    // ─── CdpPage.appType 是构造时钉死的字段 —— 自身不做任何推断 ────────────
+
+    @Test
+    fun `CdpPage stores appType verbatim - never inspects url or title`() {
+        // 反复证明：哪怕 url/title 强烈暗示别的 IDE，CdpPage 也只信构造方给的 appType。
+        // title 里写"Cursor"、url 里写"Windsurf.app"，构造方说 Antigravity 就是 Antigravity。
         val page = CdpPage(
             id = "1", type = "page",
-            title = "Antigravity - My Project",
-            url = "file:///Antigravity.app/workbench.html",
-            webSocketDebuggerUrl = ""
+            title = "CursorPresetModelsTest.kt — voice7",
+            url = "file:///Applications/Windsurf.app/Contents/.../workbench.html",
+            webSocketDebuggerUrl = "",
+            appType = ElectronAppType.ANTIGRAVITY
         )
         assertEquals(ElectronAppType.ANTIGRAVITY, page.appType)
     }
 
     @Test
-    fun `CdpPage appType identifies Windsurf`() {
+    fun `CdpPage appType defaults to UNKNOWN when caller did not specify`() {
+        // 上游没告诉我们就老老实实是 UNKNOWN，绝不"猜"。
         val page = CdpPage(
             id = "1", type = "page",
-            title = "Windsurf - voice7",
-            url = "file:///Windsurf.app/workbench.html",
-            webSocketDebuggerUrl = ""
-        )
-        assertEquals(ElectronAppType.WINDSURF, page.appType)
-    }
-
-    @Test
-    fun `CdpPage appType identifies Cursor`() {
-        val page = CdpPage(
-            id = "1", type = "page",
-            title = "Cursor - voice7",
-            url = "file:///Cursor.app/workbench.html",
-            webSocketDebuggerUrl = ""
-        )
-        assertEquals(ElectronAppType.CURSOR, page.appType)
-    }
-
-    @Test
-    fun `CdpPage appType identifies Codex`() {
-        val page = CdpPage(
-            id = "1", type = "page",
-            title = "Codex Editor",
-            url = "file:///app/workbench.html",
-            webSocketDebuggerUrl = ""
-        )
-        assertEquals(ElectronAppType.CODEX, page.appType)
-    }
-
-    @Test
-    fun `CdpPage appType falls back to VSCODE_LIKE for generic workbench`() {
-        val page = CdpPage(
-            id = "1", type = "page",
-            title = "My Editor",
-            url = "file:///something/workbench.html",
-            webSocketDebuggerUrl = ""
-        )
-        assertEquals(ElectronAppType.VSCODE_LIKE, page.appType)
-    }
-
-    @Test
-    fun `CdpPage appType returns UNKNOWN for non-IDE pages`() {
-        val page = CdpPage(
-            id = "1", type = "page",
-            title = "Google",
-            url = "https://google.com",
+            title = "CursorPresetModelsTest.kt — voice7",
+            url = "file:///Applications/Windsurf.app/Contents/.../workbench.html",
             webSocketDebuggerUrl = ""
         )
         assertEquals(ElectronAppType.UNKNOWN, page.appType)
+    }
+
+    @Test
+    fun `regression 9444 - Windsurf target with Cursor-named file is identified as Windsurf`() {
+        // 2026-04 的 9444 事故还原：中继 /targets 给的权威 appName 是 "Windsurf"，
+        // 但 page.title 因为用户打开了 CursorPresetModelsTest.kt 而含 "Cursor" 字样。
+        // 数据入口走 ElectronAppType.fromAppName，下游 CdpPage.appType 一锤定音 → Windsurf。
+        val targetAppName = "Windsurf"  // 中继按端口映射来的权威字段
+        val page = CdpPage(
+            id = "1", type = "page",
+            title = "CursorPresetModelsTest.kt — voice7",
+            url = "file:///Applications/Windsurf.app/Contents/.../workbench.html",
+            webSocketDebuggerUrl = "",
+            appType = ElectronAppType.fromAppName(targetAppName)
+        )
+        assertEquals(ElectronAppType.WINDSURF, page.appType)
     }
 
     // ─── HostInfo ────────────────────────────────────────────────────

@@ -1,0 +1,1 @@
+{"versionCode":300005,"versionName":"v200055-56-gc8c8bc1-dirty-b300005","updateMessage":"1. 修复 IDE 按钮端口号被截断问题（AutoSizeText 自动缩放字体，完整显示如 Windsurf :9999）。\n2. 新增 IDE 列表长按拖拽排序功能，支持跨会话持久化排列。\n3. Windsurf 取消任务按钮始终可点击，不依赖手机端生成状态。\n4. 修复 IDE 切换顺序与主页拖拽排序保持一致。"}
