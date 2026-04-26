@@ -271,7 +271,7 @@ fun TvLiveView(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .padding(horizontal = 4.dp, vertical = 4.dp)
                 .align(Alignment.TopEnd),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -330,43 +330,43 @@ fun TvLiveView(
             ) {
                 TextButton(
                     onClick = { focusMode = 2 },
-                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 24.dp),
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
                     colors = if (focusMode == 2) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("左", fontSize = 11.sp) }
                 TextButton(
                     onClick = { focusMode = 1 },
-                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 24.dp),
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
                     colors = if (focusMode == 1) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("全", fontSize = 11.sp) }
                 TextButton(
                     onClick = { focusMode = 0 },
-                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 24.dp),
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
                     colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("右", fontSize = 11.sp) }
                 // 鼠标/触屏开关
                 TextButton(
                     onClick = { isVirtualCursor = !isVirtualCursor },
                     modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
                 ) { Text(if (isVirtualCursor) "🖱️" else "👆", fontSize = 12.sp) }
                 // 键盘开关
                 TextButton(
                     onClick = { showKeyboardInput = !showKeyboardInput },
                     modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
                 ) { Text("⌨️", fontSize = 12.sp) }
                 // 设置齿轮
                 IconButton(
                     onClick = { showSettings = !showSettings },
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(26.dp)
                 ) {
                     Icon(
                         Icons.Default.Settings,
                         contentDescription = "TV 设置",
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
@@ -396,9 +396,12 @@ fun TvLiveView(
         }
         
         if (showKeyboardInput) {
-            // 采用 committedText 隔离输入法正在组合的拼音，只 Diff 已确认提交的文字！彻底解决中文输入下长度判断出错的问题。
-            var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
-            var committedText by remember { mutableStateOf("") }
+            // 采用持久化占位符 + committedText 隔离拼音，解决输入法空串时不发送退格键事件的问题
+            val DUMMY_PREFIX = " "
+            var textFieldValue by remember { 
+                mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(DUMMY_PREFIX, androidx.compose.ui.text.TextRange(DUMMY_PREFIX.length))) 
+            }
+            var committedText by remember { mutableStateOf(DUMMY_PREFIX) }
             
             androidx.compose.foundation.text.BasicTextField(
                 value = textFieldValue,
@@ -425,13 +428,21 @@ fun TvLiveView(
                                     onRemoteText(addedText)
                                 }
                             } else {
-                                // 复杂情况（如移动光标或部分替换），简单容错，发送新增长度的尾部
                                 onRemoteText(newStr.substring(newStr.length - (newStr.length - oldStr.length)))
                             }
                         }
-                        committedText = newStr
+                        
+                        if (newStr.isEmpty()) {
+                            // 如果用户连占位符都删掉了，强制补回，保证下次退格依然能被系统拦截！
+                            committedText = DUMMY_PREFIX
+                            textFieldValue = androidx.compose.ui.text.input.TextFieldValue(DUMMY_PREFIX, androidx.compose.ui.text.TextRange(DUMMY_PREFIX.length))
+                        } else {
+                            committedText = newStr
+                            textFieldValue = newValue
+                        }
+                    } else {
+                        textFieldValue = newValue
                     }
-                    textFieldValue = newValue
                 },
                 modifier = Modifier
                     .size(1.dp)
@@ -445,14 +456,7 @@ fun TvLiveView(
                                     onRemoteKey("keyUp", "Enter")
                                     true
                                 }
-                                Key.Backspace -> {
-                                    // 保底：当文本已经删空时，onValueChange 的 diff 无法捕捉，在这里通过 KeyEvent 拦截
-                                    if (textFieldValue.text.isEmpty()) {
-                                        onRemoteKey("keyDown", "Backspace")
-                                        onRemoteKey("keyUp", "Backspace")
-                                    }
-                                    false // 返回 false 允许事件继续传递，以便更新 TextField 的状态
-                                }
+                                Key.Backspace -> false
                                 else -> false
                             }
                         } else {
