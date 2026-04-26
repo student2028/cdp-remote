@@ -298,42 +298,42 @@ fun TvLiveView(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
             ) {
                 TextButton(
                     onClick = { focusMode = 2 },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                     colors = if (focusMode == 2) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("◀左", fontSize = 11.sp) }
+                ) { Text("左", fontSize = 11.sp) }
                 TextButton(
                     onClick = { focusMode = 1 },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                     colors = if (focusMode == 1) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("全屏", fontSize = 11.sp) }
+                ) { Text("全", fontSize = 11.sp) }
                 TextButton(
                     onClick = { focusMode = 0 },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                     colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("右▶", fontSize = 11.sp) }
+                ) { Text("右", fontSize = 11.sp) }
                 // 键盘开关
                 TextButton(
                     onClick = { showKeyboardInput = !showKeyboardInput },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                ) { Text("⌨️", fontSize = 14.sp) }
+                    modifier = Modifier.height(28.dp).widthIn(min = 32.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+                ) { Text("⌨️", fontSize = 13.sp) }
                 // 设置齿轮
                 IconButton(
                     onClick = { showSettings = !showSettings },
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         Icons.Default.Settings,
                         contentDescription = "TV 设置",
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
