@@ -363,17 +363,30 @@ fun TvLiveView(
         }
         
         if (showKeyboardInput) {
-            var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+            // 使用一个不可见的空格 " " 作为占位符，用来强行捕获软键盘的退格键（Backspace）事件
+            var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(" ")) }
             
             androidx.compose.foundation.text.BasicTextField(
                 value = textFieldValue,
                 onValueChange = { newValue ->
-                    // 如果有提交的新文本（composition == null 代表不是正在输入拼音的过程）
-                    if (newValue.composition == null && newValue.text.isNotEmpty()) {
-                        onRemoteText(newValue.text)
-                        // 瞬间清空，以便接收下一个字
-                        textFieldValue = androidx.compose.ui.text.input.TextFieldValue("")
+                    if (newValue.composition == null) {
+                        if (newValue.text.isEmpty()) {
+                            // 文本从 " " 变成了 ""，说明用户按下了软键盘退格键！
+                            onRemoteKey("rawKeyDown", "Backspace")
+                            onRemoteKey("keyUp", "Backspace")
+                            textFieldValue = androidx.compose.ui.text.input.TextFieldValue(" ")
+                        } else if (newValue.text.length > 1) {
+                            // 文本变成了 " a" 或 " 你好"，说明用户提交了新文本
+                            val addedText = newValue.text.substring(1)
+                            onRemoteText(addedText)
+                            // 瞬间恢复为一个空格，等待下次输入
+                            textFieldValue = androidx.compose.ui.text.input.TextFieldValue(" ")
+                        } else {
+                            // 文本刚好是 " "，说明刚刚删除了尚未提交的拼音，恢复到了初始状态，不需要处理
+                            textFieldValue = newValue
+                        }
                     } else {
+                        // 正在组合拼音，保留状态
                         textFieldValue = newValue
                     }
                 },
@@ -384,18 +397,17 @@ fun TvLiveView(
                     .onKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
-                                Key.Backspace -> {
-                                    // 只有在输入框为空（没有未提交拼音）时，才将退格键发给远端
-                                    if (textFieldValue.text.isEmpty()) {
-                                        onRemoteKey("rawKeyDown", "Backspace")
-                                        onRemoteKey("keyUp", "Backspace")
-                                    }
-                                    true
-                                }
                                 Key.Enter -> {
                                     onRemoteKey("rawKeyDown", "Enter")
                                     onRemoteKey("keyUp", "Enter")
-                                    // 发送完回车可以考虑自动收起键盘，或者保留
+                                    true
+                                }
+                                Key.Backspace -> {
+                                    // 兼容外接硬键盘的退格
+                                    if (textFieldValue.text == " " || textFieldValue.text.isEmpty()) {
+                                        onRemoteKey("rawKeyDown", "Backspace")
+                                        onRemoteKey("keyUp", "Backspace")
+                                    }
                                     true
                                 }
                                 else -> false
