@@ -898,6 +898,18 @@ class ChatViewModel(
         }
     }
 
+    fun dispatchRemoteText(text: String) {
+        viewModelScope.launch {
+            cdpClient.insertText(text)
+        }
+    }
+
+    fun dispatchRemoteKey(type: String, key: String) {
+        viewModelScope.launch {
+            cdpClient.dispatchKeyEvent(type, key)
+        }
+    }
+
     // ─── Utility ────────────────────────────────────────────────────
 
     fun prepareModelSwitchDialog() {

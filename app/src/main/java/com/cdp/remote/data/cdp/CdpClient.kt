@@ -247,6 +247,13 @@ class CdpClient(
         return call("Input.dispatchKeyEvent", params)
     }
 
+    override suspend fun insertText(text: String): CdpResult<JsonObject> {
+        val params = JsonObject().apply {
+            addProperty("text", text)
+        }
+        return call("Input.insertText", params)
+    }
+
     override suspend fun dispatchMouseEvent(
         type: String, x: Double, y: Double,
         button: String, clickCount: Int

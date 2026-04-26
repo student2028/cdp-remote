@@ -51,6 +51,9 @@ interface ICdpClient {
     /** 派发键盘事件 */
     suspend fun dispatchKeyEvent(type: String, key: String): CdpResult<JsonObject>
 
+    /** 插入文本 (最适合输入法输入) */
+    suspend fun insertText(text: String): CdpResult<JsonObject>
+
     /** 派发鼠标事件 */
     suspend fun dispatchMouseEvent(
         type: String, x: Double, y: Double,

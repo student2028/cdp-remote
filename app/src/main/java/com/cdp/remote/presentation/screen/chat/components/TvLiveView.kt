@@ -60,9 +60,12 @@ fun TvLiveView(
     onFocusChatChange: (Boolean) -> Unit,
     onToggleControlMode: () -> Unit = {},
     onRemoteInput: (type: String, ratioX: Float, ratioY: Float, button: String) -> Unit = { _, _, _, _ -> },
-    onRemoteScroll: (ratioX: Float, ratioY: Float, deltaY: Float) -> Unit = { _, _, _ -> }
+    onRemoteScroll: (ratioX: Float, ratioY: Float, deltaY: Float) -> Unit = { _, _, _ -> },
+    onRemoteText: (String) -> Unit = {},
+    onRemoteKey: (type: String, key: String) -> Unit = { _, _ -> }
 ) {
     var showSettings by remember { mutableStateOf(false) }
+    var showKeyboardInput by remember { mutableStateOf(false) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -223,7 +226,7 @@ fun TvLiveView(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(14.dp)
+                        .size(10.dp)
                         .clip(CircleShape)
                         .background(Color.White)
                         .border(1.5.dp, Color(0xFFFF9800), CircleShape)
@@ -309,6 +312,12 @@ fun TvLiveView(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                     colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("右▶", fontSize = 11.sp) }
+                // 键盘开关
+                TextButton(
+                    onClick = { showKeyboardInput = !showKeyboardInput },
+                    modifier = Modifier.height(32.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) { Text("⌨️", fontSize = 14.sp) }
                 // 设置齿轮
                 IconButton(
                     onClick = { showSettings = !showSettings },
@@ -336,6 +345,63 @@ fun TvLiveView(
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
                     .padding(horizontal = 12.dp, vertical = 4.dp)
             )
+        }
+
+        // ─── 键盘输入悬浮栏 ───────────────────────────────────────────
+        if (showKeyboardInput) {
+            var inputText by remember { mutableStateOf("") }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                androidx.compose.foundation.text.BasicTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(Color.DarkGray, RoundedCornerShape(4.dp))
+                        .padding(8.dp),
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
+                    decorationBox = { innerTextField ->
+                        if (inputText.isEmpty()) Text("输入发送到远端的文本...", color = Color.Gray, fontSize = 12.sp)
+                        innerTextField()
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        if (inputText.isNotEmpty()) {
+                            onRemoteText(inputText)
+                            inputText = ""
+                        }
+                    },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.height(32.dp)
+                ) { Text("发送", fontSize = 12.sp) }
+                Spacer(Modifier.width(4.dp))
+                Button(
+                    onClick = { 
+                        onRemoteKey("keyDown", "Enter")
+                        onRemoteKey("keyUp", "Enter")
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.height(32.dp)
+                ) { Text("回车", fontSize = 12.sp) }
+                Spacer(Modifier.width(4.dp))
+                Button(
+                    onClick = { 
+                        onRemoteKey("keyDown", "Backspace")
+                        onRemoteKey("keyUp", "Backspace")
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.height(32.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("退格", fontSize = 12.sp) }
+            }
         }
 
         // Settings panel
