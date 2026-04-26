@@ -397,6 +397,9 @@ const BRAIN_REPLY_MIN_WAIT_MS = 30_000;
 // 超时降级阈值：超过此时间未解析到标记，启用 fallback 模式
 const BRAIN_PLAN_FALLBACK_MS = 3 * 60 * 1000;   // BRAIN_PLAN 3 分钟后降级
 const BRAIN_REVIEW_FALLBACK_MS = 5 * 60 * 1000;  // BRAIN_REVIEW 5 分钟后降级
+// WORKER_CODE 自动 commit：Worker IDE 修改文件后可能不自动 commit（如 Windsurf 等待 Accept）
+// 当检测到 uncommitted changes 持续超过此阈值时，watchdog 自动 git add + commit
+const WORKER_AUTO_COMMIT_DELAY_MS = 60_000;  // 60s 持续有 dirty files → 自动 commit
 // 上次处理的 commit hash 追踪（已移入 currentPipeline 持久化）
 // 防止并发执行
 let _watchdogRunning = false;
@@ -407,6 +410,9 @@ let _brainReviewEnteredAt = 0;
 let _lastReplySnapshot = '';
 let _replyStableCount = 0;
 const REPLY_STABLE_THRESHOLD = 2; // 连续 2 轮（30s）相同 → 认为生成完成
+// WORKER_CODE 自动 commit 状态追踪
+let _workerDirtyDetectedAt = 0;   // 首次检测到 dirty files 的时间戳
+let _workerLastDirtyFiles = '';     // 上次检测到的 dirty file 列表（用于稳定性判断）
 
 /** 安全执行 git 命令，失败返回 null */
 function gitRevParse(ref, cwd) {
@@ -709,6 +715,65 @@ async function workflowWatchdogTick() {
         return;
     }
 
+    // ── 2b. WORKER_CODE 自动 commit：检测到 uncommitted changes 持续超时 → 自动 commit ──
+    if (pl.state === 'WORKER_CODE') {
+        try {
+            const statusOutput = execSync('git status --porcelain', {
+                cwd, encoding: 'utf8', timeout: 5000
+            }).trim();
+            if (statusOutput) {
+                // 有 uncommitted changes
+                if (!_workerDirtyDetectedAt) {
+                    _workerDirtyDetectedAt = Date.now();
+                    _workerLastDirtyFiles = statusOutput;
+                    log(`👁️ watchdog WORKER_CODE: 检测到未提交修改 (${statusOutput.split('\n').length} 个文件)`);
+                } else {
+                    const dirtyDuration = Date.now() - _workerDirtyDetectedAt;
+                    const filesChanged = statusOutput !== _workerLastDirtyFiles;
+                    if (filesChanged) {
+                        // 文件列表还在变化，Worker 还在写代码，重置计时器
+                        _workerLastDirtyFiles = statusOutput;
+                        _workerDirtyDetectedAt = Date.now();
+                    } else if (dirtyDuration >= WORKER_AUTO_COMMIT_DELAY_MS) {
+                        // 文件列表稳定超过阈值 → Worker 已停止写入 → 自动 commit
+                        log(`🔧 watchdog WORKER_CODE: 文件稳定 ${Math.round(dirtyDuration/1000)}s，自动 commit...`);
+                        try {
+                            execSync('git add -A', { cwd, timeout: 10000 });
+                            const fileCount = statusOutput.split('\n').length;
+                            // 用 spawn 异步执行 git commit，避免 reference-transaction hook 回调死锁
+                            // watchdog 下一轮轮询会通过 hash 变化检测到 commit 完成
+                            const { spawn } = require('child_process');
+                            const child = spawn('git', [
+                                'commit', '--no-verify',
+                                '-m', `Auto-commit: Worker changes (${fileCount} files)`,
+                                '-m', `Orchestra-Task: auto-commit`,
+                                '-m', `Orchestra-Pipeline: pair_programming`,
+                            ], { cwd, stdio: 'ignore', detached: true });
+                            child.unref(); // 不等待子进程
+                            log(`✅ watchdog 自动 commit 已提交 (${fileCount} 个文件，异步执行)`);
+                            _workerDirtyDetectedAt = 0;
+                            _workerLastDirtyFiles = '';
+                            // commit 会触发 git hook 或下一轮 watchdog 轮询检测到 hash 变化
+                        } catch (commitErr) {
+                            log(`⚠️ watchdog 自动 commit 失败: ${commitErr.message}`);
+                            _workerDirtyDetectedAt = 0; // 重置避免无限重试
+                        }
+                    }
+                }
+            } else {
+                // 无 uncommitted changes，重置
+                if (_workerDirtyDetectedAt) {
+                    _workerDirtyDetectedAt = 0;
+                    _workerLastDirtyFiles = '';
+                }
+            }
+        } catch (_) { /* git status 失败，忽略 */ }
+    } else {
+        // 非 WORKER_CODE 状态，重置自动 commit 追踪
+        _workerDirtyDetectedAt = 0;
+        _workerLastDirtyFiles = '';
+    }
+
     // ── 3a. BRAIN_PLAN 状态：读取大脑输出的任务并自动派发给工人 ──
     if (pl.state === 'BRAIN_PLAN' && !_brainReplyProcessed) {
         const planElapsed = Date.now() - pl.state_entered_at;
@@ -840,9 +905,18 @@ async function workflowWatchdogTick() {
                         // 通过且轮次足够：完成
                         success = await execOrchestra('done', null, cwd);
                     } else {
-                        // 通过但轮次不足：继续审查
-                        const reviewMsg = `第${round}轮PASS但轮次不足(${round}/${minRounds})，请更深入审视：性能/并发/回归/安全`;
-                        success = await execOrchestra('review', reviewMsg, cwd);
+                        // 通过但轮次不足：直接递增轮次，重置回复处理标记让 Brain 重新审查
+                        // 不回退到 WORKER_CODE（Worker 已经 PASS 了，无事可做会卡住）
+                        pl.reviewRound = round + 1;
+                        savePipelineState(pl);
+                        log(`🔄 质量门：PASS 但轮次不足(${round}/${minRounds})，递增到 round=${round+1}，保持 BRAIN_REVIEW 等待下一轮审查`);
+                        // 重置标记让 watchdog 下一轮重新读取 Brain 回复
+                        _brainReplyProcessed = false;
+                        _lastReplySnapshot = '';
+                        _replyStableCount = 0;
+                        _brainReviewEnteredAt = Date.now(); // 重置等待计时
+                        addEvent(pl, 'BRAIN_REVIEW', 'BRAIN_REVIEW', 'GATE', `质量门：PASS(${round}/${minRounds}) → 继续审查`);
+                        success = true;
                     }
                 } else {
                     success = true;
@@ -1750,6 +1824,13 @@ const server = http.createServer(async (req, res) => {
                     : DEFAULT_MIN_REVIEW_ROUNDS;
                 currentPipeline.lastReviewVerdict = null;
                 currentPipeline.initialTask = initialTask; // 保存原始完整需求，REVIEW 时用于判断是否全部完成
+                // ★ 重置 watchdog 全局状态（前一轮遗留会导致 BRAIN_PLAN/REVIEW 被跳过）
+                _brainReplyProcessed = false;
+                _lastReplySnapshot = '';
+                _replyStableCount = 0;
+                _workerDirtyDetectedAt = 0;
+                _workerLastDirtyFiles = '';
+                _brainReviewEnteredAt = 0;
                 currentPipeline.lastSeenPipelineHash = gitRevParse('refs/orchestra/pipeline', cwd);
                 currentPipeline.lastSeenMasterHash = gitRevParse('refs/heads/master', cwd) || gitRevParse('refs/heads/main', cwd);
                 savePipelineState(currentPipeline); // 持久化初始状态
