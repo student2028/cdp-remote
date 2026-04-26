@@ -347,61 +347,52 @@ fun TvLiveView(
             )
         }
 
-        // ─── 键盘输入悬浮栏 ───────────────────────────────────────────
+        // ─── 沉浸式键盘输入 (点击顶部 ⌨️ 触发) ─────────────────────────
+        val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+        LaunchedEffect(showKeyboardInput) {
+            if (showKeyboardInput) {
+                focusRequester.requestFocus()
+            }
+        }
+        
         if (showKeyboardInput) {
             var inputText by remember { mutableStateOf("") }
-            Row(
+            androidx.compose.foundation.text.BasicTextField(
+                value = inputText,
+                onValueChange = { inputText = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                androidx.compose.foundation.text.BasicTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    modifier = Modifier
-                        .weight(1f)
-                        .background(Color.DarkGray, RoundedCornerShape(4.dp))
-                        .padding(8.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
-                    decorationBox = { innerTextField ->
-                        if (inputText.isEmpty()) Text("输入发送到远端的文本...", color = Color.Gray, fontSize = 12.sp)
-                        innerTextField()
-                    }
-                )
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = {
+                    .background(Color(0xFF222222).copy(alpha = 0.95f))
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .focusRequester(focusRequester),
+                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Send
+                ),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                    onSend = {
                         if (inputText.isNotEmpty()) {
                             onRemoteText(inputText)
                             inputText = ""
+                        } else {
+                            // 如果是空的，直接发送一个回车键
+                            onRemoteKey("keyDown", "Enter")
+                            onRemoteKey("keyUp", "Enter")
                         }
-                    },
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    modifier = Modifier.height(32.dp)
-                ) { Text("发送", fontSize = 12.sp) }
-                Spacer(Modifier.width(4.dp))
-                Button(
-                    onClick = { 
-                        onRemoteKey("keyDown", "Enter")
-                        onRemoteKey("keyUp", "Enter")
-                    },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    modifier = Modifier.height(32.dp)
-                ) { Text("回车", fontSize = 12.sp) }
-                Spacer(Modifier.width(4.dp))
-                Button(
-                    onClick = { 
-                        onRemoteKey("keyDown", "Backspace")
-                        onRemoteKey("keyUp", "Backspace")
-                    },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    modifier = Modifier.height(32.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) { Text("退格", fontSize = 12.sp) }
-            }
+                        showKeyboardInput = false // 发送后自动收起键盘
+                    }
+                ),
+                decorationBox = { innerTextField ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (inputText.isEmpty()) {
+                            Text("在此输入，按输入法上的 [发送/换行] 将内容打入 IDE...", color = Color.Gray, fontSize = 14.sp)
+                        } else {
+                            innerTextField()
+                        }
+                    }
+                }
+            )
         }
 
         // Settings panel
