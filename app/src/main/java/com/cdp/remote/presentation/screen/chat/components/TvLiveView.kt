@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -95,7 +96,9 @@ fun TvLiveView(
     var vMouseRy by remember { mutableFloatStateOf(0.5f) }
     var isVirtualCursor by remember { mutableStateOf(false) }
 
-    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
+    val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current).toFloat()
+
+    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (imageBitmap != null) {
             val bitmapW = imageBitmap.width.toFloat()
             val bitmapH = imageBitmap.height.toFloat()
@@ -112,12 +115,36 @@ fun TvLiveView(
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { coordinates -> imageLayoutSize = coordinates.size }
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        translationX = offsetX,
-                        translationY = offsetY
-                    )
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offsetX
+                        
+                        var shiftY = 0f
+                        if (showKeyboardInput && imeBottom > 0 && imageLayoutSize.height > 0) {
+                            val viewH = imageLayoutSize.height.toFloat()
+                            val viewW = imageLayoutSize.width.toFloat()
+                            val bitmapW = imageBitmap.width.toFloat()
+                            val bitmapH = imageBitmap.height.toFloat()
+                            
+                            val scaleW = viewW / bitmapW
+                            val scaleH = viewH / bitmapH
+                            val drawScale = if (focusMode != 1) viewH / bitmapH else if (scaleW < scaleH) scaleW else scaleH
+                            val drawH = bitmapH * drawScale
+                            val imgTop = if (focusMode != 1) 0f else (viewH - drawH) / 2f
+                            
+                            val localY = imgTop + vMouseRy * drawH
+                            val screenY = (localY - viewH / 2f) * scale + viewH / 2f + offsetY
+                            
+                            val keyboardTop = viewH - imeBottom
+                            
+                            if (screenY > keyboardTop - 120f) {
+                                shiftY = screenY - (keyboardTop - 120f)
+                            }
+                        }
+                        
+                        translationY = offsetY - shiftY
+                    }
                     .pointerInput(controlMode, focusMode) {
                         if (!controlMode) {
                             detectTransformGestures { _, pan, zoom, _ ->
