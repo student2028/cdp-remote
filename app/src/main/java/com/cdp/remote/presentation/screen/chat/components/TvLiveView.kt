@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -310,11 +311,11 @@ fun TvLiveView(
                     color = if (controlMode) Color(0xFFFF9800)
                             else com.cdp.remote.presentation.theme.AccentGreen
                 )
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(4.dp))
                 val fps = if (intervalMs > 0) String.format("%.1f", 1000.0 / intervalMs) else "0"
                 Text(
-                    text = "Q:$quality | ${fps}fps | ${formatBytes(bytesTotal)} (${frameCount}帧)",
-                    fontSize = 10.sp,
+                    text = "Q$quality | $fps | ${formatBytes(bytesTotal)}",
+                    fontSize = 9.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
@@ -325,37 +326,38 @@ fun TvLiveView(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                    .horizontalScroll(androidx.compose.foundation.rememberScrollState())
             ) {
                 TextButton(
                     onClick = { focusMode = 2 },
-                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
                     colors = if (focusMode == 2) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("左", fontSize = 11.sp) }
                 TextButton(
                     onClick = { focusMode = 1 },
-                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
                     colors = if (focusMode == 1) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("全", fontSize = 11.sp) }
                 TextButton(
                     onClick = { focusMode = 0 },
-                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
                     colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("右", fontSize = 11.sp) }
                 // 鼠标/触屏开关
                 TextButton(
                     onClick = { isVirtualCursor = !isVirtualCursor },
-                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
-                ) { Text(if (isVirtualCursor) "🖱️" else "👆", fontSize = 13.sp) }
+                ) { Text(if (isVirtualCursor) "🖱️" else "👆", fontSize = 12.sp) }
                 // 键盘开关
                 TextButton(
                     onClick = { showKeyboardInput = !showKeyboardInput },
-                    modifier = Modifier.height(28.dp).widthIn(min = 32.dp),
+                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
-                ) { Text("⌨️", fontSize = 13.sp) }
+                ) { Text("⌨️", fontSize = 12.sp) }
                 // 设置齿轮
                 IconButton(
                     onClick = { showSettings = !showSettings },
