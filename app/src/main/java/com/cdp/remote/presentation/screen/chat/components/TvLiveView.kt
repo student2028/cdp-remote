@@ -347,55 +347,39 @@ fun TvLiveView(
                 )
             }
 
-            // 聚焦模式按钮 + 设置齿轮（右侧）
+            // 聚焦模式按钮 + 设置齿轮（右侧）— 用原生 Text+clickable 彻底消灭 Material3 按钮的最小触摸区域膨胀
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                    .horizontalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(horizontal = 2.dp, vertical = 2.dp)
             ) {
-                TextButton(
-                    onClick = { focusMode = 2 },
-                    modifier = Modifier.height(26.dp).widthIn(min = 24.dp),
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
-                    colors = if (focusMode == 2) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("左", fontSize = 11.sp) }
-                TextButton(
-                    onClick = { focusMode = 1 },
-                    modifier = Modifier.height(26.dp).widthIn(min = 24.dp),
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
-                    colors = if (focusMode == 1) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("全", fontSize = 11.sp) }
-                TextButton(
-                    onClick = { focusMode = 0 },
-                    modifier = Modifier.height(26.dp).widthIn(min = 24.dp),
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
-                    colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("右", fontSize = 11.sp) }
-                // 鼠标/触屏开关
-                TextButton(
-                    onClick = { isVirtualCursor = !isVirtualCursor },
-                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
-                ) { Text(if (isVirtualCursor) "🖱️" else "👆", fontSize = 12.sp) }
-                // 键盘开关
-                TextButton(
-                    onClick = { showKeyboardInput = !showKeyboardInput },
-                    modifier = Modifier.height(26.dp).widthIn(min = 26.dp),
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
-                ) { Text("⌨️", fontSize = 12.sp) }
-                // 设置齿轮
-                IconButton(
-                    onClick = { showSettings = !showSettings },
-                    modifier = Modifier.size(26.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Settings,
-                        contentDescription = "TV 设置",
-                        modifier = Modifier.size(15.dp)
-                    )
-                }
+                val itemModifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                // 左
+                Text("左", fontSize = 11.sp,
+                    fontWeight = if (focusMode == 2) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 2 } })
+                Text("全", fontSize = 11.sp,
+                    fontWeight = if (focusMode == 1) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 1 } })
+                Text("右", fontSize = 11.sp,
+                    fontWeight = if (focusMode == 0) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 0 } })
+                // 分隔
+                Text("|", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                // 触屏/光标
+                Text(if (isVirtualCursor) "🖱" else "👆", fontSize = 11.sp,
+                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { isVirtualCursor = !isVirtualCursor } })
+                // 键盘
+                Text("⌨", fontSize = 11.sp,
+                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { showKeyboardInput = !showKeyboardInput } })
+                // 设置
+                Text("⚙", fontSize = 11.sp,
+                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { showSettings = !showSettings } })
             }
         }
 
