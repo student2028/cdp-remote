@@ -98,7 +98,86 @@ fun TvLiveView(
 
     val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current).toFloat()
 
-    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // ─── 顶部工具栏（独立于画面之外，不遮挡 TV 内容） ─────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 左侧：LIVE/CTRL 徽章 + 左全右
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // LIVE/CTRL 状态指示
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                            if (controlMode) Color(0xFFFF9800).copy(alpha = 0.15f)
+                            else Color.Transparent
+                        )
+                        .pointerInput(Unit) { detectTapGestures { onToggleControlMode() } }
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (controlMode) Color(0xFFFF9800)
+                                else com.cdp.remote.presentation.theme.AccentGreen
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text(
+                        text = if (controlMode) "CTRL" else "LIVE",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (controlMode) Color(0xFFFF9800)
+                                else com.cdp.remote.presentation.theme.AccentGreen
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                val fps = if (intervalMs > 0) String.format("%.1f", 1000.0 / intervalMs) else "0"
+                Text(
+                    text = "Q$quality|$fps|${formatBytes(bytesTotal)}",
+                    fontSize = 9.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                // 左全右
+                val focusItemMod = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                Text("左", fontSize = 13.sp,
+                    fontWeight = if (focusMode == 2) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = focusItemMod.pointerInput(Unit) { detectTapGestures { focusMode = 2 } })
+                Text("全", fontSize = 13.sp,
+                    fontWeight = if (focusMode == 1) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = focusItemMod.pointerInput(Unit) { detectTapGestures { focusMode = 1 } })
+                Text("右", fontSize = 13.sp,
+                    fontWeight = if (focusMode == 0) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = focusItemMod.pointerInput(Unit) { detectTapGestures { focusMode = 0 } })
+            }
+
+            // 右侧：👆⌨⚙
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val iconMod = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                Text(if (isVirtualCursor) "🖱" else "👆", fontSize = 14.sp,
+                    modifier = iconMod.pointerInput(Unit) { detectTapGestures { isVirtualCursor = !isVirtualCursor } })
+                Text("⌨", fontSize = 14.sp,
+                    modifier = iconMod.pointerInput(Unit) { detectTapGestures { showKeyboardInput = !showKeyboardInput } })
+                Text("⚙", fontSize = 14.sp,
+                    modifier = iconMod.pointerInput(Unit) { detectTapGestures { showSettings = !showSettings } })
+            }
+        }
+
+        // ─── TV 画面区域 ─────────
+        Box(modifier = Modifier.fillMaxSize()) {
         if (imageBitmap != null) {
             val bitmapW = imageBitmap.width.toFloat()
             val bitmapH = imageBitmap.height.toFloat()
@@ -294,94 +373,7 @@ fun TvLiveView(
             }
         }
 
-        // ─── 顶部工具栏（单行，点击 LIVE 徽章切换操控模式） ─────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 4.dp)
-                .align(Alignment.TopEnd),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // LIVE / CTRL 可点击徽章（点击切换操控模式）+ 统计信息
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (controlMode) Color(0xFFFF9800).copy(alpha = 0.15f)
-                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-                    )
-                    .then(
-                        if (controlMode) Modifier.border(1.dp, Color(0xFFFF9800), RoundedCornerShape(8.dp))
-                        else Modifier
-                    )
-                    .pointerInput(Unit) {
-                        detectTapGestures { onToggleControlMode() }
-                    }
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (controlMode) Color(0xFFFF9800)
-                            else com.cdp.remote.presentation.theme.AccentGreen
-                        )
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = if (controlMode) "CTRL" else "LIVE",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (controlMode) Color(0xFFFF9800)
-                            else com.cdp.remote.presentation.theme.AccentGreen
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                val fps = if (intervalMs > 0) String.format("%.1f", 1000.0 / intervalMs) else "0"
-                Text(
-                    text = "Q$quality | $fps | ${formatBytes(bytesTotal)}",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
 
-            // 聚焦模式按钮 + 设置齿轮（右侧）— 用原生 Text+clickable 彻底消灭 Material3 按钮的最小触摸区域膨胀
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                    .padding(horizontal = 2.dp, vertical = 2.dp)
-            ) {
-                val itemModifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp)
-                // 左
-                Text("左", fontSize = 13.sp,
-                    fontWeight = if (focusMode == 2) FontWeight.Bold else FontWeight.Normal,
-                    color = if (focusMode == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 2 } })
-                Text("全", fontSize = 13.sp,
-                    fontWeight = if (focusMode == 1) FontWeight.Bold else FontWeight.Normal,
-                    color = if (focusMode == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 1 } })
-                Text("右", fontSize = 13.sp,
-                    fontWeight = if (focusMode == 0) FontWeight.Bold else FontWeight.Normal,
-                    color = if (focusMode == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 0 } })
-                // 分隔
-                Text("|", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
-                // 触屏/光标
-                Text(if (isVirtualCursor) "🖱" else "👆", fontSize = 14.sp,
-                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { isVirtualCursor = !isVirtualCursor } })
-                // 键盘
-                Text("⌨", fontSize = 14.sp,
-                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { showKeyboardInput = !showKeyboardInput } })
-                // 设置
-                Text("⚙", fontSize = 14.sp,
-                    modifier = itemModifier.pointerInput(Unit) { detectTapGestures { showSettings = !showSettings } })
-            }
-        }
 
         // 操控模式下显示底部提示条
         if (controlMode) {
@@ -489,7 +481,8 @@ fun TvLiveView(
                 onSettingsChange = onSettingsChange
             )
         }
-    }
+    } // Box (TV 画面区域)
+    } // Column
 }
 
 /**
