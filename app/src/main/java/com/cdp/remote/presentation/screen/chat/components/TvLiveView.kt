@@ -357,42 +357,50 @@ fun TvLiveView(
         }
         
         if (showKeyboardInput) {
-            var inputText by remember { mutableStateOf("") }
+            var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+            
             androidx.compose.foundation.text.BasicTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
+                value = textFieldValue,
+                onValueChange = { newValue ->
+                    // 如果有提交的新文本（composition == null 代表不是正在输入拼音的过程）
+                    if (newValue.composition == null && newValue.text.isNotEmpty()) {
+                        onRemoteText(newValue.text)
+                        // 瞬间清空，以便接收下一个字
+                        textFieldValue = androidx.compose.ui.text.input.TextFieldValue("")
+                    } else {
+                        textFieldValue = newValue
+                    }
+                },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .background(Color(0xFF222222).copy(alpha = 0.95f))
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .then(androidx.compose.ui.Modifier.focusRequester(focusRequester)),
-                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
+                    .size(1.dp)
+                    .alpha(0f) // 完全隐形，不挡视线
+                    .then(androidx.compose.ui.Modifier.focusRequester(focusRequester))
+                    .androidx.compose.ui.input.key.onKeyEvent { keyEvent ->
+                        if (keyEvent.type == androidx.compose.ui.input.key.KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                androidx.compose.ui.input.key.Key.Backspace -> {
+                                    // 只有在输入框为空（没有未提交拼音）时，才将退格键发给远端
+                                    if (textFieldValue.text.isEmpty()) {
+                                        onRemoteKey("rawKeyDown", "Backspace")
+                                        onRemoteKey("keyUp", "Backspace")
+                                    }
+                                    true
+                                }
+                                androidx.compose.ui.input.key.Key.Enter -> {
+                                    onRemoteKey("rawKeyDown", "Enter")
+                                    onRemoteKey("keyUp", "Enter")
+                                    // 发送完回车可以考虑自动收起键盘，或者保留
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    },
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    imeAction = androidx.compose.ui.text.input.ImeAction.Send
-                ),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                    onSend = {
-                        if (inputText.isNotEmpty()) {
-                            onRemoteText(inputText)
-                            inputText = ""
-                        } else {
-                            // 如果是空的，直接发送一个回车键
-                            onRemoteKey("keyDown", "Enter")
-                            onRemoteKey("keyUp", "Enter")
-                        }
-                        showKeyboardInput = false // 发送后自动收起键盘
-                    }
-                ),
-                decorationBox = { innerTextField ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (inputText.isEmpty()) {
-                            Text("在此输入，按输入法上的 [发送/换行] 将内容打入 IDE...", color = Color.Gray, fontSize = 14.sp)
-                        } else {
-                            innerTextField()
-                        }
-                    }
-                }
+                    imeAction = androidx.compose.ui.text.input.ImeAction.None // 禁用多余的发送按钮，直接发送回车键
+                )
             )
         }
 
