@@ -35,12 +35,19 @@
 npm install -g github:student2028/cdp-remote
 ```
 
-安装完成后，在终端运行：
-
 ```bash
 cdp-relay
 ```
-> 服务启动后，会自动扫描你正在运行的 IDE 实例。
+> 注意：直接执行 `cdp-relay` 会在前台运行，如果你关闭了终端，服务就会停止。服务启动后，会自动扫描你正在运行的 IDE 实例。
+
+**🔥 进阶建议：后台静默运行（防断连、开机自启）**
+为了极致体验，强烈推荐使用 PM2 来守护进程，这样就算电脑重启或终端关闭，你的手机也随时能连上电脑：
+
+```bash
+npm install -g pm2
+pm2 start cdp-relay --name "cdp-server"
+pm2 save && pm2 startup
+```
 
 ### 2️⃣ 客户端安装 (你的安卓手机)
 

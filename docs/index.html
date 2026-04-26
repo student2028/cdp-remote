@@ -132,11 +132,21 @@
                         <p>无需繁杂配置，无需注册账号，一条命令全局安装中继服务。</p>
                         <div class="code-block">
                             <div class="code-header">
-                                <span>Terminal</span>
+                                <span>Terminal (安装并前台启动)</span>
                                 <button class="copy-btn" onclick="copyCode('npm-cmd')">复制</button>
                             </div>
                             <pre><code id="npm-cmd">npm install -g github:student2028/cdp-remote
 cdp-relay</code></pre>
+                        </div>
+                        <p style="margin-top: 1.5rem; font-size: 1.05rem; color: var(--text-secondary);"><strong>🔥 进阶：如何让它在后台静默运行且死掉自动复活？</strong><br>使用 PM2 守护进程，关闭终端也不会断连，开机自动启动：</p>
+                        <div class="code-block" style="margin-top: 0.8rem;">
+                            <div class="code-header">
+                                <span>Terminal (后台守护模式)</span>
+                                <button class="copy-btn" onclick="copyCode('pm2-cmd')">复制</button>
+                            </div>
+                            <pre><code id="pm2-cmd">npm install -g pm2
+pm2 start cdp-relay --name "cdp-server"
+pm2 save && pm2 startup</code></pre>
                         </div>
                     </div>
                 </div>
