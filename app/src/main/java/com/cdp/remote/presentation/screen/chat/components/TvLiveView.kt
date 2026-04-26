@@ -25,6 +25,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -365,7 +366,7 @@ fun TvLiveView(
                     .align(Alignment.BottomCenter)
                     .background(Color(0xFF222222).copy(alpha = 0.95f))
                     .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .focusRequester(focusRequester),
+                    .then(androidx.compose.ui.Modifier.focusRequester(focusRequester)),
                 textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                     imeAction = androidx.compose.ui.text.input.ImeAction.Send
