@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDP Remote - 将 Electron IDE 装进口袋</title>
+    <meta name="description" content="极客专属远程操控方案，通过 CDP 协议将本地 Cursor/Windsurf 画面无损串流到手机端，实现随时随地硬核编码。">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Background Elements -->
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    
+    <header class="glass-nav">
+        <div class="nav-container">
+            <div class="logo">✨ CDP Remote</div>
+            <nav>
+                <a href="#features">特性</a>
+                <a href="#installation">快速安装</a>
+                <a href="https://github.com/student2028/cdp-remote" target="_blank" class="btn-outline">GitHub</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="hero-content">
+                <div class="badge fade-in-up">v1.0.0 正式发布</div>
+                <h1 class="fade-in-up delay-1">将本地 IDE 装进<span class="gradient-text">口袋</span></h1>
+                <p class="fade-in-up delay-2">随时随地开启硬核编码。基于 Chrome DevTools Protocol，将你的 Cursor、Windsurf、Codex 画面无缝实时串流到安卓手机。</p>
+                
+                <div class="hero-actions fade-in-up delay-3">
+                    <a href="#installation" class="btn-primary glow-effect">
+                        <span class="btn-text">立即获取</span>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    </a>
+                    <a href="https://github.com/student2028/cdp-remote/releases" class="btn-secondary">下载 Android APK</a>
+                </div>
+            </div>
+            
+            <div class="hero-visual fade-in delay-4">
+                <div class="phone-mockup glass-panel">
+                    <div class="mockup-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="mockup-title">192.168.1.100:19336</span>
+                    </div>
+                    <div class="mockup-body">
+                        <div class="mockup-toolbar">
+                            <span class="toolbar-badge">LIVE</span>
+                            <span class="toolbar-stats">Q60 | 30fps</span>
+                            <div class="toolbar-icons">👆 ⌨ ⚙</div>
+                        </div>
+                        <div class="mockup-code">
+                            <code><span class="keyword">function</span> <span class="func">connectRelay</span>() {</code>
+                            <code>  <span class="keyword">const</span> ws = <span class="keyword">new</span> <span class="type">WebSocket</span>(<span class="string">'ws://relay:19336'</span>);</code>
+                            <code>  ws.onmessage = (event) => {</code>
+                            <code>    <span class="comment">// Render high-quality IDE stream</span></code>
+                            <code>    renderStream(event.data);</code>
+                            <code>  };</code>
+                            <code>}</code>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="features" class="features">
+            <div class="section-title fade-in-up">
+                <h2>极客专属的<span class="gradient-text">操控体验</span></h2>
+                <p>抛弃臃肿的远控软件，专为开发者打造的沉浸式编码环境。</p>
+            </div>
+            
+            <div class="feature-grid">
+                <div class="feature-card glass-panel fade-in-up delay-1">
+                    <div class="feature-icon">👆</div>
+                    <h3>沉浸式精准触控</h3>
+                    <p>原生级别的多指手势支持，点哪打哪的直接触控模式，或随时切换为虚拟光标，精准定位每一个代码字符。</p>
+                </div>
+                <div class="feature-card glass-panel fade-in-up delay-2">
+                    <div class="feature-icon">⌨️</div>
+                    <h3>智能键盘避让</h3>
+                    <p>当手机原生键盘弹出时，IDE 画面智能计算 Y 轴平移，确保输入光标永远可见且画面不缩水。</p>
+                </div>
+                <div class="feature-card glass-panel fade-in-up delay-3">
+                    <div class="feature-icon">🪟</div>
+                    <h3>零死角工具栏</h3>
+                    <p>将高密度 UI 工具栏完全独立于代码画面之外，彻底告别悬浮窗遮挡，释放 100% 屏幕空间。</p>
+                </div>
+                <div class="feature-card glass-panel fade-in-up delay-4">
+                    <div class="feature-icon">🚀</div>
+                    <h3>毫秒级无损串流</h3>
+                    <p>WebSocket 图像差异化传输协议，弱网环境也能保持丝滑高帧率，让你感受不到远程的延迟。</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="installation" class="installation">
+            <div class="installation-container glass-panel fade-in-up">
+                <h2>只需两步，开启全平台办公</h2>
+                
+                <div class="install-step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>服务端（电脑）</h3>
+                        <p>无需繁杂配置，无需注册账号，一条命令全局安装中继服务。</p>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>Terminal</span>
+                                <button class="copy-btn" onclick="copyCode('npm-cmd')">复制</button>
+                            </div>
+                            <pre><code id="npm-cmd">npm install -g github:student2028/cdp-remote
+cdp-relay</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="install-step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>客户端（手机）</h3>
+                        <p>直接下载 APK，或者极客一点，连上数据线使用 ADB 一键安装。</p>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>Terminal (ADB)</span>
+                                <button class="copy-btn" onclick="copyCode('adb-cmd')">复制</button>
+                            </div>
+                            <pre><code id="adb-cmd">curl -L -o /tmp/cdp-remote.apk https://github.com/student2028/cdp-remote/releases/download/v1.0.0/CdpRemote-debug.apk
+adb install -r /tmp/cdp-remote.apk</code></pre>
+                        </div>
+                        <div class="download-fallback">
+                            不方便用命令行？<a href="https://github.com/student2028/cdp-remote/releases/tag/v1.0.0" class="text-link">点击直接下载 APK</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>基于 Chrome DevTools Protocol 构建的下一代远程开发体验</p>
+        <p class="copyright">© 2026 student2028 | Open Sourced under MIT License</p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
