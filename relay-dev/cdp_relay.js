@@ -24,7 +24,8 @@ const path = require('path');
 const fs = require('fs');
 const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
 const otaMeta = require('./ota_meta');
-const REPO_ROOT = __dirname;
+// 智能检测：如果上层目录有 app/ 和 build/（说明在 git 仓库里），就用上层；否则用当前目录（独立 npm 包）
+const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(__dirname, '..') : __dirname;
 
 // ─── 目录历史持久化 ───
 const CWD_HISTORY_DIR = path.join(os.homedir(), '.cdp-relay');
