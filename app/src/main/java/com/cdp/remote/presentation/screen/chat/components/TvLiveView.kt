@@ -203,103 +203,131 @@ fun TvLiveView(
             )
         }
 
-        // Top bar with LIVE badge, mode toggle, focus buttons, and settings
-        Row(
+        // ─── 顶部工具栏（两行布局，避免拥挤） ─────────────────────────
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 4.dp)
-                .align(Alignment.TopEnd),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .align(Alignment.TopStart)
         ) {
-            // LIVE badge + stats (left side)
+            // 第一行：LIVE 状态 + 统计信息 + 设置齿轮
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
+                // LIVE / CTRL 状态徽章 + 统计
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (controlMode) Color(0xFFFF9800) // 操控模式橙色指示
-                            else com.cdp.remote.presentation.theme.AccentGreen
-                        )
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = if (controlMode) "CTRL" else "LIVE",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (controlMode) Color(0xFFFF9800)
-                            else com.cdp.remote.presentation.theme.AccentGreen
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                val fps = if (intervalMs > 0) String.format("%.1f", 1000.0 / intervalMs) else "0"
-                Text(
-                    text = "Q:$quality | ${fps}fps | ${formatBytes(bytesTotal)} (${frameCount}帧)",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
-            // Focus mode buttons + control toggle + settings (right side)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-            ) {
-                TextButton(
-                    onClick = { focusMode = 2 },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    colors = if (focusMode == 2) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("◀左", fontSize = 11.sp) }
-                TextButton(
-                    onClick = { focusMode = 1 },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    colors = if (focusMode == 1) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("全屏", fontSize = 11.sp) }
-                TextButton(
-                    onClick = { focusMode = 0 },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
-                ) { Text("右▶", fontSize = 11.sp) }
-
-                // 观影 / 操控 模式切换按钮
-                IconButton(
-                    onClick = { onToggleControlMode() },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .then(
-                            if (controlMode) Modifier
-                                .clip(CircleShape)
-                                .border(2.dp, Color(0xFFFF9800), CircleShape)
-                            else Modifier
-                        )
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
-                    Icon(
-                        imageVector = if (controlMode) Icons.Default.TouchApp else Icons.Default.Visibility,
-                        contentDescription = if (controlMode) "切换到观影模式" else "切换到操控模式",
-                        modifier = Modifier.size(20.dp),
-                        tint = if (controlMode) Color(0xFFFF9800) else LocalContentColor.current
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (controlMode) Color(0xFFFF9800)
+                                else com.cdp.remote.presentation.theme.AccentGreen
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (controlMode) "CTRL" else "LIVE",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (controlMode) Color(0xFFFF9800)
+                                else com.cdp.remote.presentation.theme.AccentGreen
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    val fps = if (intervalMs > 0) String.format("%.1f", 1000.0 / intervalMs) else "0"
+                    Text(
+                        text = "Q:$quality | ${fps}fps | ${formatBytes(bytesTotal)} (${frameCount}帧)",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
 
-                // Settings gear
+                // 设置齿轮（始终可见）
                 IconButton(
                     onClick = { showSettings = !showSettings },
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
                 ) {
                     Icon(
                         Icons.Default.Settings,
                         contentDescription = "TV 设置",
                         modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // 第二行：聚焦模式按钮 + 操控模式切换
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 聚焦模式按钮组（◀左 / 全屏 / 右▶）
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                ) {
+                    TextButton(
+                        onClick = { focusMode = 2 },
+                        modifier = Modifier.height(32.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        colors = if (focusMode == 2) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
+                    ) { Text("◀左", fontSize = 11.sp) }
+                    TextButton(
+                        onClick = { focusMode = 1 },
+                        modifier = Modifier.height(32.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        colors = if (focusMode == 1) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
+                    ) { Text("全屏", fontSize = 11.sp) }
+                    TextButton(
+                        onClick = { focusMode = 0 },
+                        modifier = Modifier.height(32.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
+                    ) { Text("右▶", fontSize = 11.sp) }
+                }
+
+                // 观影 / 操控 模式切换按钮
+                TextButton(
+                    onClick = { onToggleControlMode() },
+                    modifier = Modifier
+                        .height(32.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (controlMode) Color(0xFFFF9800).copy(alpha = 0.15f)
+                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                        )
+                        .then(
+                            if (controlMode) Modifier.border(1.5.dp, Color(0xFFFF9800), RoundedCornerShape(8.dp))
+                            else Modifier
+                        ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                ) {
+                    Icon(
+                        imageVector = if (controlMode) Icons.Default.TouchApp else Icons.Default.Visibility,
+                        contentDescription = if (controlMode) "切换到观影模式" else "切换到操控模式",
+                        modifier = Modifier.size(16.dp),
+                        tint = if (controlMode) Color(0xFFFF9800) else MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (controlMode) "操控" else "观影",
+                        fontSize = 11.sp,
+                        color = if (controlMode) Color(0xFFFF9800) else MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
