@@ -363,32 +363,40 @@ fun TvLiveView(
         }
         
         if (showKeyboardInput) {
-            // 使用一个不可见的空格 " " 作为占位符，用来强行捕获软键盘的退格键（Backspace）事件
-            var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(" ")) }
+            // 放弃空格占位符，采用原生累加模式，通过计算文本长度变化（diff）来精准捕捉所有软键盘退格事件
+            var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
             
             androidx.compose.foundation.text.BasicTextField(
                 value = textFieldValue,
                 onValueChange = { newValue ->
                     if (newValue.composition == null) {
-                        if (newValue.text.isEmpty()) {
-                            // 文本从 " " 变成了 ""，说明用户按下了软键盘退格键！
-                            onRemoteKey("rawKeyDown", "Backspace")
-                            onRemoteKey("keyUp", "Backspace")
-                            textFieldValue = androidx.compose.ui.text.input.TextFieldValue(" ")
-                        } else if (newValue.text.length > 1) {
-                            // 文本变成了 " a" 或 " 你好"，说明用户提交了新文本
-                            val addedText = newValue.text.substring(1)
-                            onRemoteText(addedText)
-                            // 瞬间恢复为一个空格，等待下次输入
-                            textFieldValue = androidx.compose.ui.text.input.TextFieldValue(" ")
-                        } else {
-                            // 文本刚好是 " "，说明刚刚删除了尚未提交的拼音，恢复到了初始状态，不需要处理
-                            textFieldValue = newValue
+                        val oldStr = textFieldValue.text
+                        val newStr = newValue.text
+                        
+                        if (newStr.length < oldStr.length) {
+                            // 文本变短，说明用户按了退格键
+                            val diff = oldStr.length - newStr.length
+                            for (i in 0 until diff) {
+                                onRemoteKey("keyDown", "Backspace")
+                                onRemoteKey("keyUp", "Backspace")
+                            }
+                        } else if (newStr.length > oldStr.length) {
+                            // 文本变长，发送新增部分
+                            if (newStr.startsWith(oldStr)) {
+                                val addedText = newStr.substring(oldStr.length)
+                                if (addedText == "\n") {
+                                    onRemoteKey("keyDown", "Enter")
+                                    onRemoteKey("keyUp", "Enter")
+                                } else {
+                                    onRemoteText(addedText)
+                                }
+                            } else {
+                                // 复杂情况（如移动光标或部分替换），简单容错，发送新增长度的尾部
+                                onRemoteText(newStr.substring(newStr.length - (newStr.length - oldStr.length)))
+                            }
                         }
-                    } else {
-                        // 正在组合拼音，保留状态
-                        textFieldValue = newValue
                     }
+                    textFieldValue = newValue
                 },
                 modifier = Modifier
                     .size(1.dp)
@@ -398,17 +406,17 @@ fun TvLiveView(
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
                                 Key.Enter -> {
-                                    onRemoteKey("rawKeyDown", "Enter")
+                                    onRemoteKey("keyDown", "Enter")
                                     onRemoteKey("keyUp", "Enter")
                                     true
                                 }
                                 Key.Backspace -> {
-                                    // 兼容外接硬键盘的退格
-                                    if (textFieldValue.text == " " || textFieldValue.text.isEmpty()) {
-                                        onRemoteKey("rawKeyDown", "Backspace")
+                                    // 保底：当文本已经删空时，onValueChange 的 diff 无法捕捉，在这里通过 KeyEvent 拦截
+                                    if (textFieldValue.text.isEmpty()) {
+                                        onRemoteKey("keyDown", "Backspace")
                                         onRemoteKey("keyUp", "Backspace")
                                     }
-                                    true
+                                    false // 返回 false 允许事件继续传递，以便更新 TextField 的状态
                                 }
                                 else -> false
                             }
@@ -417,7 +425,8 @@ fun TvLiveView(
                         }
                     },
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    imeAction = androidx.compose.ui.text.input.ImeAction.None // 禁用多余的发送按钮，直接发送回车键
+                    autoCorrect = false, // 关闭自动纠错，避免系统强行替换文本导致同步错乱
+                    imeAction = androidx.compose.ui.text.input.ImeAction.None
                 )
             )
         }
