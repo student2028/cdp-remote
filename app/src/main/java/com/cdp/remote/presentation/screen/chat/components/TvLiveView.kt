@@ -373,9 +373,9 @@ fun TvLiveView(
                 },
                 modifier = Modifier
                     .size(1.dp)
-                    .alpha(0f) // 完全隐形，不挡视线
+                    .then(androidx.compose.ui.Modifier.alpha(0f)) // 完全隐形，不挡视线
                     .then(androidx.compose.ui.Modifier.focusRequester(focusRequester))
-                    .androidx.compose.ui.input.key.onKeyEvent { keyEvent ->
+                    .androidx.compose.ui.input.key.onKeyEvent { keyEvent: androidx.compose.ui.input.key.KeyEvent ->
                         if (keyEvent.type == androidx.compose.ui.input.key.KeyEventType.KeyDown) {
                             when (keyEvent.key) {
                                 androidx.compose.ui.input.key.Key.Backspace -> {
