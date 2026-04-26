@@ -23,8 +23,8 @@ const ENABLE_WATCHDOG = process.env.ENABLE_WATCHDOG !== 'false';
 const path = require('path');
 const fs = require('fs');
 const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
-const otaMeta = require(path.join(__dirname, '..', 'ota_meta.js'));
-const REPO_ROOT = path.join(__dirname, '..');
+const otaMeta = require('./ota_meta');
+const REPO_ROOT = __dirname;
 
 // ─── 目录历史持久化 ───
 const CWD_HISTORY_DIR = path.join(os.homedir(), '.cdp-relay');
