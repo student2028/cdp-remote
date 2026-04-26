@@ -347,9 +347,11 @@ private fun toImageRatio(
     val viewW = layoutSize.width.toFloat()
     val viewH = layoutSize.height.toFloat()
 
-    // 反向计算 graphicsLayer 变换（scale + translation）
-    val localX = (touchOffset.x - viewW / 2f - transX) / scale + viewW / 2f
-    val localY = (touchOffset.y - viewH / 2f - transY) / scale + viewH / 2f
+    // Compose 的 pointerInput 定义在 graphicsLayer 之后，所以它接收到的 touchOffset 
+    // 已经被 Compose 自动应用了反向变换（已经处于原始 1:1 的 local 坐标系中）。
+    // 所以这里不需要再手动除以 scale 和减去 transX！
+    val localX = touchOffset.x
+    val localY = touchOffset.y
 
     // 根据 ContentScale 计算图片实际绘制区域
     val drawScale: Float
