@@ -82,14 +82,8 @@ fun TvLiveView(
         BitmapFactory.decodeByteArray(frameData, 0, frameData.size)
     }
 
-    // 切换到操控模式时自动重置缩放，确保 1:1 坐标映射精度
-    LaunchedEffect(controlMode) {
-        if (controlMode) {
-            scale = 1f
-            offsetX = 0f
-            offsetY = 0f
-        }
-    }
+    // 操控模式下保持当前缩放和偏移不变 —— 用户先在观影模式下放大到目标区域，
+    // 再切换到操控模式进行精准点击。toImageRatio() 已正确处理 scale/offset 变换。
 
     Box(
         modifier = modifier
