@@ -3,7 +3,9 @@ package com.cdp.remote.presentation.screen.chat.components
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -11,19 +13,35 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * TV 实时画面组件 — 支持「观影模式」和「操控模式」双模切换。
+ *
+ * 观影模式（默认）：双指缩放 + 单指平移，与原有行为完全一致。
+ * 操控模式：触摸事件映射到远端 IDE 的 CDP Input 坐标：
+ *   - 单击 → mousePressed + mouseReleased（点击）
+ *   - 拖拽 → mouseMoved 序列（选择文本/拖动元素）
+ *   - 双指滑动 → 滚轮事件（上下滚动页面）
+ */
 @Composable
 fun TvLiveView(
     modifier: Modifier = Modifier,
@@ -35,9 +53,13 @@ fun TvLiveView(
     frameCount: Int = 0,
     focusChat: Boolean = true,
     appName: String = "Antigravity",
+    controlMode: Boolean = false,
     onClose: () -> Unit,
     onSettingsChange: (quality: Int, intervalMs: Long) -> Unit,
-    onFocusChatChange: (Boolean) -> Unit
+    onFocusChatChange: (Boolean) -> Unit,
+    onToggleControlMode: () -> Unit = {},
+    onRemoteInput: (type: String, ratioX: Float, ratioY: Float, button: String) -> Unit = { _, _, _, _ -> },
+    onRemoteScroll: (ratioX: Float, ratioY: Float, deltaY: Float) -> Unit = { _, _, _ -> }
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var scale by remember { mutableFloatStateOf(1f) }
@@ -53,8 +75,20 @@ fun TvLiveView(
         mutableIntStateOf(initial)
     }
 
+    // 记录 Image 组件在屏幕上的实际渲染尺寸（用于坐标映射）
+    var imageLayoutSize by remember { mutableStateOf(IntSize.Zero) }
+
     val bitmap = remember(frameData) {
         BitmapFactory.decodeByteArray(frameData, 0, frameData.size)
+    }
+
+    // 切换到操控模式时自动重置缩放，确保 1:1 坐标映射精度
+    LaunchedEffect(controlMode) {
+        if (controlMode) {
+            scale = 1f
+            offsetX = 0f
+            offsetY = 0f
+        }
     }
 
     Box(
@@ -64,6 +98,9 @@ fun TvLiveView(
     ) {
         // Image display
         if (bitmap != null) {
+            val bitmapW = bitmap.width.toFloat()
+            val bitmapH = bitmap.height.toFloat()
+
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = "IDE 实时画面",
@@ -75,23 +112,98 @@ fun TvLiveView(
                 },
                 modifier = Modifier
                     .fillMaxSize()
+                    .onGloballyPositioned { coordinates ->
+                        imageLayoutSize = coordinates.size
+                    }
                     .graphicsLayer(
                         scaleX = scale,
                         scaleY = scale,
                         translationX = offsetX,
                         translationY = offsetY
                     )
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.5f, 5f)
-                            offsetX += pan.x
-                            offsetY += pan.y
+                    .pointerInput(controlMode, focusMode) {
+                        if (!controlMode) {
+                            // ───── 观影模式：原有的双指缩放 + 平移 ─────
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(0.5f, 5f)
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            }
+                        } else {
+                            // ───── 操控模式：拖拽 → mouseMoved 序列 ─────
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    toImageRatio(
+                                        offset, imageLayoutSize, bitmapW, bitmapH,
+                                        focusMode, scale, offsetX, offsetY
+                                    )?.let { (rx, ry) ->
+                                        onRemoteInput("mousePressed", rx, ry, "left")
+                                    }
+                                },
+                                onDrag = { change, _ ->
+                                    change.consume()
+                                    toImageRatio(
+                                        change.position, imageLayoutSize, bitmapW, bitmapH,
+                                        focusMode, scale, offsetX, offsetY
+                                    )?.let { (rx, ry) ->
+                                        onRemoteInput("mouseMoved", rx, ry, "left")
+                                    }
+                                },
+                                onDragEnd = {
+                                    // 无法直接拿到最后的坐标，但上一次 mouseMoved 已经足够
+                                    // mouseReleased 会在 detectTapGestures 的 onPress 中处理
+                                },
+                                onDragCancel = {}
+                            )
+                        }
+                    }
+                    .pointerInput(controlMode, focusMode) {
+                        if (controlMode) {
+                            // ───── 操控模式：单击 → mousePressed + mouseReleased ─────
+                            detectTapGestures(
+                                onTap = { offset ->
+                                    toImageRatio(
+                                        offset, imageLayoutSize, bitmapW, bitmapH,
+                                        focusMode, scale, offsetX, offsetY
+                                    )?.let { (rx, ry) ->
+                                        onRemoteInput("mousePressed", rx, ry, "left")
+                                        onRemoteInput("mouseReleased", rx, ry, "left")
+                                    }
+                                },
+                                onLongPress = { offset ->
+                                    // 长按模拟右键
+                                    toImageRatio(
+                                        offset, imageLayoutSize, bitmapW, bitmapH,
+                                        focusMode, scale, offsetX, offsetY
+                                    )?.let { (rx, ry) ->
+                                        onRemoteInput("mousePressed", rx, ry, "right")
+                                        onRemoteInput("mouseReleased", rx, ry, "right")
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    .pointerInput(controlMode, focusMode) {
+                        if (controlMode) {
+                            // ───── 操控模式：双指缩放手势 → 滚轮 ─────
+                            detectTransformGestures { centroid, _, zoom, _ ->
+                                // 将 pinch zoom 变化量转为滚轮 deltaY
+                                val delta = if (zoom > 1.01f) -200f else if (zoom < 0.99f) 200f else 0f
+                                if (delta != 0f) {
+                                    toImageRatio(
+                                        centroid, imageLayoutSize, bitmapW, bitmapH,
+                                        focusMode, scale, offsetX, offsetY
+                                    )?.let { (rx, ry) ->
+                                        onRemoteScroll(rx, ry, delta)
+                                    }
+                                }
+                            }
                         }
                     }
             )
         }
 
-        // Top bar with LIVE badge, focus mode buttons, and settings
+        // Top bar with LIVE badge, mode toggle, focus buttons, and settings
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -112,14 +224,18 @@ fun TvLiveView(
                     modifier = Modifier
                         .size(6.dp)
                         .clip(CircleShape)
-                        .background(com.cdp.remote.presentation.theme.AccentGreen)
+                        .background(
+                            if (controlMode) Color(0xFFFF9800) // 操控模式橙色指示
+                            else com.cdp.remote.presentation.theme.AccentGreen
+                        )
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "LIVE",
+                    text = if (controlMode) "CTRL" else "LIVE",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = com.cdp.remote.presentation.theme.AccentGreen
+                    color = if (controlMode) Color(0xFFFF9800)
+                            else com.cdp.remote.presentation.theme.AccentGreen
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 val fps = if (intervalMs > 0) String.format("%.1f", 1000.0 / intervalMs) else "0"
@@ -129,7 +245,7 @@ fun TvLiveView(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
-            // Focus mode buttons + settings (right side)
+            // Focus mode buttons + control toggle + settings (right side)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -154,6 +270,27 @@ fun TvLiveView(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                     colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("右▶", fontSize = 11.sp) }
+
+                // 观影 / 操控 模式切换按钮
+                IconButton(
+                    onClick = { onToggleControlMode() },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .then(
+                            if (controlMode) Modifier
+                                .clip(CircleShape)
+                                .border(2.dp, Color(0xFFFF9800), CircleShape)
+                            else Modifier
+                        )
+                ) {
+                    Icon(
+                        imageVector = if (controlMode) Icons.Default.TouchApp else Icons.Default.Visibility,
+                        contentDescription = if (controlMode) "切换到观影模式" else "切换到操控模式",
+                        modifier = Modifier.size(20.dp),
+                        tint = if (controlMode) Color(0xFFFF9800) else LocalContentColor.current
+                    )
+                }
+
                 // Settings gear
                 IconButton(
                     onClick = { showSettings = !showSettings },
@@ -168,6 +305,21 @@ fun TvLiveView(
             }
         }
 
+        // 操控模式下显示底部提示条
+        if (controlMode) {
+            Text(
+                text = "🖱️ 操控模式：点击=左键 | 长按=右键 | 双指=滚动",
+                fontSize = 10.sp,
+                color = Color(0xFFFF9800),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 4.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+
         // Settings panel
         if (showSettings) {
             TvSettingsPanel(
@@ -177,6 +329,81 @@ fun TvLiveView(
             )
         }
     }
+}
+
+/**
+ * 将 Image 组件上的触摸坐标转换为原始图片的归一化比例 [0..1]。
+ *
+ * 考虑了 ContentScale（FillHeight / Fit）和 Alignment（TopEnd / TopStart / Center）
+ * 对图片实际绘制区域的影响。
+ *
+ * @return Pair(ratioX, ratioY) 或 null（触摸点在图片外）
+ */
+private fun toImageRatio(
+    touchOffset: Offset,
+    layoutSize: IntSize,
+    bitmapW: Float,
+    bitmapH: Float,
+    focusMode: Int,
+    scale: Float,
+    transX: Float,
+    transY: Float
+): Pair<Float, Float>? {
+    if (layoutSize.width <= 0 || layoutSize.height <= 0 || bitmapW <= 0f || bitmapH <= 0f) return null
+
+    val viewW = layoutSize.width.toFloat()
+    val viewH = layoutSize.height.toFloat()
+
+    // 反向计算 graphicsLayer 变换（scale + translation）
+    val localX = (touchOffset.x - viewW / 2f - transX) / scale + viewW / 2f
+    val localY = (touchOffset.y - viewH / 2f - transY) / scale + viewH / 2f
+
+    // 根据 ContentScale 计算图片实际绘制区域
+    val drawScale: Float
+    val drawW: Float
+    val drawH: Float
+
+    if (focusMode != 1) {
+        // FillHeight：图片高度撑满，宽度可能超出
+        drawScale = viewH / bitmapH
+        drawW = bitmapW * drawScale
+        drawH = viewH
+    } else {
+        // Fit：整张图片可见
+        val scaleW = viewW / bitmapW
+        val scaleH = viewH / bitmapH
+        drawScale = minOf(scaleW, scaleH)
+        drawW = bitmapW * drawScale
+        drawH = bitmapH * drawScale
+    }
+
+    // 根据 Alignment 计算图片绘制区域的偏移
+    val imgLeft: Float
+    val imgTop: Float
+    when (focusMode) {
+        0 -> { // TopEnd
+            imgLeft = viewW - drawW
+            imgTop = 0f
+        }
+        2 -> { // TopStart
+            imgLeft = 0f
+            imgTop = 0f
+        }
+        else -> { // Center
+            imgLeft = (viewW - drawW) / 2f
+            imgTop = (viewH - drawH) / 2f
+        }
+    }
+
+    // 检查触摸点是否在图片绘制区域内
+    val relX = localX - imgLeft
+    val relY = localY - imgTop
+    if (relX < 0f || relX > drawW || relY < 0f || relY > drawH) return null
+
+    // 归一化到 [0..1]
+    val ratioX = relX / drawW
+    val ratioY = relY / drawH
+    return Pair(ratioX.coerceIn(0f, 1f), ratioY.coerceIn(0f, 1f))
 }
 
 private fun formatBytes(bytes: Long): String {

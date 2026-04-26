@@ -821,6 +821,83 @@ class ChatViewModel(
         uiState = uiState.copy(tvFocusChat = focus)
     }
 
+    /** 切换 TV 操控模式（观影 ↔ 操控） */
+    fun toggleTvControlMode() {
+        val newMode = !uiState.tvControlMode
+        uiState = uiState.copy(tvControlMode = newMode)
+        if (newMode) {
+            // 进入操控模式时，获取远端页面尺寸用于坐标映射
+            fetchPageDimensions()
+        }
+    }
+
+    /** 获取远端 IDE 页面的实际像素尺寸 */
+    private fun fetchPageDimensions() {
+        viewModelScope.launch {
+            val script = "(function(){ return window.innerWidth + ',' + window.innerHeight; })()"
+            val result = cdpClient.evaluate(script)
+            if (result is CdpResult.Success && result.data != null) {
+                val parts = result.data.split(",")
+                if (parts.size == 2) {
+                    val w = parts[0].toIntOrNull() ?: 0
+                    val h = parts[1].toIntOrNull() ?: 0
+                    if (w > 0 && h > 0) {
+                        uiState = uiState.copy(tvPageWidth = w, tvPageHeight = h)
+                        Log.d(TAG, "远端页面尺寸: ${w}x${h}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 从 TV 画面的触摸事件派发 CDP 远程输入。
+     *
+     * 坐标映射逻辑：
+     * Android 端触摸坐标 (touchX, touchY) 是相对于 Image 组件的归一化比例 [0..1]，
+     * 乘以远端页面实际像素尺寸 (tvPageWidth, tvPageHeight) 得到 IDE 内的绝对坐标。
+     *
+     * @param type     CDP 鼠标事件类型: "mousePressed", "mouseReleased", "mouseMoved"
+     * @param ratioX   触摸点在图片上的水平比例 [0..1]
+     * @param ratioY   触摸点在图片上的垂直比例 [0..1]
+     * @param button   鼠标按钮: "left", "right", "middle"
+     */
+    fun dispatchRemoteInput(type: String, ratioX: Float, ratioY: Float, button: String = "left") {
+        val pw = uiState.tvPageWidth
+        val ph = uiState.tvPageHeight
+        if (pw <= 0 || ph <= 0) {
+            // 尺寸未就绪，尝试重新获取
+            fetchPageDimensions()
+            return
+        }
+        val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
+        val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
+        val clickCount = if (type == "mousePressed") 1 else 0
+
+        viewModelScope.launch {
+            cdpClient.dispatchMouseEvent(type, x, y, button, clickCount)
+        }
+    }
+
+    /**
+     * 从 TV 画面派发滚轮事件。
+     *
+     * @param ratioX  触摸点水平比例 [0..1]
+     * @param ratioY  触摸点垂直比例 [0..1]
+     * @param deltaY  滚动距离（正数向下，负数向上）
+     */
+    fun dispatchRemoteScroll(ratioX: Float, ratioY: Float, deltaY: Float) {
+        val pw = uiState.tvPageWidth
+        val ph = uiState.tvPageHeight
+        if (pw <= 0 || ph <= 0) return
+        val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
+        val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
+
+        viewModelScope.launch {
+            cdpClient.dispatchScrollEvent(deltaY.toDouble(), x, y)
+        }
+    }
+
     // ─── Utility ────────────────────────────────────────────────────
 
     fun prepareModelSwitchDialog() {

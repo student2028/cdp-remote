@@ -183,9 +183,13 @@ fun ChatScreen(
             frameCount = state.tvFrameCount,
             focusChat = state.tvFocusChat,
             appName = appName,
+            controlMode = state.tvControlMode,
             onClose = { viewModel.toggleTvMode() },
             onSettingsChange = { q, i -> viewModel.setTvSettings(q, i) },
-            onFocusChatChange = { viewModel.setTvFocusChat(it) }
+            onFocusChatChange = { viewModel.setTvFocusChat(it) },
+            onToggleControlMode = { viewModel.toggleTvControlMode() },
+            onRemoteInput = { type, rx, ry, btn -> viewModel.dispatchRemoteInput(type, rx, ry, btn) },
+            onRemoteScroll = { rx, ry, dy -> viewModel.dispatchRemoteScroll(rx, ry, dy) }
         )
         return
     }
@@ -317,9 +321,13 @@ fun ChatScreen(
                         frameCount = state.tvFrameCount,
                         focusChat = state.tvFocusChat,
                         appName = appName,
+                        controlMode = state.tvControlMode,
                         onClose = { viewModel.toggleTvMode() },
                         onSettingsChange = { q, i -> viewModel.setTvSettings(q, i) },
-                        onFocusChatChange = { viewModel.setTvFocusChat(it) }
+                        onFocusChatChange = { viewModel.setTvFocusChat(it) },
+                        onToggleControlMode = { viewModel.toggleTvControlMode() },
+                        onRemoteInput = { type, rx, ry, btn -> viewModel.dispatchRemoteInput(type, rx, ry, btn) },
+                        onRemoteScroll = { rx, ry, dy -> viewModel.dispatchRemoteScroll(rx, ry, dy) }
                     )
                     // Drag handle to resize TV panel
                     Box(
