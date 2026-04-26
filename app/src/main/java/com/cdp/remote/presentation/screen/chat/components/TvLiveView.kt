@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -124,71 +125,79 @@ fun TvLiveView(
                                 offsetY += pan.y
                             }
                         } else {
-                            // ───── 操控模式：拖拽 → mouseMoved 序列 ─────
-                            detectDragGestures(
-                                onDragStart = { offset ->
-                                    toImageRatio(
-                                        offset, imageLayoutSize, bitmapW, bitmapH,
-                                        focusMode, scale, offsetX, offsetY
-                                    )?.let { (rx, ry) ->
-                                        onRemoteInput("mousePressed", rx, ry, "left")
-                                    }
-                                },
-                                onDrag = { change, _ ->
-                                    change.consume()
-                                    toImageRatio(
-                                        change.position, imageLayoutSize, bitmapW, bitmapH,
-                                        focusMode, scale, offsetX, offsetY
-                                    )?.let { (rx, ry) ->
-                                        onRemoteInput("mouseMoved", rx, ry, "left")
-                                    }
-                                },
-                                onDragEnd = {
-                                    // 无法直接拿到最后的坐标，但上一次 mouseMoved 已经足够
-                                    // mouseReleased 会在 detectTapGestures 的 onPress 中处理
-                                },
-                                onDragCancel = {}
-                            )
-                        }
-                    }
-                    .pointerInput(controlMode, focusMode) {
-                        if (controlMode) {
-                            // ───── 操控模式：单击 → mousePressed + mouseReleased ─────
-                            detectTapGestures(
-                                onTap = { offset ->
-                                    toImageRatio(
-                                        offset, imageLayoutSize, bitmapW, bitmapH,
-                                        focusMode, scale, offsetX, offsetY
-                                    )?.let { (rx, ry) ->
-                                        onRemoteInput("mousePressed", rx, ry, "left")
-                                        onRemoteInput("mouseReleased", rx, ry, "left")
-                                    }
-                                },
-                                onLongPress = { offset ->
-                                    // 长按模拟右键
-                                    toImageRatio(
-                                        offset, imageLayoutSize, bitmapW, bitmapH,
-                                        focusMode, scale, offsetX, offsetY
-                                    )?.let { (rx, ry) ->
-                                        onRemoteInput("mousePressed", rx, ry, "right")
-                                        onRemoteInput("mouseReleased", rx, ry, "right")
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    .pointerInput(controlMode, focusMode) {
-                        if (controlMode) {
-                            // ───── 操控模式：双指缩放手势 → 滚轮 ─────
-                            detectTransformGestures { centroid, _, zoom, _ ->
-                                // 将 pinch zoom 变化量转为滚轮 deltaY
-                                val delta = if (zoom > 1.01f) -200f else if (zoom < 0.99f) 200f else 0f
-                                if (delta != 0f) {
-                                    toImageRatio(
-                                        centroid, imageLayoutSize, bitmapW, bitmapH,
-                                        focusMode, scale, offsetX, offsetY
-                                    )?.let { (rx, ry) ->
-                                        onRemoteScroll(rx, ry, delta)
+                            // ───── 操控模式：单指点击/长按/拖拽，双指滚动 ─────
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    var isScrolling = false
+                                    var isDragging = false
+                                    var lastPos = down.position
+                                    val downTime = System.currentTimeMillis()
+                                    
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val pointers = event.changes
+                                        
+                                        if (pointers.size >= 2) {
+                                            isScrolling = true
+                                            val currentCentroidY = pointers.map { it.position.y }.average().toFloat()
+                                            val previousCentroidY = pointers.map { it.previousPosition.y }.average().toFloat()
+                                            val panY = currentCentroidY - previousCentroidY
+                                            if (panY != 0f) {
+                                                val currentCentroidX = pointers.map { it.position.x }.average().toFloat()
+                                                toImageRatio(
+                                                    Offset(currentCentroidX, currentCentroidY), 
+                                                    imageLayoutSize, bitmapW, bitmapH,
+                                                    focusMode, scale, offsetX, offsetY
+                                                )?.let { (rx, ry) ->
+                                                    // panY 是手指位移，手指向下滑（panY > 0）代表网页要向上滚，即发送正数 deltaY
+                                                    onRemoteScroll(rx, ry, -panY * 2.5f)
+                                                }
+                                            }
+                                            pointers.forEach {
+                                                if (it.position != it.previousPosition) {
+                                                    it.consume()
+                                                }
+                                            }
+                                        } else if (!isScrolling && pointers.size == 1) {
+                                            val pointer = pointers.first()
+                                            val dist = (pointer.position - down.position).getDistance()
+                                            if (!isDragging && dist > 18f) { // ~touch slop
+                                                isDragging = true
+                                                toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                                    onRemoteInput("mousePressed", rx, ry, "left")
+                                                }
+                                            }
+                                            if (isDragging && pointer.position != lastPos) {
+                                                lastPos = pointer.position
+                                                toImageRatio(pointer.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                                    onRemoteInput("mouseMoved", rx, ry, "left")
+                                                }
+                                                if (pointer.position != pointer.previousPosition) {
+                                                    pointer.consume()
+                                                }
+                                            }
+                                        }
+                                    } while (event.changes.any { it.pressed })
+                                    
+                                    // Handle release
+                                    if (isDragging) {
+                                        toImageRatio(lastPos, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                            onRemoteInput("mouseReleased", rx, ry, "left")
+                                        }
+                                    } else if (!isScrolling) {
+                                        val duration = System.currentTimeMillis() - downTime
+                                        if (duration > 400) { // Long press threshold
+                                            toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                                onRemoteInput("mousePressed", rx, ry, "right")
+                                                onRemoteInput("mouseReleased", rx, ry, "right")
+                                            }
+                                        } else {
+                                            toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                                onRemoteInput("mousePressed", rx, ry, "left")
+                                                onRemoteInput("mouseReleased", rx, ry, "left")
+                                            }
+                                        }
                                     }
                                 }
                             }
