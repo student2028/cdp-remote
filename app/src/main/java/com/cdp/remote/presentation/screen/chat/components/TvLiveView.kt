@@ -125,33 +125,47 @@ fun TvLiveView(
                                 offsetY += pan.y
                             }
                         } else {
-                            // ───── 操控模式：单指点击/长按/拖拽，双指滚动 ─────
+                            // ───── 操控模式：单指点击/拖拽，双指轻点(右键)/双指滚动 ─────
                             awaitPointerEventScope {
                                 while (true) {
                                     val down = awaitFirstDown(requireUnconsumed = false)
+                                    var isTwoFinger = false
                                     var isScrolling = false
                                     var isDragging = false
+                                    var maxPanY = 0f
                                     var lastPos = down.position
                                     val downTime = System.currentTimeMillis()
+                                    var twoFingerDownPos: Offset? = null
                                     
                                     do {
                                         val event = awaitPointerEvent()
                                         val pointers = event.changes
                                         
                                         if (pointers.size >= 2) {
-                                            isScrolling = true
+                                            isTwoFinger = true
                                             val currentCentroidY = pointers.map { it.position.y }.average().toFloat()
                                             val previousCentroidY = pointers.map { it.previousPosition.y }.average().toFloat()
+                                            val currentCentroidX = pointers.map { it.position.x }.average().toFloat()
+                                            
+                                            if (twoFingerDownPos == null) {
+                                                twoFingerDownPos = Offset(currentCentroidX, currentCentroidY)
+                                            }
+                                            
                                             val panY = currentCentroidY - previousCentroidY
-                                            if (panY != 0f) {
-                                                val currentCentroidX = pointers.map { it.position.x }.average().toFloat()
-                                                toImageRatio(
-                                                    Offset(currentCentroidX, currentCentroidY), 
-                                                    imageLayoutSize, bitmapW, bitmapH,
-                                                    focusMode, scale, offsetX, offsetY
-                                                )?.let { (rx, ry) ->
-                                                    // panY 是手指位移，手指向下滑（panY > 0）代表网页要向上滚，即发送正数 deltaY
-                                                    onRemoteScroll(rx, ry, -panY * 2.5f)
+                                            maxPanY += kotlin.math.abs(panY)
+                                            
+                                            // 只有当滑动距离超过一定阈值，才判定为滚动（防误触：双指轻点时的微小滑动）
+                                            if (maxPanY > 15f) {
+                                                isScrolling = true
+                                                if (panY != 0f) {
+                                                    toImageRatio(
+                                                        Offset(currentCentroidX, currentCentroidY), 
+                                                        imageLayoutSize, bitmapW, bitmapH,
+                                                        focusMode, scale, offsetX, offsetY
+                                                    )?.let { (rx, ry) ->
+                                                        // panY 是手指位移，手指向下滑（panY > 0）代表网页要向上滚，即发送正数 deltaY
+                                                        onRemoteScroll(rx, ry, -panY * 2.5f)
+                                                    }
                                                 }
                                             }
                                             pointers.forEach {
@@ -159,7 +173,7 @@ fun TvLiveView(
                                                     it.consume()
                                                 }
                                             }
-                                        } else if (!isScrolling && pointers.size == 1) {
+                                        } else if (!isTwoFinger && pointers.size == 1) {
                                             val pointer = pointers.first()
                                             val dist = (pointer.position - down.position).getDistance()
                                             if (!isDragging && dist > 18f) { // ~touch slop
@@ -181,18 +195,24 @@ fun TvLiveView(
                                     } while (event.changes.any { it.pressed })
                                     
                                     // Handle release
-                                    if (isDragging) {
-                                        toImageRatio(lastPos, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
-                                            onRemoteInput("mouseReleased", rx, ry, "left")
-                                        }
-                                    } else if (!isScrolling) {
-                                        val duration = System.currentTimeMillis() - downTime
-                                        if (duration > 400) { // Long press threshold
-                                            toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                    val duration = System.currentTimeMillis() - downTime
+                                    if (isTwoFinger) {
+                                        if (!isScrolling && duration < 500) {
+                                            // 双指轻点且没发生明显滚动，判定为右键点击！
+                                            val targetPos = twoFingerDownPos ?: down.position
+                                            toImageRatio(targetPos, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
                                                 onRemoteInput("mousePressed", rx, ry, "right")
                                                 onRemoteInput("mouseReleased", rx, ry, "right")
                                             }
-                                        } else {
+                                        }
+                                    } else if (isDragging) {
+                                        toImageRatio(lastPos, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
+                                            onRemoteInput("mouseReleased", rx, ry, "left")
+                                        }
+                                    } else {
+                                        // 单指轻点 -> 左键
+                                        // 移除了单指长按逻辑，彻底避免与安卓系统“屏幕识屏”等功能的冲突
+                                        if (duration < 500) {
                                             toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)?.let { (rx, ry) ->
                                                 onRemoteInput("mousePressed", rx, ry, "left")
                                                 onRemoteInput("mouseReleased", rx, ry, "left")
