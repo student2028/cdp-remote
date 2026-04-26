@@ -1,3 +1,1 @@
-12. 修复 Cursor 模型切换失败：GPT-5.4 已下线，预置模型清单改用品牌级关键词（GPT/Opus/Sonnet/Codex/…），自动跟进 Cursor 小版本升级，无需再跟着追版本号；同时补齐 Composer 1.5。
-13. 修复主机列表 IDE 误识别（典型现象：9444 端口的 Windsurf 因为打开了 CursorXxx.kt 文件被显示成 Cursor）：CdpPage.appType 改为构造时由数据入口（中继 /targets 的权威 appName）一次性钉死的字段，自身不再做任何 URL/title 启发式推断；字符串到 IDE 类型的转换收口到 ElectronAppType.fromAppName 唯一通道。
-14. 新增 Windsurf 取消任务功能：Cascade 面板长时间运行的 Step/Tool 任务可通过工具栏红色「取消任务」按钮中止；DOM 选择器采用 4 级降级策略（hover:text-red-500 → aria-label/title → textContent），取消后自动重置生成状态；按钮仅在生成中时可点击。
+15. 🎮 TV模式新增「操控模式」：右上角新增 👁️/🖱️ 模式切换按钮，点击即可在观影模式和操控模式间切换。操控模式下，触摸屏幕即可远程操作 IDE —— 单击=左键、长按=右键、双指捏合=滚轮滚动。坐标映射精准适配各种缩放/对齐方式。观影模式保持原有双指缩放+平移体验，零影响。
