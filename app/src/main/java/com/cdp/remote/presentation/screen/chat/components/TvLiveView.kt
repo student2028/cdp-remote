@@ -92,6 +92,7 @@ fun TvLiveView(
     
     var vMouseRx by remember { mutableFloatStateOf(0.5f) }
     var vMouseRy by remember { mutableFloatStateOf(0.5f) }
+    var isVirtualCursor by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (imageBitmap != null) {
@@ -158,22 +159,32 @@ fun TvLiveView(
                                             val dist = (pointer.position - down.position).getDistance()
                                             if (!isDragging && dist > 18f) isDragging = true
                                             if (isDragging && pointer.position != pointer.previousPosition) {
-                                                val pan = pointer.position - pointer.previousPosition
-                                                if (imageLayoutSize.width > 0 && bitmapW > 0f) {
-                                                    val viewW = imageLayoutSize.width.toFloat()
-                                                    val viewH = imageLayoutSize.height.toFloat()
-                                                    val scaleW = viewW / bitmapW
-                                                    val scaleH = viewH / bitmapH
-                                                    val drawScale = if (focusMode != 1) viewH / bitmapH else if (scaleW < scaleH) scaleW else scaleH
-                                                    val drawW = bitmapW * drawScale
-                                                    val drawH = bitmapH * drawScale
-                                                    
-                                                    // 加上2.5倍灵敏度，解决手机屏幕不够滑的问题！
-                                                    val speedMultiplier = 2.5f
-                                                    vMouseRx = (vMouseRx + (pan.x * speedMultiplier) / drawW).coerceIn(0f, 1f)
-                                                    vMouseRy = (vMouseRy + (pan.y * speedMultiplier) / drawH).coerceIn(0f, 1f)
-                                                    
-                                                    onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
+                                                if (isVirtualCursor) {
+                                                    val pan = pointer.position - pointer.previousPosition
+                                                    if (imageLayoutSize.width > 0 && bitmapW > 0f) {
+                                                        val viewW = imageLayoutSize.width.toFloat()
+                                                        val viewH = imageLayoutSize.height.toFloat()
+                                                        val scaleW = viewW / bitmapW
+                                                        val scaleH = viewH / bitmapH
+                                                        val drawScale = if (focusMode != 1) viewH / bitmapH else if (scaleW < scaleH) scaleW else scaleH
+                                                        val drawW = bitmapW * drawScale
+                                                        val drawH = bitmapH * drawScale
+                                                        
+                                                        // 加上2.5倍灵敏度，解决手机屏幕不够滑的问题！
+                                                        val speedMultiplier = 2.5f
+                                                        vMouseRx = (vMouseRx + (pan.x * speedMultiplier) / drawW).coerceIn(0f, 1f)
+                                                        vMouseRy = (vMouseRy + (pan.y * speedMultiplier) / drawH).coerceIn(0f, 1f)
+                                                        
+                                                        onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
+                                                    }
+                                                } else {
+                                                    // 触屏模式下拖拽可选择性发送 mouseMoved 或保持原生不发，这里为了体验发送拖拽
+                                                    val ratio = toImageRatio(pointer.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                                    if (ratio != null) {
+                                                        vMouseRx = ratio.first
+                                                        vMouseRy = ratio.second
+                                                        onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
+                                                    }
                                                 }
                                                 pointer.consume()
                                             }
@@ -184,11 +195,25 @@ fun TvLiveView(
                                     if (isTwoFinger) {
                                         if (!isScrolling && duration < 500) {
                                             // 双指轻点 -> 右键点击
+                                            if (!isVirtualCursor) {
+                                                val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                                if (ratio != null) {
+                                                    vMouseRx = ratio.first
+                                                    vMouseRy = ratio.second
+                                                }
+                                            }
                                             onRemoteInput("mousePressed", vMouseRx, vMouseRy, "right")
                                             onRemoteInput("mouseReleased", vMouseRx, vMouseRy, "right")
                                         }
                                     } else if (!isDragging && duration < 500) {
                                         // 单指轻点 -> 左键点击
+                                        if (!isVirtualCursor) {
+                                            val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                            if (ratio != null) {
+                                                vMouseRx = ratio.first
+                                                vMouseRy = ratio.second
+                                            }
+                                        }
                                         onRemoteInput("mousePressed", vMouseRx, vMouseRy, "left")
                                         onRemoteInput("mouseReleased", vMouseRx, vMouseRy, "left")
                                     }
@@ -200,7 +225,7 @@ fun TvLiveView(
         }
         
         // 渲染虚拟鼠标指针 (触控板模式下显示)
-        if (controlMode && imageBitmap != null && imageLayoutSize.width > 0) {
+        if (controlMode && isVirtualCursor && imageBitmap != null && imageLayoutSize.width > 0) {
             val viewW = imageLayoutSize.width.toFloat()
             val viewH = imageLayoutSize.height.toFloat()
             val bitmapW = imageBitmap.width.toFloat()
@@ -319,6 +344,12 @@ fun TvLiveView(
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                     colors = if (focusMode == 0) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.textButtonColors()
                 ) { Text("右", fontSize = 11.sp) }
+                // 鼠标/触屏开关
+                TextButton(
+                    onClick = { isVirtualCursor = !isVirtualCursor },
+                    modifier = Modifier.height(28.dp).widthIn(min = 30.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+                ) { Text(if (isVirtualCursor) "🖱️" else "👆", fontSize = 13.sp) }
                 // 键盘开关
                 TextButton(
                     onClick = { showKeyboardInput = !showKeyboardInput },
@@ -363,14 +394,15 @@ fun TvLiveView(
         }
         
         if (showKeyboardInput) {
-            // 放弃空格占位符，采用原生累加模式，通过计算文本长度变化（diff）来精准捕捉所有软键盘退格事件
+            // 采用 committedText 隔离输入法正在组合的拼音，只 Diff 已确认提交的文字！彻底解决中文输入下长度判断出错的问题。
             var textFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+            var committedText by remember { mutableStateOf("") }
             
             androidx.compose.foundation.text.BasicTextField(
                 value = textFieldValue,
                 onValueChange = { newValue ->
                     if (newValue.composition == null) {
-                        val oldStr = textFieldValue.text
+                        val oldStr = committedText
                         val newStr = newValue.text
                         
                         if (newStr.length < oldStr.length) {
@@ -395,6 +427,7 @@ fun TvLiveView(
                                 onRemoteText(newStr.substring(newStr.length - (newStr.length - oldStr.length)))
                             }
                         }
+                        committedText = newStr
                     }
                     textFieldValue = newValue
                 },
