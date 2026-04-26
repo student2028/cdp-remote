@@ -607,16 +607,28 @@ fun ModelSwitchDialog(
                 val isWindsurf = appName.contains("Windsurf", ignoreCase = true)
                 val isCodex = appName.contains("Codex", ignoreCase = true)
 
+                // Codex 优先使用预设模型列表
+
                 val models = when {
                     isCursor -> cursorFixedModels
                     isWindsurf -> listOf("Claude Opus 4.7", "Claude Opus 4.6", "Claude Sonnet 4.6", "GPT-5.3-Codex", "GPT-5.4", "Kimi K2.6", "SWE-1.6", "Gemini 3.1 Pro", "Adaptive")
-                    isCodex -> listOf("GPT-4.1", "GPT-4o", "Claude Sonnet 4.6", "o3", "o4-mini")
+                    isCodex -> listOf(
+                        // 智能等级
+                        "Extra High", "High", "Medium", "Low", 
+                        // 速度设置
+                        "Fast", "Standard",
+                        // 模型
+                        "GPT-5.5", "GPT-5.4"
+                    )
                     else -> listOf(
                         "Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (Low)", "Gemini 3 Flash",
                         "Claude Sonnet 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)",
                         "GPT-OSS 120B (Medium)", "Claude Opus 4.7 (Thinking)"
                     )
                 }
+
+                // (已移除动态加载提示，所有模型为本地秒开)
+
 
                 models.forEach { model ->
                     ModelRow(model = model, currentModel = currentModel, onSelect = onSelect)

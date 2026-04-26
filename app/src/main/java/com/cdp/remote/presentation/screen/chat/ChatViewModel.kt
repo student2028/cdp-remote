@@ -826,28 +826,89 @@ class ChatViewModel(
         val newMode = !uiState.tvControlMode
         uiState = uiState.copy(tvControlMode = newMode)
         if (newMode) {
-            // 进入操控模式时，获取远端页面尺寸用于坐标映射
-            fetchPageDimensions()
-        }
-    }
-
-    /** 获取远端 IDE 页面的实际像素尺寸 */
-    private fun fetchPageDimensions() {
-        viewModelScope.launch {
-            val script = "(function(){ return window.innerWidth + ',' + window.innerHeight; })()"
-            val result = cdpClient.evaluate(script)
-            if (result is CdpResult.Success && result.data != null) {
-                val parts = result.data.split(",")
-                if (parts.size == 2) {
-                    val w = parts[0].toIntOrNull() ?: 0
-                    val h = parts[1].toIntOrNull() ?: 0
-                    if (w > 0 && h > 0) {
-                        uiState = uiState.copy(tvPageWidth = w, tvPageHeight = h)
-                        Log.d(TAG, "远端页面尺寸: ${w}x${h}")
+            // 进入操控模式时，获取远端页面尺寸用于坐标映射（带重试）
+            viewModelScope.launch {
+                var fetched = false
+                for (attempt in 1..3) {
+                    fetchPageDimensionsSync()
+                    if (uiState.tvPageWidth > 0 && uiState.tvPageHeight > 0) {
+                        fetched = true
+                        break
                     }
+                    delay(500L * attempt)
+                }
+                if (!fetched) {
+                    addSystemMessage("⚠️ 无法获取远端页面尺寸，操控模式可能无法正常工作")
                 }
             }
         }
+    }
+
+    /** 获取远端 IDE 页面的实际像素尺寸（同步版本，供 coroutine 内调用）— 多策略 fallback */
+    private suspend fun fetchPageDimensionsSync() {
+        // 策略 1: window.innerWidth/innerHeight
+        try {
+            val script = "(function(){ return JSON.stringify({w:window.innerWidth,h:window.innerHeight,dw:document.documentElement.clientWidth,dh:document.documentElement.clientHeight,sw:screen.width,sh:screen.height}); })()"
+            val result = cdpClient.evaluate(script)
+            if (result is CdpResult.Success && result.data != null) {
+                Log.d(TAG, "页面尺寸原始: ${result.data}")
+                try {
+                    val json = com.google.gson.JsonParser.parseString(result.data).asJsonObject
+                    // 优先用 window.innerWidth（完整视口）
+                    var w = json.get("w")?.asInt ?: 0
+                    var h = json.get("h")?.asInt ?: 0
+                    // fallback: document.documentElement.clientWidth
+                    if (w <= 0 || h <= 0) {
+                        w = json.get("dw")?.asInt ?: 0
+                        h = json.get("dh")?.asInt ?: 0
+                    }
+                    // fallback: screen 尺寸
+                    if (w <= 0 || h <= 0) {
+                        w = json.get("sw")?.asInt ?: 0
+                        h = json.get("sh")?.asInt ?: 0
+                    }
+                    if (w > 0 && h > 0) {
+                        uiState = uiState.copy(tvPageWidth = w, tvPageHeight = h)
+                        Log.d(TAG, "远端页面尺寸: ${w}x${h}")
+                        return
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "解析页面尺寸 JSON 失败: ${e.message}")
+                }
+            } else {
+                Log.w(TAG, "evaluate 获取尺寸失败: ${(result as? CdpResult.Error)?.message}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "策略1异常: ${e.message}")
+        }
+
+        // 策略 2: CDP Page.getLayoutMetrics
+        try {
+            val metricsResult = cdpClient.call("Page.getLayoutMetrics", com.google.gson.JsonObject())
+            if (metricsResult is CdpResult.Success) {
+                val metrics = metricsResult.data
+                val cssVisual = metrics.getAsJsonObject("cssVisualViewport")
+                if (cssVisual != null) {
+                    val w = cssVisual.get("clientWidth")?.asInt ?: 0
+                    val h = cssVisual.get("clientHeight")?.asInt ?: 0
+                    if (w > 0 && h > 0) {
+                        uiState = uiState.copy(tvPageWidth = w, tvPageHeight = h)
+                        Log.d(TAG, "远端页面尺寸 (LayoutMetrics): ${w}x${h}")
+                        return
+                    }
+                }
+                Log.d(TAG, "LayoutMetrics 原始: $metrics")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "策略2异常: ${e.message}")
+        }
+
+        Log.e(TAG, "所有策略均无法获取页面尺寸")
+    }
+
+    /** 获取远端 IDE 页面的实际像素尺寸（异步版本，用于后台自动调用） */
+    private fun fetchPageDimensions() {
+        viewModelScope.launch { fetchPageDimensionsSync() }
     }
 
     /**
@@ -863,18 +924,19 @@ class ChatViewModel(
      * @param button   鼠标按钮: "left", "right", "middle"
      */
     fun dispatchRemoteInput(type: String, ratioX: Float, ratioY: Float, button: String = "left") {
-        val pw = uiState.tvPageWidth
-        val ph = uiState.tvPageHeight
-        if (pw <= 0 || ph <= 0) {
-            // 尺寸未就绪，尝试重新获取
-            fetchPageDimensions()
-            return
-        }
-        val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
-        val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
-        val clickCount = if (type == "mousePressed") 1 else 0
-
         viewModelScope.launch {
+            var pw = uiState.tvPageWidth
+            var ph = uiState.tvPageHeight
+            if (pw <= 0 || ph <= 0) {
+                // 尺寸未就绪，同步重新获取一次再继续
+                fetchPageDimensionsSync()
+                pw = uiState.tvPageWidth
+                ph = uiState.tvPageHeight
+                if (pw <= 0 || ph <= 0) return@launch
+            }
+            val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
+            val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
+            val clickCount = if (type == "mousePressed") 1 else 0
             cdpClient.dispatchMouseEvent(type, x, y, button, clickCount)
         }
     }
@@ -913,8 +975,8 @@ class ChatViewModel(
     // ─── Utility ────────────────────────────────────────────────────
 
     fun prepareModelSwitchDialog() {
-        // 标记正在加载模型列表
-        uiState = uiState.copy(ideModelOptionsLoading = true)
+        // 模型列表已硬编码，无需从 IDE 动态加载
+        uiState = uiState.copy(ideModelOptionsLoading = false, ideModelOptions = emptyList())
     }
 
     fun onModelSwitchDialogClosed() {

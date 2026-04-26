@@ -128,6 +128,18 @@
                 <div class="install-step">
                     <div class="step-number">1</div>
                     <div class="step-content">
+                        <h3>网络环境准备（必看）</h3>
+                        <div style="background: rgba(245, 158, 11, 0.1); border-left: 4px solid #f59e0b; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;">
+                            <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0;"><strong>手机和电脑必须在同一个局域网内！</strong><br>
+                            - <strong>在家/公司：</strong> 连上同一个 Wi-Fi 即可。<br>
+                            - <strong>出门在外（真正的随时随地）：</strong> 强烈建议在电脑和手机上都安装 <strong><a href="https://tailscale.com/" target="_blank" style="color: #d97706; text-decoration: underline;">Tailscale</a></strong>，组建虚拟局域网。这样就算你在地铁上，也能用 4G/5G 连上家里的电脑！</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="install-step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
                         <h3>服务端（电脑）</h3>
                         <p>无需繁杂配置，无需注册账号，一条命令全局安装中继服务。</p>
                         <div class="code-block">
@@ -152,7 +164,7 @@ pm2 save && pm2 startup</code></pre>
                 </div>
 
                 <div class="install-step">
-                    <div class="step-number">2</div>
+                    <div class="step-number">3</div>
                     <div class="step-content">
                         <h3>客户端（手机）</h3>
                         <p>直接下载 APK，或者极客一点，连上数据线使用 ADB 一键安装。</p>
@@ -170,20 +182,14 @@ adb install -r /tmp/cdp-remote.apk</code></pre>
                     </div>
                 </div>
                 <div class="install-step">
-                    <div class="step-number">3</div>
+                    <div class="step-number">4</div>
                     <div class="step-content">
                         <h3>连接与使用（开始起飞）</h3>
-                        <p>装好之后怎么玩？非常简单：</p>
-                        <div style="background: rgba(245, 158, 11, 0.1); border-left: 4px solid #f59e0b; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;">
-                            <h4 style="color: #d97706; margin-bottom: 0.5rem;">⚠️ 最重要的一点：网络连通性</h4>
-                            <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0;"><strong>手机和电脑必须在同一个局域网内！</strong><br>
-                            - <strong>在家/公司：</strong> 连上同一个 Wi-Fi 即可。<br>
-                            - <strong>出门在外（真正的随时随地）：</strong> 强烈建议在电脑和手机上都安装 <strong><a href="https://tailscale.com/" target="_blank" style="color: #d97706; text-decoration: underline;">Tailscale</a></strong>，组建虚拟局域网。这样就算你在地铁上，也能用 4G/5G 连上家里的电脑！</p>
-                        </div>
+                        <p>两端准备就绪后，就可以开始连接了：</p>
                         
                         <ul style="list-style-type: disc; padding-left: 1.5rem; color: var(--text-secondary); margin-bottom: 1.5rem;">
-                            <li><strong>输入地址</strong>：打开手机 APP，输入电脑端显示的 IP 地址和端口（如果是 Tailscale，请输入类似 <code>100.106.x.x:19336</code> 的地址），点击连接。</li>
-                            <li><strong>选择 IDE</strong>：连接成功后，APP 会列出你电脑上所有打开的 Cursor/Windsurf 窗口，点击你想操控的那个。</li>
+                            <li><strong>添加主机</strong>：打开手机 APP，点击右上角的 <code>+</code> 号，输入电脑端显示的 IP 地址和端口（例如 <code>100.106.253.39:19336</code>），点击添加。</li>
+                            <li><strong>选择 IDE</strong>：添加成功后，APP 首页会列出该电脑上所有正在运行的 IDE 窗口，点击你想操控的那个即可进入。</li>
                         </ul>
                         
                         <div class="glass-panel" style="padding: 1.5rem; background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.2);">

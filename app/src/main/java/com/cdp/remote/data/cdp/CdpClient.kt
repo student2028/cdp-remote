@@ -242,16 +242,48 @@ class CdpClient(
     override suspend fun dispatchKeyEvent(type: String, key: String): CdpResult<JsonObject> {
         val params = JsonObject().apply {
             addProperty("type", type)
-            addProperty("key", key)
+            when (key) {
+                "Backspace" -> {
+                    addProperty("key", "Backspace")
+                    addProperty("code", "Backspace")
+                    addProperty("windowsVirtualKeyCode", 8)
+                    addProperty("nativeVirtualKeyCode", 8)
+                    // Chromium usually expects rawKeyDown for Backspace to work correctly
+                    if (type == "keyDown") addProperty("type", "rawKeyDown")
+                }
+                "Enter" -> {
+                    addProperty("key", "Enter")
+                    addProperty("code", "Enter")
+                    addProperty("windowsVirtualKeyCode", 13)
+                    addProperty("nativeVirtualKeyCode", 13)
+                    if (type == "keyDown") addProperty("text", "\r")
+                }
+                "Escape" -> {
+                    addProperty("key", "Escape")
+                    addProperty("code", "Escape")
+                    addProperty("windowsVirtualKeyCode", 27)
+                    addProperty("nativeVirtualKeyCode", 27)
+                }
+                else -> {
+                    addProperty("key", key)
+                }
+            }
         }
         return call("Input.dispatchKeyEvent", params)
     }
 
     override suspend fun insertText(text: String): CdpResult<JsonObject> {
-        val params = JsonObject().apply {
-            addProperty("text", text)
+        // 使用连续的 char 事件代替 insertText，避免部分 IDE (如 Monaco/Codex) 过滤纯文本插入
+        var lastResult: CdpResult<JsonObject> = CdpResult.Success(JsonObject())
+        for (c in text) {
+            val params = JsonObject().apply {
+                addProperty("type", "char")
+                addProperty("text", c.toString())
+            }
+            lastResult = call("Input.dispatchKeyEvent", params)
+            if (lastResult is CdpResult.Error) break
         }
-        return call("Input.insertText", params)
+        return lastResult
     }
 
     override suspend fun dispatchMouseEvent(

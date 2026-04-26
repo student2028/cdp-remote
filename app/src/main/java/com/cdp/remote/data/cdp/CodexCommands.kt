@@ -654,18 +654,74 @@ class CodexCommands(private val cdp: ICdpClient) {
     }
 
     // ─────────────────── 模型切换 ───────────────────
+    // Codex 使用 Radix UI，JS .click() 无法触发菜单。
+    // 必须通过 CDP Input.dispatchMouseEvent 模拟真实鼠标事件。
+
+    /** CDP 鼠标点击 */
+    private suspend fun cdpMouseClick(x: Double, y: Double) {
+        val press = JsonObject().apply {
+            addProperty("type", "mousePressed"); addProperty("x", x); addProperty("y", y)
+            addProperty("button", "left"); addProperty("clickCount", 1)
+        }
+        cdp.call("Input.dispatchMouseEvent", press)
+        val release = JsonObject().apply {
+            addProperty("type", "mouseReleased"); addProperty("x", x); addProperty("y", y)
+            addProperty("button", "left"); addProperty("clickCount", 1)
+        }
+        cdp.call("Input.dispatchMouseEvent", release)
+    }
+
+    /** CDP 鼠标移动(hover) */
+    private suspend fun cdpMouseMove(x: Double, y: Double) {
+        val move = JsonObject().apply {
+            addProperty("type", "mouseMoved"); addProperty("x", x); addProperty("y", y)
+        }
+        cdp.call("Input.dispatchMouseEvent", move)
+    }
+
+    /** CDP 按键(Escape) */
+    private suspend fun cdpEscape() {
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyDown"); addProperty("key", "Escape")
+        })
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyUp"); addProperty("key", "Escape")
+        })
+    }
+
+    /** 获取模型按钮的中心坐标 */
+    private suspend fun getModelBtnCenter(): Pair<Double, Double>? {
+        val r = cdp.evaluate("""
+            (function(){
+                var btns = document.querySelectorAll('button[aria-haspopup="menu"]');
+                for (var i = 0; i < btns.length; i++) {
+                    if (!btns[i].offsetParent) continue;
+                    var t = (btns[i].textContent || '').toLowerCase();
+                    if (t.indexOf('5.') >= 0 || t.indexOf('gpt') >= 0 || t.indexOf('high') >= 0 || t.indexOf('low') >= 0 || t.indexOf('medium') >= 0) {
+                        var r = btns[i].getBoundingClientRect();
+                        return r.x + r.width/2 + ',' + (r.y + r.height/2);
+                    }
+                }
+                return '';
+            })()
+        """.trimIndent())
+        val v = r.getOrNull() ?: return null
+        val parts = v.split(",")
+        if (parts.size != 2) return null
+        val x = parts[0].toDoubleOrNull() ?: return null
+        val y = parts[1].toDoubleOrNull() ?: return null
+        return Pair(x, y)
+    }
 
     suspend fun getCurrentModel(): CdpResult<String> {
         val result = cdp.evaluate("""
             (function() {
-                var keywords = ['gpt', 'claude', 'gemini', 'o1', 'o3', 'o4', 'deepseek',
-                    'sonnet', 'opus', 'haiku', 'kimi', 'swe', 'flash', 'thinking', 'preview'];
-                var btns = document.querySelectorAll('button');
+                var btns = document.querySelectorAll('button[aria-haspopup="menu"]');
                 for (var i = 0; i < btns.length; i++) {
                     if (!btns[i].offsetParent) continue;
-                    var t = (btns[i].textContent || '').trim().toLowerCase();
-                    for (var k = 0; k < keywords.length; k++) {
-                        if (t.indexOf(keywords[k]) >= 0 && t.length < 60) return btns[i].textContent.trim();
+                    var t = (btns[i].textContent || '').toLowerCase();
+                    if (t.indexOf('5.') >= 0 || t.indexOf('gpt') >= 0 || t.indexOf('high') >= 0 || t.indexOf('low') >= 0 || t.indexOf('medium') >= 0) {
+                        return btns[i].textContent.replace(/\s+/g, ' ').trim();
                     }
                 }
                 return '';
@@ -677,143 +733,203 @@ class CodexCommands(private val cdp: ICdpClient) {
     }
 
     /**
-     * 打开模型菜单并读取可见选项（与 [switchModel] 使用相同的按钮探测逻辑）。
+     * 打开模型菜单并读取选项。使用 CDP 鼠标事件打开 Radix UI 三级菜单。
+     * 菜单结构: 主菜单(Intelligence等级) → hover当前模型 → 子菜单(Change model: GPT-5.5/GPT-5.4/Other models)
      */
     suspend fun listModelOptions(): CdpResult<List<String>> {
-        val params = JsonObject().apply {
-            addProperty("expression", """
-                (async function() {
-                    try {
-                        function findDropdown() {
-                            var keywords = ['gpt', 'claude', 'gemini', 'o1', 'o3', 'o4', 'deepseek',
-                                'sonnet', 'opus', 'haiku', 'kimi', 'swe', 'flash', 'thinking', 'preview'];
-                            var btns = document.querySelectorAll('button');
-                            for (var i = 0; i < btns.length; i++) {
-                                if (!btns[i].offsetParent) continue;
-                                var t = (btns[i].textContent || '').trim().toLowerCase();
-                                for (var k = 0; k < keywords.length; k++) {
-                                    if (t.indexOf(keywords[k]) >= 0 && t.length < 60) return btns[i];
-                                }
-                            }
-                            return null;
+        val btnCenter = getModelBtnCenter() ?: return CdpResult.Error("找不到模型按钮")
+        // 1. CDP 点击打开主菜单
+        cdpMouseClick(btnCenter.first, btnCenter.second)
+        delay(600)
+        // 2. 在主菜单中找当前模型项(GPT-x.x)并 hover 展开子菜单
+        val modelItemPos = cdp.evaluate("""
+            (function(){
+                var menus = document.querySelectorAll('[role=menu]');
+                for (var i = 0; i < menus.length; i++) {
+                    var spans = menus[i].querySelectorAll('span');
+                    for (var j = 0; j < spans.length; j++) {
+                        var t = (spans[j].textContent||'').trim();
+                        if (t.match(/^GPT-\d/) || t.match(/^gpt-\d/i) || t.match(/^o\d-/i) || t.match(/^codex/i)) {
+                            var r = spans[j].getBoundingClientRect();
+                            return (r.x+r.width/2)+','+(r.y+r.height/2);
                         }
-                        function gatherFromRoot(root) {
-                            var out = [];
-                            var seen = new Set();
-                            var skipRe = /^(search|filter|add|manage|close|cancel)/i;
-                            var nodes = root.querySelectorAll('[role="option"], [role="menuitem"], button');
-                            for (var i = 0; i < nodes.length; i++) {
-                                var n = nodes[i];
-                                if (!n.offsetParent) continue;
-                                var txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
-                                if (txt.length < 2 || txt.length > 80) continue;
-                                if (skipRe.test(txt)) continue;
-                                if (seen.has(txt)) continue;
-                                seen.add(txt);
-                                out.push(txt);
-                            }
-                            return out;
-                        }
-                        var dropdownEl = findDropdown();
-                        if (!dropdownEl) {
-                            return JSON.stringify({ok:false, err:'找不到模型选择按钮', options:[]});
-                        }
-                        var od = dropdownEl.ownerDocument || document;
-                        dropdownEl.click();
-                        await new Promise(r => setTimeout(r, 500));
-                        var opts = [];
-                        var menus = od.querySelectorAll('[role="listbox"], [role="menu"]');
-                        for (var mi = 0; mi < menus.length; mi++) {
-                            opts = opts.concat(gatherFromRoot(menus[mi]));
-                        }
-                        if (opts.length === 0) opts = gatherFromRoot(od.body);
-                        var uniq = []; var seen2 = new Set();
-                        for (var j = 0; j < opts.length; j++) {
-                            if (!seen2.has(opts[j])) { seen2.add(opts[j]); uniq.push(opts[j]); }
-                        }
-                        dropdownEl.click();
-                        await new Promise(r => setTimeout(r, 120));
-                        return JSON.stringify({ok:true, options: uniq});
-                    } catch (e) {
-                        return JSON.stringify({ok:false, err: e.message, options:[]});
                     }
+                }
+                return '';
+            })()
+        """.trimIndent()).getOrNull() ?: ""
+
+        val models = mutableListOf<String>()
+        if (modelItemPos.contains(",")) {
+            val (mx, my) = modelItemPos.split(",").map { it.toDouble() }
+            cdpMouseMove(mx, my)
+            delay(500)
+            // 3. 读子菜单中的模型列表
+            val subItems = cdp.evaluate("""
+                (function(){
+                    var menus = document.querySelectorAll('[role=menu]');
+                    if (menus.length < 2) return '';
+                    var sub = menus[menus.length-1];
+                    var out = [];
+                    var spans = sub.querySelectorAll('span');
+                    for (var i = 0; i < spans.length; i++) {
+                        var t = (spans[i].textContent||'').trim();
+                        if (t.length > 2 && t.length < 40 && t !== 'Change model' && t !== 'Other models') out.push(t);
+                    }
+                    return out.join('|');
                 })()
-            """.trimIndent())
-            addProperty("awaitPromise", true)
-            addProperty("returnByValue", true)
-            addProperty("timeout", 20000)
+            """.trimIndent()).getOrNull() ?: ""
+            if (subItems.isNotEmpty()) models.addAll(subItems.split("|"))
         }
-        val result = cdp.call("Runtime.evaluate", params)
-        if (result is CdpResult.Error) return CdpResult.Error(result.message)
-        val value = result.getOrThrow().getAsJsonObject("result")?.get("value")?.asString ?: ""
-        return try {
-            val json = JsonParser.parseString(value).asJsonObject
-            if (json.get("ok")?.asBoolean != true) {
-                return CdpResult.Error(json.get("err")?.asString ?: "枚举失败")
-            }
-            val arr = json.getAsJsonArray("options") ?: return CdpResult.Success(emptyList())
-            val list = ArrayList<String>(arr.size())
-            for (el in arr) {
-                if (el.isJsonPrimitive) list.add(el.asString)
-            }
-            CdpResult.Success(list)
-        } catch (e: Exception) {
-            CdpResult.Error("解析模型列表失败: $value")
-        }
+        // 4. 也加入 Intelligence 等级
+        val levels = cdp.evaluate("""
+            (function(){
+                var menus = document.querySelectorAll('[role=menu]');
+                if (menus.length < 1) return '';
+                var first = menus[0];
+                var out = [];
+                var spans = first.querySelectorAll('span');
+                for (var i = 0; i < spans.length; i++) {
+                    var t = (spans[i].textContent||'').trim();
+                    if (['Low','Medium','High','Extra High','Speed'].indexOf(t) >= 0) out.push(t);
+                }
+                return out.join('|');
+            })()
+        """.trimIndent()).getOrNull() ?: ""
+        if (levels.isNotEmpty()) models.addAll(levels.split("|"))
+        // 5. 关闭菜单
+        cdpEscape(); delay(100); cdpEscape()
+        return CdpResult.Success(models)
     }
 
+    /**
+     * 切换模型 — 通过 CDP 鼠标事件操作 Radix UI 三级菜单。
+     * 支持切换模型(GPT-5.5/5.4)和 Intelligence 等级(Low/Medium/High/Extra High/Speed)。
+     */
     suspend fun switchModel(modelName: String): CdpResult<Unit> {
-        val params = JsonObject().apply {
-            addProperty("expression", """
-                (async function() {
-                    try {
-                        var input = ${com.google.gson.JsonPrimitive(modelName.lowercase())};
-                        // 1. 找到并点击模型选择按钮
-                        var keywords = ['gpt', 'claude', 'gemini', 'o1', 'o3', 'o4', 'deepseek',
-                            'sonnet', 'opus', 'haiku', 'kimi', 'swe', 'flash', 'thinking', 'preview'];
-                        var dropdownEl = null;
-                        var btns = document.querySelectorAll('button');
-                        for (var i = 0; i < btns.length; i++) {
-                            if (!btns[i].offsetParent) continue;
-                            var t = (btns[i].textContent || '').trim().toLowerCase();
-                            for (var k = 0; k < keywords.length; k++) {
-                                if (t.indexOf(keywords[k]) >= 0 && t.length < 60) { dropdownEl = btns[i]; break; }
-                            }
-                            if (dropdownEl) break;
+        val input = modelName.lowercase().trim()
+        Log.d(TAG, "switchModel: $input")
+        val btnCenter = getModelBtnCenter() ?: return CdpResult.Error("找不到模型按钮")
+
+        // 1. CDP 点击打开主菜单
+        cdpMouseClick(btnCenter.first, btnCenter.second)
+        delay(600)
+
+        // 2. 检查是切换 Intelligence 等级，还是 Speed/模型
+        val isLevel = input in listOf("low", "medium", "high", "extra high")
+        val isSpeed = input in listOf("fast", "standard")
+
+        if (isLevel) {
+            // 在主菜单中直接找等级项并点击
+            val pos = cdp.evaluate("""
+                (function(){
+                    var menus = document.querySelectorAll('[role=menu]');
+                    if (!menus.length) return '';
+                    var spans = menus[0].querySelectorAll('span');
+                    for (var i = 0; i < spans.length; i++) {
+                        if ((spans[i].textContent||'').trim().toLowerCase() === '$input') {
+                            var r = spans[i].getBoundingClientRect();
+                            return (r.x+r.width/2)+','+(r.y+r.height/2);
                         }
-                        if (!dropdownEl) return JSON.stringify({ok:false, err:'找不到模型选择按钮'});
-                        dropdownEl.click();
-                        await new Promise(r => setTimeout(r, 450));
-                        // 2. 匹配目标模型
-                        var allBtns = document.querySelectorAll('button, [role="menuitem"], [role="option"]');
-                        for (var j = 0; j < allBtns.length; j++) {
-                            if (!allBtns[j].offsetParent || allBtns[j] === dropdownEl) continue;
-                            var label = (allBtns[j].textContent || '').trim().toLowerCase();
-                            if (label.includes(input)) {
-                                allBtns[j].click();
-                                return JSON.stringify({ok:true, info: allBtns[j].textContent.trim()});
-                            }
-                        }
-                        dropdownEl.click(); // 关闭菜单
-                        return JSON.stringify({ok:false, err:'找不到匹配模型: ' + input});
-                    } catch(e) { return JSON.stringify({ok:false, err: e.message}); }
+                    }
+                    return '';
                 })()
-            """.trimIndent())
-            addProperty("awaitPromise", true)
-            addProperty("returnByValue", true)
-            addProperty("timeout", 15000)
+            """.trimIndent()).getOrNull() ?: ""
+            if (pos.contains(",")) {
+                val (x, y) = pos.split(",").map { it.toDouble() }
+                cdpMouseClick(x, y)
+                delay(200)
+                Log.d(TAG, "切换 Intelligence 等级: $input")
+                return CdpResult.Success(Unit)
+            }
+            cdpEscape()
+            return CdpResult.Error("找不到等级: $input")
         }
 
-        val result = cdp.call("Runtime.evaluate", params)
-        if (result is CdpResult.Error) return CdpResult.Error(result.message)
-        val data = result.getOrThrow()
-        val value = data.getAsJsonObject("result")?.get("value")?.asString ?: ""
+        // 3. 切换模型或速度：hover 对应的菜单项（模型名或 "Speed"）以展开子菜单
+        val hoverTargetCode = if (isSpeed) {
+            """
+            for (var j = 0; j < spans.length; j++) {
+                if ((spans[j].textContent||'').trim().toLowerCase() === 'speed') {
+                    var r = spans[j].getBoundingClientRect();
+                    return (r.x+r.width/2)+','+(r.y+r.height/2);
+                }
+            }
+            """
+        } else {
+            """
+            for (var j = 0; j < spans.length; j++) {
+                var t = (spans[j].textContent||'').trim();
+                if (t.match(/^GPT-\d/) || t.match(/^gpt-\d/i) || t.match(/^o\d-/i) || t.match(/^codex/i)) {
+                    var r = spans[j].getBoundingClientRect();
+                    return (r.x+r.width/2)+','+(r.y+r.height/2);
+                }
+            }
+            """
+        }
+
+        val hoverItemPos = cdp.evaluate("""
+            (function(){
+                var menus = document.querySelectorAll('[role=menu]');
+                for (var i = 0; i < menus.length; i++) {
+                    var spans = menus[i].querySelectorAll('span');
+                    $hoverTargetCode
+                }
+                return '';
+            })()
+        """.trimIndent()).getOrNull() ?: ""
+
+        if (!hoverItemPos.contains(",")) {
+            cdpEscape()
+            return CdpResult.Error("主菜单中找不到 Hover 目标项")
+        }
+        val (mx, my) = hoverItemPos.split(",").map { it.toDouble() }
+        cdpMouseMove(mx, my)
+        delay(600) // 等待子菜单动画展开
+
+        // 4. 在子菜单中找目标模型
+        val targetPos = cdp.evaluate("""
+            (function(){
+                var menus = document.querySelectorAll('[role=menu]');
+                if (menus.length < 2) return JSON.stringify({err:'子菜单未展开',count:menus.length});
+                var sub = menus[menus.length-1];
+                var spans = sub.querySelectorAll('span');
+                for (var i = 0; i < spans.length; i++) {
+                    var t = (spans[i].textContent||'').trim().toLowerCase();
+                    if (t.indexOf('$input') >= 0 && t !== 'change model' && t !== 'other models') {
+                        var r = spans[i].getBoundingClientRect();
+                        return JSON.stringify({ok:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
+                    }
+                }
+                // 列出可用选项做诊断
+                var avail = [];
+                for (var i = 0; i < spans.length; i++) {
+                    var t = (spans[i].textContent||'').trim();
+                    if (t.length > 1 && t !== 'Change model') avail.push(t);
+                }
+                return JSON.stringify({err:'子菜单中无匹配', avail:avail});
+            })()
+        """.trimIndent()).getOrNull() ?: ""
+
         return try {
-            val json = JsonParser.parseString(value).asJsonObject
-            if (json.get("ok")?.asBoolean == true) CdpResult.Success(Unit)
-            else CdpResult.Error(json.get("err")?.asString ?: "切换失败")
+            val json = JsonParser.parseString(targetPos).asJsonObject
+            if (json.has("ok")) {
+                val tx = json.get("x").asDouble
+                val ty = json.get("y").asDouble
+                cdpMouseClick(tx, ty)
+                delay(200)
+                Log.d(TAG, "模型切换成功: ${json.get("text")?.asString}")
+                CdpResult.Success(Unit)
+            } else {
+                val err = json.get("err")?.asString ?: "未知错误"
+                val avail = json.getAsJsonArray("avail")?.joinToString { it.asString } ?: ""
+                Log.e(TAG, "模型切换失败: $err | 可选: $avail")
+                cdpEscape(); delay(100); cdpEscape()
+                CdpResult.Error("$err (可选: $avail)")
+            }
         } catch (e: Exception) {
-            CdpResult.Error("解析切换结果失败: $value")
+            cdpEscape()
+            CdpResult.Error("解析失败: $targetPos")
         }
     }
 

@@ -4,10 +4,12 @@ import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.horizontalScroll
@@ -42,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 
 /**
  * TV 实时画面组件 — 支持「观影模式」和「操控模式」双模切换。
@@ -99,12 +102,15 @@ fun TvLiveView(
     val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current).toFloat()
 
     Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // ─── 顶部工具栏（独立于画面之外，不遮挡 TV 内容） ─────────
+        // ─── 顶部工具栏（独立于画面之外，不遮挡 TV 内容）─────────
+        // 用 clickable 代替 pointerInput+detectTapGestures，避免 TV 帧频繁 recompose 时手势失效
+        val noRipple: @Composable () -> MutableInteractionSource = { remember { MutableInteractionSource() } }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
-                .padding(horizontal = 6.dp, vertical = 3.dp),
+                .zIndex(1f) // 确保工具栏始终在图片之上
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                .padding(horizontal = 6.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -119,8 +125,8 @@ fun TvLiveView(
                             if (controlMode) Color(0xFFFF9800).copy(alpha = 0.15f)
                             else Color.Transparent
                         )
-                        .pointerInput(Unit) { detectTapGestures { onToggleControlMode() } }
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .clickable(indication = null, interactionSource = noRipple()) { onToggleControlMode() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -149,30 +155,30 @@ fun TvLiveView(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 // 左全右
-                val focusItemMod = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                val focusItemMod = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                 Text("左", fontSize = 13.sp,
                     fontWeight = if (focusMode == 2) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = focusItemMod.pointerInput(Unit) { detectTapGestures { focusMode = 2 } })
+                    modifier = focusItemMod.clickable(indication = null, interactionSource = noRipple()) { focusMode = 2 })
                 Text("全", fontSize = 13.sp,
                     fontWeight = if (focusMode == 1) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = focusItemMod.pointerInput(Unit) { detectTapGestures { focusMode = 1 } })
+                    modifier = focusItemMod.clickable(indication = null, interactionSource = noRipple()) { focusMode = 1 })
                 Text("右", fontSize = 13.sp,
                     fontWeight = if (focusMode == 0) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = focusItemMod.pointerInput(Unit) { detectTapGestures { focusMode = 0 } })
+                    modifier = focusItemMod.clickable(indication = null, interactionSource = noRipple()) { focusMode = 0 })
             }
 
             // 右侧：👆⌨⚙
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val iconMod = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                val iconMod = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                 Text(if (isVirtualCursor) "🖱" else "👆", fontSize = 14.sp,
-                    modifier = iconMod.pointerInput(Unit) { detectTapGestures { isVirtualCursor = !isVirtualCursor } })
+                    modifier = iconMod.clickable(indication = null, interactionSource = noRipple()) { isVirtualCursor = !isVirtualCursor })
                 Text("⌨", fontSize = 14.sp,
-                    modifier = iconMod.pointerInput(Unit) { detectTapGestures { showKeyboardInput = !showKeyboardInput } })
+                    modifier = iconMod.clickable(indication = null, interactionSource = noRipple()) { showKeyboardInput = !showKeyboardInput })
                 Text("⚙", fontSize = 14.sp,
-                    modifier = iconMod.pointerInput(Unit) { detectTapGestures { showSettings = !showSettings } })
+                    modifier = iconMod.clickable(indication = null, interactionSource = noRipple()) { showSettings = !showSettings })
             }
         }
 
