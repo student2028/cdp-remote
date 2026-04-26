@@ -95,7 +95,7 @@ fun TvLiveView(
     var vMouseRy by remember { mutableFloatStateOf(0.5f) }
     var isVirtualCursor by remember { mutableStateOf(false) }
 
-    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
         if (imageBitmap != null) {
             val bitmapW = imageBitmap.width.toFloat()
             val bitmapH = imageBitmap.height.toFloat()
