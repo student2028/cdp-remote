@@ -26,6 +26,12 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -373,12 +379,12 @@ fun TvLiveView(
                 },
                 modifier = Modifier
                     .size(1.dp)
-                    .then(androidx.compose.ui.Modifier.alpha(0f)) // 完全隐形，不挡视线
-                    .then(androidx.compose.ui.Modifier.focusRequester(focusRequester))
-                    .androidx.compose.ui.input.key.onKeyEvent { keyEvent: androidx.compose.ui.input.key.KeyEvent ->
-                        if (keyEvent.type == androidx.compose.ui.input.key.KeyEventType.KeyDown) {
+                    .alpha(0f) // 完全隐形，不挡视线
+                    .focusRequester(focusRequester)
+                    .onKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
-                                androidx.compose.ui.input.key.Key.Backspace -> {
+                                Key.Backspace -> {
                                     // 只有在输入框为空（没有未提交拼音）时，才将退格键发给远端
                                     if (textFieldValue.text.isEmpty()) {
                                         onRemoteKey("rawKeyDown", "Backspace")
@@ -386,7 +392,7 @@ fun TvLiveView(
                                     }
                                     true
                                 }
-                                androidx.compose.ui.input.key.Key.Enter -> {
+                                Key.Enter -> {
                                     onRemoteKey("rawKeyDown", "Enter")
                                     onRemoteKey("keyUp", "Enter")
                                     // 发送完回车可以考虑自动收起键盘，或者保留
