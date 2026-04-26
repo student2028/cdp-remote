@@ -355,30 +355,30 @@ fun TvLiveView(
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
                     .padding(horizontal = 2.dp, vertical = 2.dp)
             ) {
-                val itemModifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                val itemModifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp)
                 // 左
-                Text("左", fontSize = 11.sp,
+                Text("左", fontSize = 13.sp,
                     fontWeight = if (focusMode == 2) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 2 } })
-                Text("全", fontSize = 11.sp,
+                Text("全", fontSize = 13.sp,
                     fontWeight = if (focusMode == 1) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 1 } })
-                Text("右", fontSize = 11.sp,
+                Text("右", fontSize = 13.sp,
                     fontWeight = if (focusMode == 0) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     modifier = itemModifier.pointerInput(Unit) { detectTapGestures { focusMode = 0 } })
                 // 分隔
-                Text("|", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                Text("|", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
                 // 触屏/光标
-                Text(if (isVirtualCursor) "🖱" else "👆", fontSize = 11.sp,
+                Text(if (isVirtualCursor) "🖱" else "👆", fontSize = 14.sp,
                     modifier = itemModifier.pointerInput(Unit) { detectTapGestures { isVirtualCursor = !isVirtualCursor } })
                 // 键盘
-                Text("⌨", fontSize = 11.sp,
+                Text("⌨", fontSize = 14.sp,
                     modifier = itemModifier.pointerInput(Unit) { detectTapGestures { showKeyboardInput = !showKeyboardInput } })
                 // 设置
-                Text("⚙", fontSize = 11.sp,
+                Text("⚙", fontSize = 14.sp,
                     modifier = itemModifier.pointerInput(Unit) { detectTapGestures { showSettings = !showSettings } })
             }
         }
