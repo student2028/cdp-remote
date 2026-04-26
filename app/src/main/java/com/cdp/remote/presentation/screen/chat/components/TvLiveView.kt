@@ -147,25 +147,27 @@ fun TvLiveView(
                                             val previousCentroidY = pointers.map { it.previousPosition.y }.average().toFloat()
                                             val currentCentroidX = pointers.map { it.position.x }.average().toFloat()
                                             
+                                            val currentCentroid = Offset(currentCentroidX, currentCentroidY)
                                             if (twoFingerDownPos == null) {
-                                                twoFingerDownPos = Offset(currentCentroidX, currentCentroidY)
+                                                twoFingerDownPos = currentCentroid
+                                            }
+                                            
+                                            val dist = (currentCentroid - twoFingerDownPos!!).getDistance()
+                                            
+                                            // 只有当滑动距离超过阈值，才判定为滚动（防误触：双指轻点时的微小抖动）
+                                            if (dist > 15f) {
+                                                isScrolling = true
                                             }
                                             
                                             val panY = currentCentroidY - previousCentroidY
-                                            maxPanY += kotlin.math.abs(panY)
-                                            
-                                            // 只有当滑动距离超过一定阈值，才判定为滚动（防误触：双指轻点时的微小滑动）
-                                            if (maxPanY > 15f) {
-                                                isScrolling = true
-                                                if (panY != 0f) {
-                                                    toImageRatio(
-                                                        Offset(currentCentroidX, currentCentroidY), 
-                                                        imageLayoutSize, bitmapW, bitmapH,
-                                                        focusMode, scale, offsetX, offsetY
-                                                    )?.let { (rx, ry) ->
-                                                        // panY 是手指位移，手指向下滑（panY > 0）代表网页要向上滚，即发送正数 deltaY
-                                                        onRemoteScroll(rx, ry, -panY * 2.5f)
-                                                    }
+                                            if (isScrolling && panY != 0f) {
+                                                toImageRatio(
+                                                    currentCentroid, 
+                                                    imageLayoutSize, bitmapW, bitmapH,
+                                                    focusMode, scale, offsetX, offsetY
+                                                )?.let { (rx, ry) ->
+                                                    // panY 是手指位移，手指向下滑（panY > 0）代表网页要向上滚，即发送正数 deltaY
+                                                    onRemoteScroll(rx, ry, -panY * 2.5f)
                                                 }
                                             }
                                             pointers.forEach {
