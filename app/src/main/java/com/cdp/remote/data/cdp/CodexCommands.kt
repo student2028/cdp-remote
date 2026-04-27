@@ -1307,8 +1307,37 @@ class CodexCommands(private val cdp: ICdpClient) {
             if (json.get("found")?.asBoolean == true) {
                 val x = json.get("x").asDouble
                 val y = json.get("y").asDouble
+                // 第一次点击：打开 "Continue in" 弹出菜单
                 cdpMouseClick(x, y)
-                delay(300)
+                delay(500)
+                // 第二次点击：点击菜单中的 "Rate limits remaining" 展开详细用量
+                val detail = cdp.evaluate("""
+                    (function() {
+                        try {
+                            var els = document.querySelectorAll('button, [role="menuitem"], [role="button"], div, span, a');
+                            for (var i = 0; i < els.length; i++) {
+                                if (!els[i].offsetParent) continue;
+                                var t = (els[i].textContent || '').trim();
+                                if (t.indexOf('Rate limit') >= 0 && t.length < 60) {
+                                    var r = els[i].getBoundingClientRect();
+                                    if (r.width > 0 && r.height > 0) {
+                                        return JSON.stringify({found:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
+                                    }
+                                }
+                            }
+                            return JSON.stringify({found:false});
+                        } catch(e) { return JSON.stringify({found:false}); }
+                    })()
+                """.trimIndent()).getOrNull() ?: ""
+                if (detail.isNotEmpty()) {
+                    try {
+                        val dj = JsonParser.parseString(detail).asJsonObject
+                        if (dj.get("found")?.asBoolean == true) {
+                            cdpMouseClick(dj.get("x").asDouble, dj.get("y").asDouble)
+                            delay(300)
+                        }
+                    } catch (_: Exception) {}
+                }
                 val info = json.get("text")?.asString ?: ""
                 CdpResult.Success(info)
             } else {
