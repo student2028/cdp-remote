@@ -796,17 +796,45 @@ class ChatViewModel(
                         return rows;
                     }
 
+                    function isKeyQuota(row) {
+                        var normalized = (row && row.name ? row.name : '')
+                            .toLowerCase()
+                            .replace(/[^a-z0-9.]+/g, ' ')
+                            .trim();
+                        var isGeminiHigh = normalized.indexOf('gemini') >= 0 &&
+                            normalized.indexOf('3.1') >= 0 &&
+                            normalized.indexOf('pro') >= 0 &&
+                            normalized.indexOf('high') >= 0;
+                        var isOpus = normalized.indexOf('claude') >= 0 && normalized.indexOf('opus') >= 0;
+                        return isGeminiHigh || isOpus;
+                    }
+
+                    function hasStableKeyQuota(rows) {
+                        var keyRows = rows.filter(isKeyQuota);
+                        if (keyRows.length < 2 && rows.length >= 5) {
+                            keyRows = [rows[0], rows[4]];
+                        }
+                        if (keyRows.length < 2) return false;
+                        for (var i = 0; i < keyRows.length; i++) {
+                            if (!keyRows[i].reset || !keyRows[i].remaining) return false;
+                        }
+                        var allZero = keyRows.every(function(row) {
+                            return /^0(?:\.0+)?\/\d+/.test(row.remaining || '');
+                        });
+                        return !allZero;
+                    }
+
                     var credits = '';
                     var rows = [];
-                    for (var attempt = 0; attempt < 5; attempt++) {
+                    for (var attempt = 0; attempt < 8; attempt++) {
                         if (!/MODEL QUOTA/i.test(bodyText())) clickModels();
-                        await new Promise(r => setTimeout(r, attempt === 0 ? 600 : 400));
+                        await new Promise(r => setTimeout(r, attempt === 0 ? 800 : 600));
                         var text = bodyText();
                         credits = (text.match(/Available AI Credits:\s*([0-9,]+)/i) || [])[1] || credits;
                         rows = readQuotaRows();
-                        if (rows.length > 0) break;
+                        if (hasStableKeyQuota(rows)) break;
                     }
-                    if (rows.length === 0) return JSON.stringify({ ok: false, error: 'Settings 已打开，但未读取到模型额度' });
+                    if (!hasStableKeyQuota(rows)) return JSON.stringify({ ok: false, error: 'Settings 已打开，但模型额度还未加载稳定' });
                     return JSON.stringify({ ok: true, credits: credits, rows: rows.slice(0, 8) });
                 })()
             """.trimIndent(), awaitPromise = true)
