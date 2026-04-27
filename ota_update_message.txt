@@ -1,5 +1,5 @@
-53. 修复 Windsurf 工具确认未自动处理：
-- 自动识别 Windsurf Cascade 的 Run⌥⏎ 工具确认按钮
-- 底部“接受”会优先点击 Run，再降级查找 Accept all
-- 底部“拒绝”会优先点击 Skip，再降级查找 Reject
-- 通用 Action 匹配兼容带快捷键后缀的 Run 按钮
+54. Windsurf 新增“用量”入口：
+- Windsurf 底部工具栏显示“用量”按钮
+- 点击后打开 Windsurf Plan Info / quota 面板
+- 返回 Daily / Weekly quota 摘要，方便在手机端确认使用情况
+- 复用状态栏 Pro 入口，兼容当前 Windsurf DOM

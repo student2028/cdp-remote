@@ -115,6 +115,115 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         }.getOrDefault(false)
     }
 
+    // ─────────────────── 用量面板 (Plan / Quota) ───────────────────
+
+    suspend fun showUsagePanel(): CdpResult<String> {
+        val openResult = cdp.evaluate("""
+            (function() {
+                function isVisible(el) {
+                    if (!el) return false;
+                    var r = el.getBoundingClientRect();
+                    var s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                }
+                function fullClick(el) {
+                    try {
+                        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+                    } catch (e) {}
+                    el.click();
+                }
+                function quotaSummary() {
+                    var plan = document.getElementById('codeium.windsurf.settings.planInfo');
+                    if (plan) {
+                        var label = plan.getAttribute('aria-label') || '';
+                        if (label) return label;
+                    }
+                    var text = document.body ? (document.body.innerText || '') : '';
+                    var daily = text.match(/Daily quota usage:\s*([0-9]+%)/i);
+                    var weekly = text.match(/Weekly quota usage:\s*([0-9]+%)/i);
+                    if (daily || weekly) {
+                        return 'Daily: ' + (daily ? daily[1] : '?') + ' · Weekly: ' + (weekly ? weekly[1] : '?');
+                    }
+                    return '';
+                }
+
+                var planStatus = document.getElementById('codeium.windsurf.settings.planInfo');
+                var clickTarget = planStatus ? (planStatus.querySelector('[role="button"], a, button') || planStatus) : null;
+                if (!clickTarget || !isVisible(clickTarget)) {
+                    var all = document.querySelectorAll('button, [role="button"], a, [aria-label]');
+                    for (var i = 0; i < all.length; i++) {
+                        if (!isVisible(all[i])) continue;
+                        var t = ((all[i].textContent || '') + ' ' + (all[i].getAttribute('aria-label') || '')).toLowerCase();
+                        if (t.indexOf('quota') >= 0 || t.indexOf('plan') >= 0 || t.indexOf('windsurf settings') >= 0) {
+                            clickTarget = all[i];
+                            break;
+                        }
+                    }
+                }
+                if (!clickTarget) return JSON.stringify({ ok: false, error: '未找到 Windsurf 用量入口' });
+
+                var summary = quotaSummary();
+                fullClick(clickTarget);
+                return JSON.stringify({ ok: true, summary: summary });
+            })()
+        """.trimIndent())
+
+        if (openResult is CdpResult.Error) return CdpResult.Error(openResult.message)
+        val openStr = openResult.getOrNull() ?: return CdpResult.Error("无返回结果")
+        val summary = try {
+            val json = JsonParser.parseString(openStr).asJsonObject
+            if (json.get("ok")?.asBoolean != true) {
+                return CdpResult.Error(json.get("error")?.asString ?: "未找到 Windsurf 用量入口")
+            }
+            json.get("summary")?.asString.orEmpty()
+        } catch (e: Exception) {
+            return CdpResult.Error("解析失败: ${e.message}")
+        }
+
+        delay(300)
+        cdp.evaluate("""
+            (function() {
+                function isVisible(el) {
+                    if (!el) return false;
+                    var r = el.getBoundingClientRect();
+                    var s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                }
+                var tabs = document.querySelectorAll('button, [role="tab"], [role="button"], a');
+                for (var i = 0; i < tabs.length; i++) {
+                    if (!isVisible(tabs[i])) continue;
+                    var t = (tabs[i].innerText || tabs[i].textContent || '').trim().toLowerCase();
+                    if (t === 'plan info' || t === 'plan') {
+                        tabs[i].click();
+                        return 'clicked';
+                    }
+                }
+                return 'no-tab';
+            })()
+        """.trimIndent())
+
+        delay(200)
+        val detail = cdp.evaluate("""
+            (function() {
+                var text = document.body ? (document.body.innerText || '') : '';
+                var daily = text.match(/Daily quota usage:\s*([0-9]+%)/i);
+                var weekly = text.match(/Weekly quota usage:\s*([0-9]+%)/i);
+                var resetDaily = text.match(/Resets[^\\n]*/i);
+                var out = [];
+                if (daily) out.push('Daily ' + daily[1]);
+                if (weekly) out.push('Weekly ' + weekly[1]);
+                if (resetDaily) out.push(resetDaily[0].trim());
+                return out.join(' · ');
+            })()
+        """.trimIndent()).getOrNull().orEmpty()
+
+        val info = detail.ifBlank { summary.ifBlank { "Windsurf Plan Info" } }
+        return CdpResult.Success(info)
+    }
+
     // ─────────────────── 图片粘贴 (Windsurf 容器优先) ───────────────────
 
     override suspend fun pasteImage(base64Data: String, mimeType: String, fileName: String): CdpResult<Boolean> {

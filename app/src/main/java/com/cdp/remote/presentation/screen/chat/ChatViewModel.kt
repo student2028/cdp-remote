@@ -632,12 +632,16 @@ class ChatViewModel(
     }
 
     /**
-     * Codex 专属：点击底部 "Work locally" 按钮弹出 Rate limits remaining 面板
+     * 查看 IDE 用量面板：Codex 打开 Rate limits，Windsurf 打开 Plan Info。
      */
     fun checkRateLimits() {
-        if (!isCodex || codexCommands == null) return
+        if ((!isCodex || codexCommands == null) && (!isWindsurf || commands !is WindsurfCommands)) return
         viewModelScope.launch {
-            val result = codexCommands!!.showRateLimits()
+            val result = when {
+                isCodex -> codexCommands!!.showRateLimits()
+                isWindsurf -> (commands as WindsurfCommands).showUsagePanel()
+                else -> CdpResult.Error("当前 IDE 不支持查看用量")
+            }
             when (result) {
                 is CdpResult.Success -> addSystemMessage("用量面板已打开 📊 ${result.data}")
                 is CdpResult.Error -> addSystemMessage("查看用量失败: ${result.message}")

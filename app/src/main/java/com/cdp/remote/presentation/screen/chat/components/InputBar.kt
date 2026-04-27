@@ -53,7 +53,7 @@ fun ActionToolbar(
     onSessionList: () -> Unit = {},
     /** Codex 项目管理（合并自原悬浮按钮） */
     onProjectManagement: () -> Unit = {},
-    /** Codex 专属：查看当前模型用量（Rate limits remaining） */
+    /** Codex/Windsurf：查看当前模型或账号用量 */
     onCheckUsage: () -> Unit = {},
     /** 反重力系：打开「全局规则」弹窗，经 CDP 写入 Customizations → Global */
     showGlobalRuleButton: Boolean = false,
@@ -140,8 +140,8 @@ fun ActionToolbar(
                 iconColor = Primary,
                 onClick = onSwitchModel
             )
-            // Codex 专属：查看当前模型用量
-            if (isCodex) {
+            // Codex/Windsurf：查看用量
+            if (isCodex || isWindsurf) {
                 ToolbarBtn(
                     icon = Icons.Default.DataUsage,
                     label = "用量",
@@ -406,4 +406,3 @@ fun InputBar(
         }
     }
 }
-
