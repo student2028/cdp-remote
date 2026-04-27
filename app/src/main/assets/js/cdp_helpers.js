@@ -249,8 +249,10 @@
          */
         matchesActionButton: function (txt) {
             var lowerTxt = txt.toLowerCase().trim();
+            var commandTxt = lowerTxt.replace(/[^a-z]/g, '');
             if (
                 lowerTxt === 'run' ||
+                commandTxt === 'run' ||
                 lowerTxt === 'allow' ||
                 lowerTxt === 'approve' ||
                 lowerTxt === 'continue' ||

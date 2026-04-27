@@ -24,6 +24,97 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         private const val TAG = "WindsurfCmds"
     }
 
+    // ─────────────────── Action 确认 (Run / Skip) ───────────────────
+
+    override suspend fun autoAcceptActions(): Boolean {
+        return clickCascadeAction("run")
+    }
+
+    override suspend fun acceptAll(): CdpResult<Boolean> {
+        if (clickCascadeAction("run")) {
+            return CdpResult.Success(true)
+        }
+        return super.acceptAll()
+    }
+
+    override suspend fun rejectAll(): CdpResult<Boolean> {
+        if (clickCascadeAction("skip")) {
+            return CdpResult.Success(true)
+        }
+        return super.rejectAll()
+    }
+
+    private suspend fun clickCascadeAction(action: String): Boolean {
+        val actionName = action.lowercase()
+        val result = cdp.evaluate("""
+            (function() {
+                function isVisible(el) {
+                    if (!el) return false;
+                    var r = el.getBoundingClientRect();
+                    var s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                }
+                function fullClick(el) {
+                    try {
+                        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+                    } catch (e) {}
+                    el.click();
+                }
+                function normalizedText(el) {
+                    return (el.innerText || el.textContent || el.value || '')
+                        .trim()
+                        .toLowerCase()
+                        .replace(/\s+/g, ' ');
+                }
+                function commandText(text) {
+                    return text.replace(/[^a-z]/g, '');
+                }
+                function matches(el) {
+                    var text = normalizedText(el);
+                    var cmd = commandText(text);
+                    if ('$actionName' === 'run') {
+                        return text === 'run' || cmd === 'run' || text === 'allow' || text === 'approve' || text === 'continue';
+                    }
+                    return text === 'skip' || text === 'reject' || text === 'reject all' || text === 'discard';
+                }
+
+                var roots = [];
+                var panel = document.getElementById('windsurf.cascadePanel');
+                if (panel) roots.push(panel);
+                var chatRoot = document.querySelector('[class*="chat-client-root"]');
+                if (chatRoot && chatRoot !== panel) roots.push(chatRoot);
+                roots.push(document.body);
+
+                for (var ri = 0; ri < roots.length; ri++) {
+                    var buttons = roots[ri].querySelectorAll('button, [role="button"]');
+                    for (var i = 0; i < buttons.length; i++) {
+                        var btn = buttons[i];
+                        if (!isVisible(btn)) continue;
+                        if (!matches(btn)) continue;
+                        fullClick(btn);
+                        var r = btn.getBoundingClientRect();
+                        return JSON.stringify({
+                            found: true,
+                            text: normalizedText(btn),
+                            x: r.x + r.width / 2,
+                            y: r.y + r.height / 2
+                        });
+                    }
+                }
+                return JSON.stringify({ found: false });
+            })()
+        """.trimIndent())
+
+        val evalStr = result.getOrNull() ?: return false
+        return runCatching {
+            val json = JsonParser.parseString(evalStr).asJsonObject
+            json.has("found") && json.get("found").asBoolean
+        }.getOrDefault(false)
+    }
+
     // ─────────────────── 图片粘贴 (Windsurf 容器优先) ───────────────────
 
     override suspend fun pasteImage(base64Data: String, mimeType: String, fileName: String): CdpResult<Boolean> {

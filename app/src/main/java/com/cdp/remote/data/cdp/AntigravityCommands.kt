@@ -904,7 +904,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
      * 自动放行 Agent 的 Action 确认按钮 (Run, Allow, Approve 等)
      * 返回 true 表示成功点击了一个按钮
      */
-    suspend fun autoAcceptActions(): Boolean {
+    open suspend fun autoAcceptActions(): Boolean {
         ensureCdpHelpersInjected().let {
             if (it is CdpResult.Error) {
                 Log.e(TAG, it.message)
@@ -1006,7 +1006,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     /**
      * 点击 "Accept all" 按钮 — 接收所有代码变更
      */
-    suspend fun acceptAll(): CdpResult<Boolean> {
+    open suspend fun acceptAll(): CdpResult<Boolean> {
         val result = cdp.evaluate("""
             (function() {
                 function docs(d) {
@@ -1072,7 +1072,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     /**
      * 点击 "Reject all" 按钮 — 拒绝所有代码变更
      */
-    suspend fun rejectAll(): CdpResult<Boolean> {
+    open suspend fun rejectAll(): CdpResult<Boolean> {
         val result = cdp.evaluate("""
             (function() {
                 function docs(d) {

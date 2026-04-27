@@ -1,5 +1,5 @@
-52. 修复退出 IDE 可能触发崩溃恢复弹窗：
-- 退出 IDE 改为通过 CDP Browser.close 优雅关闭，不再默认 kill 进程
-- 普通退出失败时返回明确错误，不再静默刷新
-- 强制退出仅保留给显式 force=1 的 relay 接口
-- 主机列表弹窗文案从“终止进程”调整为“退出 IDE”，避免误触发强杀语义
+53. 修复 Windsurf 工具确认未自动处理：
+- 自动识别 Windsurf Cascade 的 Run⌥⏎ 工具确认按钮
+- 底部“接受”会优先点击 Run，再降级查找 Accept all
+- 底部“拒绝”会优先点击 Skip，再降级查找 Reject
+- 通用 Action 匹配兼容带快捷键后缀的 Run 按钮
