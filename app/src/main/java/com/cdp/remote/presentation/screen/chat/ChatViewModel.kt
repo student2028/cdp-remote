@@ -695,9 +695,12 @@ class ChatViewModel(
                         for (var i = 0; i < items.length; i++) {
                             var el = items[i];
                             if (!isVisible(el)) continue;
-                            var t = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').toLowerCase();
+                            var raw = (el.innerText || el.textContent || '').trim();
+                            var exact = raw.toLowerCase();
+                            var t = raw.replace(/\s+/g, ' ').toLowerCase();
                             var a = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-                            if (t === 'models' || t === 'model' || a === 'models' || a === 'model') {
+                            var r = el.getBoundingClientRect();
+                            if ((exact === 'models' || t === 'models' || a === 'models') && r.x < 260) {
                                 fullClick(el);
                                 return true;
                             }
@@ -714,8 +717,37 @@ class ChatViewModel(
                     var lines = text.split('\n').map(s => s.trim()).filter(Boolean);
                     for (var i = 0; i < lines.length; i++) {
                         if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[i]) && i + 1 < lines.length && /Refreshes/i.test(lines[i + 1])) {
-                            rows.push(lines[i] + ': ' + lines[i + 1]);
+                            rows.push({ name: lines[i], reset: lines[i + 1], remaining: '' });
                         }
+                    }
+                    var fills = [];
+                    var groups = document.querySelectorAll('.flex.gap-1');
+                    for (var g = 0; g < groups.length; g++) {
+                        var gr = groups[g].getBoundingClientRect();
+                        if (!isVisible(groups[g]) || gr.x < 250 || gr.width < 100 || gr.height > 16) continue;
+                        var segments = groups[g].querySelectorAll('[class*="bg-gray-500"]');
+                        if (segments.length === 0) continue;
+                        var filled = 0;
+                        for (var s = 0; s < segments.length; s++) {
+                            var fill = segments[s].firstElementChild;
+                            var width = fill ? (fill.style.width || window.getComputedStyle(fill).width || '') : '';
+                            var percent = 0;
+                            var m = String(width).match(/([0-9.]+)%/);
+                            if (m) {
+                                percent = parseFloat(m[1]);
+                            } else if (fill) {
+                                var sr = segments[s].getBoundingClientRect();
+                                var fr = fill.getBoundingClientRect();
+                                percent = sr.width > 0 ? (fr.width / sr.width) * 100 : 0;
+                            }
+                            if (percent >= 90) filled += 1;
+                            else if (percent > 5) filled += percent / 100;
+                        }
+                        fills.push({ filled: filled, total: segments.length });
+                    }
+                    for (var ri = 0; ri < rows.length && ri < fills.length; ri++) {
+                        var f = fills[ri];
+                        rows[ri].remaining = (Math.round(f.filled * 10) / 10) + '/' + f.total;
                     }
                     if (!credits && rows.length === 0) {
                         return JSON.stringify({ ok: false, error: 'Settings 已打开，但未读取到 Models 用量' });
@@ -732,10 +764,27 @@ class ChatViewModel(
 
             val parts = mutableListOf<String>()
             json.get("credits")?.asString?.takeIf { it.isNotBlank() }?.let {
-                parts.add("AI Credits: $it")
+                parts.add("AI 点数: $it")
             }
-            val rows = json.getAsJsonArray("rows")?.map { it.asString }.orEmpty()
-            if (rows.isNotEmpty()) parts.add(rows.joinToString(" · "))
+            val rows = json.getAsJsonArray("rows")?.mapNotNull { elem ->
+                val row = elem.asJsonObject
+                val name = row.get("name")?.asString.orEmpty()
+                if (name.isBlank()) return@mapNotNull null
+                val remaining = row.get("remaining")?.asString.orEmpty()
+                val reset = row.get("reset")?.asString
+                    ?.replace("Refreshes in", "刷新")
+                    ?.replace("hours", "小时")
+                    ?.replace("hour", "小时")
+                    ?.replace("minutes", "分钟")
+                    ?.replace("minute", "分钟")
+                    .orEmpty()
+                buildString {
+                    append(name)
+                    if (remaining.isNotBlank()) append(" 剩余 ").append(remaining)
+                    if (reset.isNotBlank()) append("，").append(reset)
+                }
+            }.orEmpty()
+            if (rows.isNotEmpty()) parts.add("模型额度: ${rows.joinToString("；")}")
             CdpResult.Success(parts.joinToString(" · ").ifBlank { "Antigravity Models" })
         } catch (e: Exception) {
             CdpResult.Error("读取 Antigravity 用量失败: ${e.message}")
