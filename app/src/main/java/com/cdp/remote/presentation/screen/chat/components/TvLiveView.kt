@@ -81,11 +81,11 @@ fun TvLiveView(
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
-    // 0=RIGHT(default), 1=CENTER(full), 2=LEFT
+    // 0=RIGHT, 1=FULL(Fit), 2=LEFT, 3=CENTER(FillHeight + 略偏右: 跳过左侧 panel)
     var focusMode by remember(appName) {
         val initial = when {
             appName.contains("Cursor", ignoreCase = true) -> 2
-            appName.contains("Codex", ignoreCase = true) -> 1
+            appName.contains("Codex", ignoreCase = true) -> 3 // 默认"中"，偏右展示主聊天画布
             else -> 0
         }
         mutableIntStateOf(initial)
@@ -160,6 +160,10 @@ fun TvLiveView(
                     fontWeight = if (focusMode == 2) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     modifier = focusItemMod.clickable(indication = null, interactionSource = noRipple()) { focusMode = 2 })
+                Text("中", fontSize = 13.sp,
+                    fontWeight = if (focusMode == 3) FontWeight.Bold else FontWeight.Normal,
+                    color = if (focusMode == 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = focusItemMod.clickable(indication = null, interactionSource = noRipple()) { focusMode = 3 })
                 Text("全", fontSize = 13.sp,
                     fontWeight = if (focusMode == 1) FontWeight.Bold else FontWeight.Normal,
                     color = if (focusMode == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
@@ -193,9 +197,10 @@ fun TvLiveView(
                 contentDescription = "IDE 实时画面",
                 contentScale = if (focusMode != 1) ContentScale.FillHeight else ContentScale.Fit,
                 alignment = when (focusMode) {
-                    0 -> Alignment.TopEnd
-                    2 -> Alignment.TopStart
-                    else -> Alignment.Center
+                    0 -> Alignment.TopEnd                                  // 右
+                    2 -> Alignment.TopStart                                // 左
+                    3 -> androidx.compose.ui.BiasAlignment(0.4f, -1f)      // 中(略偏右)：跳过左侧 sidebar，露出右边模型按钮
+                    else -> Alignment.Center                               // 全 (Fit)
                 },
                 modifier = Modifier
                     .fillMaxSize()
@@ -543,15 +548,19 @@ private fun toImageRatio(
     val imgLeft: Float
     val imgTop: Float
     when (focusMode) {
-        0 -> { // TopEnd
+        0 -> { // 右: TopEnd
             imgLeft = viewW - drawW
             imgTop = 0f
         }
-        2 -> { // TopStart
+        2 -> { // 左: TopStart
             imgLeft = 0f
             imgTop = 0f
         }
-        else -> { // Center
+        3 -> { // 中(略偏右): horizontalBias = 0.4  →  imgLeft = (viewW - drawW) * (1 + 0.4) / 2 = (viewW - drawW) * 0.7
+            imgLeft = (viewW - drawW) * 0.7f
+            imgTop = 0f
+        }
+        else -> { // 全: Fit + Center
             imgLeft = (viewW - drawW) / 2f
             imgTop = (viewH - drawH) / 2f
         }

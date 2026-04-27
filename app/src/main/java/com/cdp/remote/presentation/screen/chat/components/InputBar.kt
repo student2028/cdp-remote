@@ -39,6 +39,8 @@ fun ActionToolbar(
     tvMode: Boolean,
     currentModel: String,
     isWindsurf: Boolean = false,
+    /** Codex 专用：隐藏上翻/下翻并显示项目管理按钮 */
+    isCodex: Boolean = false,
     onNewSession: () -> Unit,
     onStopGeneration: () -> Unit,
     onCancelRunningTask: () -> Unit = {},
@@ -47,6 +49,10 @@ fun ActionToolbar(
     onAcceptAll: () -> Unit,
     onRejectAll: () -> Unit,
     onSwitchModel: () -> Unit,
+    /** 历史会话列表（合并自原悬浮按钮） */
+    onSessionList: () -> Unit = {},
+    /** Codex 项目管理（合并自原悬浮按钮） */
+    onProjectManagement: () -> Unit = {},
     /** 反重力系：打开「全局规则」弹窗，经 CDP 写入 Customizations → Global */
     showGlobalRuleButton: Boolean = false,
     onGlobalRule: () -> Unit = {},
@@ -65,6 +71,23 @@ fun ActionToolbar(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 历史会话列表（原悬浮按钮，合并到工具栏首位）
+            ToolbarBtn(
+                icon = Icons.Default.List,
+                label = "会话",
+                enabled = isConnected,
+                onClick = onSessionList
+            )
+            // Codex 专属：项目管理（原悬浮按钮，合并到工具栏）
+            if (isCodex) {
+                ToolbarBtn(
+                    icon = Icons.Default.FolderOpen,
+                    label = "项目",
+                    enabled = isConnected,
+                    iconColor = Primary,
+                    onClick = onProjectManagement
+                )
+            }
             ToolbarBtn(
                 icon = Icons.Default.Add,
                 label = "新建",
@@ -90,18 +113,21 @@ fun ActionToolbar(
                     onClick = onCancelRunningTask
                 )
             }
-            ToolbarBtn(
-                icon = Icons.Default.KeyboardArrowUp,
-                label = "上翻",
-                enabled = isConnected,
-                onClick = onScrollUp
-            )
-            ToolbarBtn(
-                icon = Icons.Default.KeyboardArrowDown,
-                label = "下翻",
-                enabled = isConnected,
-                onClick = onScrollDown
-            )
+            // 上翻/下翻：Codex 不需要（侧边栏已含会话与项目入口，节省横向空间）
+            if (!isCodex) {
+                ToolbarBtn(
+                    icon = Icons.Default.KeyboardArrowUp,
+                    label = "上翻",
+                    enabled = isConnected,
+                    onClick = onScrollUp
+                )
+                ToolbarBtn(
+                    icon = Icons.Default.KeyboardArrowDown,
+                    label = "下翻",
+                    enabled = isConnected,
+                    onClick = onScrollDown
+                )
+            }
             ToolbarBtn(
                 icon = Icons.Default.CheckCircle,
                 label = "接受",

@@ -282,6 +282,7 @@ fun ChatScreen(
                     tvMode = state.tvMode,
                     currentModel = state.currentModel,
                     isWindsurf = state.isWindsurf,
+                    isCodex = isCodexApp,
                     onNewSession = { viewModel.startNewSession() },
                     onStopGeneration = { viewModel.stopGeneration() },
                     onCancelRunningTask = { viewModel.cancelRunningTask() },
@@ -290,6 +291,14 @@ fun ChatScreen(
                     onAcceptAll = { viewModel.acceptAll() },
                     onRejectAll = { viewModel.rejectAll() },
                     onSwitchModel = { showModelDialog = true },
+                    onSessionList = {
+                        showSessionDialog = true
+                        viewModel.fetchRecentSessionsList()
+                    },
+                    onProjectManagement = {
+                        showProjectDialog = true
+                        viewModel.fetchCodexProjects()
+                    },
                     showGlobalRuleButton = showAntigravityGlobalRule,
                     onGlobalRule = { showGlobalRuleDialog = true }
                 )
@@ -381,47 +390,7 @@ fun ChatScreen(
                 }
             }
 
-            // 浮动历史会话按钮
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 16.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                IconButton(
-                    onClick = {
-                        showSessionDialog = true
-                        viewModel.fetchRecentSessionsList()
-                    },
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
-                ) {
-                    Icon(
-                        Icons.Default.List,
-                        contentDescription = "会话列表",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                // Codex 专属：项目管理按钮
-                if (isCodexApp) {
-                    IconButton(
-                        onClick = {
-                            showProjectDialog = true
-                            viewModel.fetchCodexProjects()
-                        },
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f))
-                    ) {
-                        Icon(
-                            Icons.Default.FolderOpen,
-                            contentDescription = "项目管理",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                }
-            }
+            // 历史会话与项目管理已合并入底部 ActionToolbar，不再悬浮显示。
 
             // 浮动上下切换按钮（按主页拖拽排序顺序）
             val hostAddr = "$hostIp:$hostPort"

@@ -500,93 +500,78 @@ class CodexCommands(private val cdp: ICdpClient) {
         }
     }
 
+    /**
+     * 获取**当前项目**下的会话列表（侧边栏中该项目展开后的 chat 列表）。
+     * Codex 侧边栏结构:
+     *   <div role="listitem" aria-label="{project}">
+     *     <div role="button" aria-label="{project}">…</div>      <- 项目头
+     *     <div>                                                  <- 容器
+     *       <div role="listitem">                                <- chat
+     *         <div role="button">…title…</div>
+     *       </div>
+     *       …
+     *     </div>
+     *   </div>
+     * 当前选中的 chat 带 aria-current="page"。
+     */
     suspend fun getRecentSessionsList(): CdpResult<List<String>> {
+        ensureSidebarOpen()
         val script = """
-            (async function() {
-                function getDocs(d) {
-                    var out = [d];
-                    var ifr = d.querySelectorAll('iframe');
-                    for (var i = 0; i < ifr.length; i++) {
-                        try { if (ifr[i].contentDocument) out = out.concat(getDocs(ifr[i].contentDocument)); } catch (e) {}
+            (function() {
+                try {
+                    // 1. 找到当前项目对应的 listitem (优先用 aria-current 定位; 否则取第一个项目)
+                    var current = document.querySelector('[role="listitem"][aria-label] [aria-current="page"]');
+                    var projectLi = null;
+                    if (current) {
+                        projectLi = current.closest('[role="listitem"][aria-label]');
                     }
-                    return out;
-                }
-
-                function getItems() {
-                    var docs = getDocs(document);
-                    var visibleItems = [];
-                    for(var d=0; d<docs.length; d++) {
-                        if (!docs[d]) continue;
-                        var items = docs[d].querySelectorAll('[role="listitem"], [class*="history-item"], [class*="session-item"], .history-entry');
-                        for(var i=0; i<items.length; i++) {
-                            if(items[i].offsetParent) visibleItems.push(items[i]);
+                    if (!projectLi) {
+                        var lis = document.querySelectorAll('[role="listitem"][aria-label]');
+                        for (var i = 0; i < lis.length; i++) {
+                            // 项目级 listitem: 其内部有 [role="button"][aria-expanded][aria-label] 与本身同名
+                            var name = lis[i].getAttribute('aria-label') || '';
+                            var hdr = lis[i].querySelector('[role="button"][aria-expanded][aria-label="' + name.replace(/"/g,'\\"') + '"]');
+                            if (hdr && lis[i].offsetParent) { projectLi = lis[i]; break; }
                         }
                     }
-                    return visibleItems;
-                }
+                    if (!projectLi) return JSON.stringify({status:'no-project'});
 
-                function extractTitles(items) {
-                    var res = [];
-                    for(var i=0; i<items.length; i++) {
-                        var el = items[i];
-                        var text = el.innerText || el.textContent;
-                        text = text.replace(/\n/g, ' ').replace(/\r/g, '').trim();
-                        if (text.length > 50) text = text.substring(0, 50) + '...';
-                        res.push(text);
+                    var projectName = projectLi.getAttribute('aria-label') || '';
+                    var sessions = [];
+                    // chat = 内部 role=listitem 但 aria-label 与项目名不同（即非项目本身）
+                    var chats = projectLi.querySelectorAll('[role="listitem"]');
+                    for (var j = 0; j < chats.length; j++) {
+                        if (chats[j] === projectLi) continue;
+                        var aria = chats[j].getAttribute('aria-label') || '';
+                        if (aria === projectName) continue;
+                        // 标题: 取第一个 .truncate 的纯文本（避开尾部时间标签）
+                        var titleEl = chats[j].querySelector('.truncate, [class*="truncate"]');
+                        var text = titleEl ? (titleEl.textContent || '').trim()
+                                           : (chats[j].textContent || '').trim();
+                        text = text.replace(/\s+/g, ' ');
+                        if (text.length > 60) text = text.substring(0, 60) + '...';
+                        if (text) sessions.push(text);
                     }
-                    return res;
+                    return JSON.stringify({status:'found', project: projectName, sessions: sessions});
+                } catch(e) {
+                    return JSON.stringify({status:'error', error: e.message});
                 }
-
-                var vItems = getItems();
-                if (vItems.length > 0) {
-                    return JSON.stringify({status: 'found', sessions: extractTitles(vItems)});
-                }
-
-                var docs = getDocs(document);
-                var btns = [];
-                for(var di=0; di<docs.length; di++) {
-                    var bs = docs[di].querySelectorAll('a, button, [role="button"]');
-                    for(var i=0; i<bs.length; i++) btns.push(bs[i]);
-                }
-
-                var historyBtn = null;
-                for (var i = 0; i < btns.length; i++) {
-                    if (!btns[i].offsetParent) continue;
-                    var aria = (btns[i].getAttribute('aria-label') || '').toLowerCase();
-                    var text = (btns[i].textContent || '').trim().toLowerCase();
-                    if (aria.includes('history') || text === 'history' ||
-                        aria.includes('recent') || text.includes('recent sessions') ||
-                        aria.includes('历史') || text === '历史记录') {
-                        historyBtn = btns[i]; break;
-                    }
-                }
-
-                if (historyBtn) {
-                    historyBtn.click();
-                    await new Promise(r => setTimeout(r, 600));
-
-                    var vItems2 = getItems();
-                    if (vItems2.length > 0) {
-                        return JSON.stringify({status: 'found', sessions: extractTitles(vItems2)});
-                    }
-                }
-
-                return JSON.stringify({status: 'no-items'});
             })()
         """.trimIndent()
 
-        val result = cdp.evaluate(script, awaitPromise = true)
+        val result = cdp.evaluate(script)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         val jsonStr = result.getOrNull() ?: return CdpResult.Error("无返回结果")
         return try {
             val root = com.google.gson.JsonParser.parseString(jsonStr).asJsonObject
-            if (root.get("status")?.asString == "found") {
-                val sessionsArray = root.getAsJsonArray("sessions")
-                val list = mutableListOf<String>()
-                sessionsArray.forEach { list.add(it.asString) }
-                CdpResult.Success(list)
-            } else {
-                CdpResult.Error("未找到会话列表")
+            when (root.get("status")?.asString) {
+                "found" -> {
+                    val list = root.getAsJsonArray("sessions").map { it.asString }
+                    if (list.isEmpty()) CdpResult.Error("当前项目暂无会话")
+                    else CdpResult.Success(list)
+                }
+                "no-project" -> CdpResult.Error("未找到当前项目")
+                else -> CdpResult.Error("未找到会话列表")
             }
         } catch (e: Exception) {
             CdpResult.Error("解析会话列表失败")
@@ -594,44 +579,48 @@ class CodexCommands(private val cdp: ICdpClient) {
     }
 
     suspend fun switchSessionByIndex(index: Int): CdpResult<Unit> {
+        ensureSidebarOpen()
         val script = """
-            (async function() {
-                function getDocs(d) {
-                    var out = [d];
-                    var ifr = d.querySelectorAll('iframe');
-                    for (var i = 0; i < ifr.length; i++) {
-                        try { if (ifr[i].contentDocument) out = out.concat(getDocs(ifr[i].contentDocument)); } catch (e) {}
-                    }
-                    return out;
-                }
-
-                function getItems() {
-                    var docs = getDocs(document);
-                    var visibleItems = [];
-                    for(var d=0; d<docs.length; d++) {
-                        if (!docs[d]) continue;
-                        var items = docs[d].querySelectorAll('[role="listitem"], [class*="history-item"], [class*="session-item"], .history-entry');
-                        for(var i=0; i<items.length; i++) {
-                            if(items[i].offsetParent) visibleItems.push(items[i]);
+            (function() {
+                try {
+                    var current = document.querySelector('[role="listitem"][aria-label] [aria-current="page"]');
+                    var projectLi = current ? current.closest('[role="listitem"][aria-label]') : null;
+                    if (!projectLi) {
+                        var lis = document.querySelectorAll('[role="listitem"][aria-label]');
+                        for (var i = 0; i < lis.length; i++) {
+                            var name = lis[i].getAttribute('aria-label') || '';
+                            var hdr = lis[i].querySelector('[role="button"][aria-expanded][aria-label="' + name.replace(/"/g,'\\"') + '"]');
+                            if (hdr && lis[i].offsetParent) { projectLi = lis[i]; break; }
                         }
                     }
-                    return visibleItems;
-                }
+                    if (!projectLi) return 'no-project';
 
-                var vItems = getItems();
-                if (vItems.length > $index) {
-                    vItems[$index].click();
+                    var projectName = projectLi.getAttribute('aria-label') || '';
+                    var chats = [];
+                    var all = projectLi.querySelectorAll('[role="listitem"]');
+                    for (var j = 0; j < all.length; j++) {
+                        if (all[j] === projectLi) continue;
+                        var aria = all[j].getAttribute('aria-label') || '';
+                        if (aria === projectName) continue;
+                        chats.push(all[j]);
+                    }
+                    if (chats.length <= $index) return 'out-of-range';
+
+                    var target = chats[$index];
+                    var btn = target.querySelector('[role="button"]') || target;
+                    btn.click();
                     return 'clicked';
-                }
-                return 'no-items';
+                } catch(e) { return 'error:' + e.message; }
             })()
         """.trimIndent()
 
-        val result = cdp.evaluate(script, awaitPromise = true)
+        val result = cdp.evaluate(script)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
-        return when (result.getOrNull()) {
+        return when (val v = result.getOrNull()) {
             "clicked" -> CdpResult.Success(Unit)
-            else -> CdpResult.Error("索引超出范围或未找到会话")
+            "no-project" -> CdpResult.Error("未找到当前项目")
+            "out-of-range" -> CdpResult.Error("索引超出当前项目会话数")
+            else -> CdpResult.Error("切换失败: $v")
         }
     }
 
@@ -661,12 +650,35 @@ class CodexCommands(private val cdp: ICdpClient) {
     //     1. 顶部标题栏的项目名(有聊天时)
     //     2. composer 底部的项目选择器(新聊天时)
     //     3. 侧边栏 aria-expanded + 聊天项高亮
+    //
+    // 注意: 当 Codex 窗口较窄或用户折叠了侧边栏时，
+    // 项目相关 DOM 节点会被卸载，必须先点击 "Show sidebar"。
+
+    /**
+     * 确保侧边栏已展开（项目 DOM 仅在侧边栏打开时存在）。
+     * 如果当前是 "Show sidebar" 状态则点击展开并等待 DOM 就绪。
+     */
+    private suspend fun ensureSidebarOpen() {
+        val state = cdp.evaluate("""
+            (function() {
+                // 已展开的判据：能找到 "Start new chat in ..." 按钮，
+                // 或存在 aria-label="Hide sidebar" 的按钮
+                if (document.querySelector('button[aria-label^="Start new chat in "]')) return 'open';
+                if (document.querySelector('button[aria-label="Hide sidebar"]')) return 'open';
+                var show = document.querySelector('button[aria-label="Show sidebar"]');
+                if (show && show.offsetParent) { show.click(); return 'opened'; }
+                return 'unknown';
+            })()
+        """.trimIndent()).getOrNull() ?: ""
+        if (state == "opened") delay(500)
+    }
 
     /**
      * 获取 Codex 侧边栏的项目列表
      * 返回 [{name, isCurrent, isExpanded}] 数组
      */
     suspend fun listProjects(): CdpResult<List<CodexProject>> {
+        ensureSidebarOpen()
         val result = cdp.evaluate("""
             (function() {
                 try {
@@ -745,6 +757,7 @@ class CodexCommands(private val cdp: ICdpClient) {
      * 三层检测: 顶部标题栏 → composer 下方选择器 → 侧边栏展开项
      */
     suspend fun getCurrentProject(): CdpResult<String> {
+        ensureSidebarOpen()
         val result = cdp.evaluate("""
             (function() {
                 // 先获取项目名列表
@@ -800,6 +813,7 @@ class CodexCommands(private val cdp: ICdpClient) {
      */
     suspend fun switchProject(projectName: String): CdpResult<Unit> {
         if (projectName.isBlank()) return CdpResult.Error("项目名不能为空")
+        ensureSidebarOpen()
         val projectLiteral = com.google.gson.JsonPrimitive(projectName).toString()
         val result = cdp.evaluate("""
             (async function() {
@@ -860,6 +874,7 @@ class CodexCommands(private val cdp: ICdpClient) {
      */
     suspend fun startNewChatInProject(projectName: String): CdpResult<Unit> {
         if (projectName.isBlank()) return CdpResult.Error("项目名不能为空")
+        ensureSidebarOpen()
         val projectLiteral = com.google.gson.JsonPrimitive(projectName).toString()
         val result = cdp.evaluate("""
             (function() {
@@ -912,6 +927,7 @@ class CodexCommands(private val cdp: ICdpClient) {
      * 注意: 这会触发系统原生文件选择器(CDP 不可控)
      */
     suspend fun addNewProject(): CdpResult<Unit> {
+        ensureSidebarOpen()
         val result = cdp.evaluate("""
             (function() {
                 var btn = document.querySelector('button[aria-label="Add new project"]');
@@ -931,6 +947,7 @@ class CodexCommands(private val cdp: ICdpClient) {
      */
     suspend fun getProjectChats(projectName: String): CdpResult<List<String>> {
         if (projectName.isBlank()) return CdpResult.Success(emptyList())
+        ensureSidebarOpen()
         val projectLiteral = com.google.gson.JsonPrimitive(projectName).toString()
         val result = cdp.evaluate("""
             (function() {
