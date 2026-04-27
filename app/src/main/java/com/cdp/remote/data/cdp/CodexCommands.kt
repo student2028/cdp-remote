@@ -394,7 +394,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     if (!btns[i].offsetParent) continue;
                     var aria = (btns[i].getAttribute('aria-label') || '').toLowerCase();
                     var text = (btns[i].textContent || '').trim().toLowerCase();
-                    if (aria.includes('history') || text === 'history' || 
+                    if (aria.includes('history') || text === 'history' ||
                         aria.includes('recent') || text.includes('recent sessions') ||
                         aria.includes('历史') || text === '历史记录') {
                         btns[i].click(); return 'clicked';
@@ -419,7 +419,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     }
                     return out;
                 }
-                
+
                 function getItems() {
                     var docs = getDocs(document);
                     var visibleItems = [];
@@ -447,11 +447,11 @@ class CodexCommands(private val cdp: ICdpClient) {
                     var targetIdx = isNext ? activeIdx + 1 : activeIdx - 1;
                     if(targetIdx < 0) targetIdx = items.length - 1;
                     if(targetIdx >= items.length) targetIdx = 0;
-                    
+
                     items[targetIdx].click();
                     return true;
                 }
-                
+
                 var vItems = getItems();
                 if (vItems.length > 1) {
                     findAndClickItem(vItems, ${isNext});
@@ -464,34 +464,34 @@ class CodexCommands(private val cdp: ICdpClient) {
                     var bs = docs[di].querySelectorAll('a, button, [role="button"]');
                     for(var i=0; i<bs.length; i++) btns.push(bs[i]);
                 }
-                
+
                 var historyBtn = null;
                 for (var i = 0; i < btns.length; i++) {
                     if (!btns[i].offsetParent) continue;
                     var aria = (btns[i].getAttribute('aria-label') || '').toLowerCase();
                     var text = (btns[i].textContent || '').trim().toLowerCase();
-                    if (aria.includes('history') || text === 'history' || 
+                    if (aria.includes('history') || text === 'history' ||
                         aria.includes('recent') || text.includes('recent sessions') ||
                         aria.includes('历史') || text === '历史记录') {
                         historyBtn = btns[i]; break;
                     }
                 }
-                
+
                 if (historyBtn) {
                     historyBtn.click();
                     await new Promise(r => setTimeout(r, 600));
-                    
+
                     var vItems2 = getItems();
                     if (vItems2.length > 1) {
                         findAndClickItem(vItems2, ${isNext});
                         return 'clicked';
                     }
                 }
-                
+
                 return 'no-items';
             })()
         """.trimIndent()
-        
+
         val result = cdp.evaluate(script, awaitPromise = true)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         return when (result.getOrNull()) {
@@ -511,7 +511,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     }
                     return out;
                 }
-                
+
                 function getItems() {
                     var docs = getDocs(document);
                     var visibleItems = [];
@@ -536,7 +536,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     }
                     return res;
                 }
-                
+
                 var vItems = getItems();
                 if (vItems.length > 0) {
                     return JSON.stringify({status: 'found', sessions: extractTitles(vItems)});
@@ -548,33 +548,33 @@ class CodexCommands(private val cdp: ICdpClient) {
                     var bs = docs[di].querySelectorAll('a, button, [role="button"]');
                     for(var i=0; i<bs.length; i++) btns.push(bs[i]);
                 }
-                
+
                 var historyBtn = null;
                 for (var i = 0; i < btns.length; i++) {
                     if (!btns[i].offsetParent) continue;
                     var aria = (btns[i].getAttribute('aria-label') || '').toLowerCase();
                     var text = (btns[i].textContent || '').trim().toLowerCase();
-                    if (aria.includes('history') || text === 'history' || 
+                    if (aria.includes('history') || text === 'history' ||
                         aria.includes('recent') || text.includes('recent sessions') ||
                         aria.includes('历史') || text === '历史记录') {
                         historyBtn = btns[i]; break;
                     }
                 }
-                
+
                 if (historyBtn) {
                     historyBtn.click();
                     await new Promise(r => setTimeout(r, 600));
-                    
+
                     var vItems2 = getItems();
                     if (vItems2.length > 0) {
                         return JSON.stringify({status: 'found', sessions: extractTitles(vItems2)});
                     }
                 }
-                
+
                 return JSON.stringify({status: 'no-items'});
             })()
         """.trimIndent()
-        
+
         val result = cdp.evaluate(script, awaitPromise = true)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         val jsonStr = result.getOrNull() ?: return CdpResult.Error("无返回结果")
@@ -604,7 +604,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     }
                     return out;
                 }
-                
+
                 function getItems() {
                     var docs = getDocs(document);
                     var visibleItems = [];
@@ -617,7 +617,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     }
                     return visibleItems;
                 }
-                
+
                 var vItems = getItems();
                 if (vItems.length > $index) {
                     vItems[$index].click();
@@ -626,7 +626,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                 return 'no-items';
             })()
         """.trimIndent()
-        
+
         val result = cdp.evaluate(script, awaitPromise = true)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         return when (result.getOrNull()) {
@@ -651,6 +651,318 @@ class CodexCommands(private val cdp: ICdpClient) {
             })()
         """.trimIndent())
         return CdpResult.Success(Unit)
+    }
+
+    // ─────────────────── 项目管理 ───────────────────
+    // Codex 侧边栏结构:
+    //   项目 = [role="button"][aria-expanded][aria-label="{name}"]
+    //   聊天 = 项目 parent 下的 .truncate.select-none span
+    //   当前项目判定:
+    //     1. 顶部标题栏的项目名(有聊天时)
+    //     2. composer 底部的项目选择器(新聊天时)
+    //     3. 侧边栏 aria-expanded + 聊天项高亮
+
+    /**
+     * 获取 Codex 侧边栏的项目列表
+     * 返回 [{name, isCurrent, isExpanded}] 数组
+     */
+    suspend fun listProjects(): CdpResult<List<CodexProject>> {
+        val result = cdp.evaluate("""
+            (function() {
+                try {
+                    var projects = [];
+                    // 从 "Start new chat in {name}" 按钮提取项目名
+                    var btns = document.querySelectorAll('button[aria-label^="Start new chat in "]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var aria = btns[i].getAttribute('aria-label') || '';
+                        var name = aria.replace('Start new chat in ', '');
+                        if (name) projects.push(name);
+                    }
+
+                    // 判定当前活跃项目:
+                    // 方法1: 顶部栏有项目名的链接/按钮
+                    var topBtns = document.querySelectorAll('button[type="button"]');
+                    var current = '';
+                    for (var j = 0; j < topBtns.length; j++) {
+                        var r = topBtns[j].getBoundingClientRect();
+                        // 顶部栏区域(y<30)、非工具按钮(aria-label为空)、宽度适中
+                        if (r.y > 0 && r.y < 30 && r.height < 40) {
+                            var t = (topBtns[j].textContent || '').trim();
+                            var a = topBtns[j].getAttribute('aria-label') || '';
+                            if (t && !a && projects.indexOf(t) >= 0) {
+                                current = t; break;
+                            }
+                        }
+                    }
+
+                    // 方法2: 如果顶部栏没有(新聊天界面)，用 composer 下方的项目选择器
+                    if (!current) {
+                        var allBtns = document.querySelectorAll('button');
+                        for (var k = 0; k < allBtns.length; k++) {
+                            var r2 = allBtns[k].getBoundingClientRect();
+                            if (r2.y > 800 && r2.y < 870) {
+                                var t2 = (allBtns[k].textContent || '').trim();
+                                if (projects.indexOf(t2) >= 0) {
+                                    current = t2; break;
+                                }
+                            }
+                        }
+                    }
+
+                    // 各项目 expanded 状态
+                    var expanded = {};
+                    var roleBtns = document.querySelectorAll('[role="button"][aria-expanded]');
+                    for (var m = 0; m < roleBtns.length; m++) {
+                        var a2 = (roleBtns[m].getAttribute('aria-label') || '');
+                        if (a2) expanded[a2] = roleBtns[m].getAttribute('aria-expanded') === 'true';
+                    }
+
+                    return JSON.stringify({projects: projects, current: current, expanded: expanded});
+                } catch(e) { return JSON.stringify({projects: [], current: '', expanded: {}, error: e.message}); }
+            })()
+        """.trimIndent())
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return try {
+            val json = com.google.gson.JsonParser.parseString(result.getOrNull() ?: "{}").asJsonObject
+            val names = json.getAsJsonArray("projects")?.map { it.asString } ?: emptyList()
+            val current = json.get("current")?.asString ?: ""
+            val expanded = json.getAsJsonObject("expanded")
+            val list = names.map { name ->
+                CodexProject(
+                    name = name,
+                    isCurrent = name == current,
+                    isExpanded = expanded?.get(name)?.asBoolean ?: false
+                )
+            }
+            CdpResult.Success(list)
+        } catch (e: Exception) {
+            CdpResult.Error("解析项目列表失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 获取当前活跃的项目名
+     * 三层检测: 顶部标题栏 → composer 下方选择器 → 侧边栏展开项
+     */
+    suspend fun getCurrentProject(): CdpResult<String> {
+        val result = cdp.evaluate("""
+            (function() {
+                // 先获取项目名列表
+                var projects = [];
+                var btns = document.querySelectorAll('button[aria-label^="Start new chat in "]');
+                for (var i = 0; i < btns.length; i++) {
+                    var name = (btns[i].getAttribute('aria-label') || '').replace('Start new chat in ', '');
+                    if (name) projects.push(name);
+                }
+
+                // 1. 顶部标题栏(有聊天时显示聊天标题旁的项目名)
+                var topBtns = document.querySelectorAll('button[type="button"]');
+                for (var j = 0; j < topBtns.length; j++) {
+                    var r = topBtns[j].getBoundingClientRect();
+                    if (r.y > 0 && r.y < 30 && r.height < 40) {
+                        var t = (topBtns[j].textContent || '').trim();
+                        var aria = topBtns[j].getAttribute('aria-label') || '';
+                        // 排除工具按钮(有 aria-label 的如 Commit, Back 等)
+                        if (t && !aria && projects.indexOf(t) >= 0) return t;
+                    }
+                }
+
+                // 2. composer 下方项目选择器(新聊天界面)
+                var allBtns = document.querySelectorAll('button');
+                for (var k = 0; k < allBtns.length; k++) {
+                    var r2 = allBtns[k].getBoundingClientRect();
+                    if (r2.y > 800 && r2.y < 870) {
+                        var t2 = (allBtns[k].textContent || '').trim();
+                        if (projects.indexOf(t2) >= 0) return t2;
+                    }
+                }
+
+                // 3. 侧边栏展开的项目(有聊天项目可见)
+                var roleBtns = document.querySelectorAll('[role="button"][aria-expanded="true"]');
+                for (var m = 0; m < roleBtns.length; m++) {
+                    var a = (roleBtns[m].getAttribute('aria-label') || '');
+                    if (a && projects.indexOf(a) >= 0) return a;
+                }
+
+                return '';
+            })()
+        """.trimIndent())
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val name = result.getOrNull() ?: ""
+        return if (name.isNotEmpty()) CdpResult.Success(name) else CdpResult.Error("无法获取当前项目")
+    }
+
+    /**
+     * 切换到指定项目:
+     * 1. 先确保项目展开(aria-expanded=true)
+     * 2. 然后点击该项目下第一个聊天(真正切换视图)
+     * 如果项目没有聊天，则新建一个
+     */
+    suspend fun switchProject(projectName: String): CdpResult<Unit> {
+        if (projectName.isBlank()) return CdpResult.Error("项目名不能为空")
+        val projectLiteral = com.google.gson.JsonPrimitive(projectName).toString()
+        val result = cdp.evaluate("""
+            (async function() {
+                var projectName = $projectLiteral;
+                // 找到项目的 role=button 元素
+                var roleBtns = document.querySelectorAll('[role="button"][aria-expanded]');
+                var projectEl = null;
+                for (var i = 0; i < roleBtns.length; i++) {
+                    if ((roleBtns[i].getAttribute('aria-label') || '') === projectName) {
+                        projectEl = roleBtns[i]; break;
+                    }
+                }
+                if (!projectEl) return 'not-found';
+
+                // 先展开项目(如果折叠)
+                if (projectEl.getAttribute('aria-expanded') !== 'true') {
+                    projectEl.click();
+                    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+                }
+
+                // 然后查找该项目下的第一个聊天并点击
+                var parent = projectEl.parentElement;
+                if (!parent) return 'expanded-only';
+
+                // 等待展开后查找聊天项(需要点击后 DOM 可能异步更新)
+                var chatEls = parent.querySelectorAll('[role="button"]');
+                for (var j = 0; j < chatEls.length; j++) {
+                    var el = chatEls[j];
+                    if (el === projectEl) continue;
+                    // 聊天项有 .truncate.select-none 子元素
+                    if (el.querySelector('.truncate.select-none')) {
+                        el.click();
+                        return 'switched';
+                    }
+                }
+
+                // 没有聊天，点击 "Start new chat in {name}"
+                var newChatLabel = 'Start new chat in ' + projectName;
+                var buttons = document.querySelectorAll('button');
+                for (var k = 0; k < buttons.length; k++) {
+                    if ((buttons[k].getAttribute('aria-label') || '') === newChatLabel) {
+                        buttons[k].click();
+                        return 'new-chat';
+                    }
+                }
+                return 'expanded-only';
+            })()
+        """.trimIndent(), awaitPromise = true)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "switched", "new-chat", "expanded-only" -> CdpResult.Success(Unit)
+            else -> CdpResult.Error("未找到项目: $projectName")
+        }
+    }
+
+    /**
+     * 在指定项目内新建聊天 - 点击 "Start new chat in {name}" 按钮
+     */
+    suspend fun startNewChatInProject(projectName: String): CdpResult<Unit> {
+        if (projectName.isBlank()) return CdpResult.Error("项目名不能为空")
+        val projectLiteral = com.google.gson.JsonPrimitive(projectName).toString()
+        val result = cdp.evaluate("""
+            (function() {
+                var projectName = $projectLiteral;
+                var newChatLabel = 'Start new chat in ' + projectName;
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    if ((buttons[i].getAttribute('aria-label') || '') === newChatLabel) {
+                        buttons[i].click();
+                        return 'clicked';
+                    }
+                }
+                return 'not-found';
+            })()
+        """.trimIndent())
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "clicked" -> CdpResult.Success(Unit)
+            else -> CdpResult.Error("未找到项目: $projectName")
+        }
+    }
+
+    /**
+     * 通过绝对路径添加新项目到 Codex 侧边栏
+     * 绕过原生文件选择器 (手机上不可见), 直接通过 Codex IPC 注入
+     */
+    suspend fun addProject(absolutePath: String): CdpResult<Unit> {
+        if (absolutePath.isBlank()) return CdpResult.Error("路径不能为空")
+        val pathLiteral = com.google.gson.JsonPrimitive(absolutePath).toString()
+        val result = cdp.evaluate("""
+            (function() {
+                var rootPath = $pathLiteral;
+                try {
+                    return window.electronBridge.sendMessageFromView({
+                        type: 'electron-add-new-workspace-root-option',
+                        root: rootPath
+                    }).then(function() { return 'ok'; })
+                     .catch(function(e) { return 'error:' + e.message; });
+                } catch(e) { return 'error:' + e.message; }
+            })()
+        """.trimIndent(), awaitPromise = true)
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val v = result.getOrNull() ?: ""
+        return if (v == "ok") CdpResult.Success(Unit)
+               else CdpResult.Error("添加项目失败: $v")
+    }
+
+    /**
+     * 点击 "Add new project" 按钮打开添加项目对话框
+     * 注意: 这会触发系统原生文件选择器(CDP 不可控)
+     */
+    suspend fun addNewProject(): CdpResult<Unit> {
+        val result = cdp.evaluate("""
+            (function() {
+                var btn = document.querySelector('button[aria-label="Add new project"]');
+                if (btn) { btn.click(); return 'clicked'; }
+                return 'not-found';
+            })()
+        """.trimIndent())
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return when (result.getOrNull()) {
+            "clicked" -> CdpResult.Success(Unit)
+            else -> CdpResult.Error("未找到添加项目按钮")
+        }
+    }
+
+    /**
+     * 获取指定项目下的聊天列表
+     */
+    suspend fun getProjectChats(projectName: String): CdpResult<List<String>> {
+        if (projectName.isBlank()) return CdpResult.Success(emptyList())
+        val projectLiteral = com.google.gson.JsonPrimitive(projectName).toString()
+        val result = cdp.evaluate("""
+            (function() {
+                var projectName = $projectLiteral;
+                try {
+                    var roleBtns = document.querySelectorAll('[role="button"][aria-expanded]');
+                    var projectEl = null;
+                    for (var i = 0; i < roleBtns.length; i++) {
+                        if ((roleBtns[i].getAttribute('aria-label') || '') === projectName) {
+                            projectEl = roleBtns[i]; break;
+                        }
+                    }
+                    if (!projectEl) return JSON.stringify([]);
+                    var parent = projectEl.parentElement;
+                    if (!parent) return JSON.stringify([]);
+                    var chats = [];
+                    var spans = parent.querySelectorAll('.truncate.select-none');
+                    for (var j = 0; j < spans.length; j++) {
+                        var t = (spans[j].textContent || '').trim();
+                        if (t) chats.push(t);
+                    }
+                    return JSON.stringify(chats);
+                } catch(e) { return JSON.stringify([]); }
+            })()
+        """.trimIndent())
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return try {
+            val arr = com.google.gson.JsonParser.parseString(result.getOrNull() ?: "[]").asJsonArray
+            CdpResult.Success(arr.map { it.asString })
+        } catch (e: Exception) {
+            CdpResult.Error("解析聊天列表失败: ${e.message}")
+        }
     }
 
     // ─────────────────── 模型切换 ───────────────────

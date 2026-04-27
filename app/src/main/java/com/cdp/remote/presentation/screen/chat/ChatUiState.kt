@@ -51,5 +51,11 @@ data class ChatUiState(
     /** 远端 IDE 页面实际像素宽度（用于触摸坐标映射） */
     val tvPageWidth: Int = 0,
     /** 远端 IDE 页面实际像素高度（用于触摸坐标映射） */
-    val tvPageHeight: Int = 0
+    val tvPageHeight: Int = 0,
+    /** Codex 项目列表（侧边栏 Projects 区域） */
+    val codexProjects: List<com.cdp.remote.data.cdp.CodexProject> = emptyList(),
+    /** Codex 项目列表加载中 */
+    val codexProjectsLoading: Boolean = false,
+    /** 当前 Codex 项目名 */
+    val codexCurrentProject: String = ""
 )

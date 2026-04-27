@@ -163,8 +163,8 @@ function getElectronProxyFlag() {
 // ─── 配置 ───
 const CDP_HOST = '127.0.0.1';
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9334');          // 默认/兼容端口
-const CDP_PORT_MIN = parseInt(process.env.CDP_PORT_MIN || '9222');  // 扫描起始
-const CDP_PORT_MAX = parseInt(process.env.CDP_PORT_MAX || '9700');  // 扫描结束（含 Codex 9666）
+const CDP_PORT_MIN = parseInt(process.env.CDP_PORT_MIN || '9333');  // 扫描起始
+const CDP_PORT_MAX = parseInt(process.env.CDP_PORT_MAX || '9800');  // 扫描结束（含 Codex 9666, Simple Code GUI 9777）
 const RELAY_PORT = parseInt(process.env.RELAY_PORT || '19336');
 const BIND_ADDR = process.env.BIND_ADDR || '0.0.0.0';
 const CHECK_INTERVAL = 10000;
@@ -964,6 +964,8 @@ function detectAppType(pages) {
             return { name: 'Codex', emoji: '📦' };
         if (p.url?.includes('workbench.html'))
             return { name: 'VS Code', emoji: '💻' };
+        if (p.title?.includes('Simple Code GUI') || p.title?.includes('simple-code-gui'))
+            return { name: 'Claude Code', emoji: '🤖' };
     }
     return { name: 'Unknown', emoji: '❓' };
 }

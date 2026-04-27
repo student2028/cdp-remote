@@ -20,6 +20,7 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
     CURSOR("Cursor", "🖱️"),
     WINDSURF("Windsurf", "🏄"),
     CODEX("Codex", "📦"),
+    CLAUDE_CODE("Claude Code", "🤖"),
     VSCODE_LIKE("VS Code", "💻"),
     UNKNOWN("Unknown", "❓");
 
@@ -48,6 +49,7 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
                 nl.contains("cursor") -> CURSOR
                 nl.contains("windsurf") -> WINDSURF
                 nl.contains("antigravity") -> ANTIGRAVITY
+                nl.contains("claude") -> CLAUDE_CODE
                 else -> UNKNOWN
             }
         }
@@ -112,7 +114,9 @@ data class CdpPage(
 ) {
     val isWorkbench: Boolean
         get() = type == "page" && "jetski" !in url && (
-            "workbench.html" in url || url.startsWith("app://")  // Codex 用 app://-/index.html
+            "workbench.html" in url
+            || url.startsWith("app://")  // Codex 用 app://-/index.html
+            || appType == ElectronAppType.CLAUDE_CODE  // Simple Code GUI (localhost:5173)
         )
 
     val cdpPort: Int?
@@ -148,6 +152,15 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val isStreaming: Boolean = false,
     val images: List<String> = emptyList()
+)
+
+// ─── Codex Project Model ────────────────────────────────────────────
+
+/** Codex 侧边栏中的项目条目 */
+data class CodexProject(
+    val name: String,
+    val isCurrent: Boolean = false,
+    val isExpanded: Boolean = false
 )
 
 // ─── Folder Browser Models ──────────────────────────────────────────

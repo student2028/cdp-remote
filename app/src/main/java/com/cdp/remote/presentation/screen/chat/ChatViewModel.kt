@@ -23,7 +23,9 @@ class ChatViewModel(
 
     private var commands: AntigravityCommands? = null
     private var codexCommands: CodexCommands? = null
+    private var claudeCodeCommands: ClaudeCodeCommands? = null
     private var isCodex: Boolean = false
+    private var isClaudeCode: Boolean = false
     private var isWindsurf: Boolean = false
     private var connectHost: HostInfo? = null
     private var connectWsUrl: String = ""
@@ -125,19 +127,27 @@ class ChatViewModel(
             is CdpResult.Success -> {
                 val appType = ElectronAppType.fromAppName(appName)
                 isCodex = appType == ElectronAppType.CODEX
+                isClaudeCode = appType == ElectronAppType.CLAUDE_CODE
                 isWindsurf = appType == ElectronAppType.WINDSURF
-                if (isCodex) {
+                if (isClaudeCode) {
+                    claudeCodeCommands = ClaudeCodeCommands(cdpClient)
+                    commands = null
+                    codexCommands = null
+                } else if (isCodex) {
                     codexCommands = CodexCommands(cdpClient)
                     commands = null
+                    claudeCodeCommands = null
                 } else if (isWindsurf) {
                     commands = WindsurfCommands(cdpClient)
                     codexCommands = null
+                    claudeCodeCommands = null
                 } else {
                     // Cursor 走 CursorCommands（继承自 AntigravityCommands，仅覆写 switchModel）；
                     // 其它 IDE 保留反重力实现，行为保持不变。
                     commands = if (appType == ElectronAppType.CURSOR) CursorCommands(cdpClient, appName)
                                else AntigravityCommands(cdpClient, appName)
                     codexCommands = null
+                    claudeCodeCommands = null
                 }
                 uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null, isWindsurf = isWindsurf)
                 reconnectAttempts = 0
@@ -197,6 +207,7 @@ class ChatViewModel(
                 // Step 1: Paste images only (no Enter)
                 for ((index, img) in imagesToSend.withIndex()) {
                     val pasteResult = when {
+                        isClaudeCode -> claudeCodeCommands!!.pasteImage(img.base64, img.mimeType)
                         isCodex -> codexCommands!!.pasteImage(img.base64, img.mimeType)
                         else -> commands!!.pasteImage(img.base64, img.mimeType)
                     }
@@ -208,6 +219,7 @@ class ChatViewModel(
 
                 // Step 2: Send text (types text + presses Enter, sending image+text together)
                 val result = when {
+                    isClaudeCode -> claudeCodeCommands!!.sendMessage(text)
                     isCodex -> codexCommands!!.sendMessage(text)
                     else -> commands!!.sendMessage(text)
                 }
@@ -219,6 +231,7 @@ class ChatViewModel(
                 // 只有图片没有文字：用 sendImage（粘贴 + 发送）
                 for ((index, img) in imagesToSend.withIndex()) {
                     val imgResult = when {
+                        isClaudeCode -> claudeCodeCommands!!.sendImage(img.base64, img.mimeType)
                         isCodex -> codexCommands!!.sendImage(img.base64, img.mimeType)
                         else -> commands!!.sendImage(img.base64, img.mimeType)
                     }
@@ -229,6 +242,7 @@ class ChatViewModel(
             } else if (text.isNotEmpty()) {
                 // 只有文字没有图片
                 val result = when {
+                    isClaudeCode -> claudeCodeCommands!!.sendMessage(text)
                     isCodex -> codexCommands!!.sendMessage(text)
                     else -> commands!!.sendMessage(text)
                 }
@@ -324,6 +338,7 @@ class ChatViewModel(
     }
 
     private fun hasCommands(): Boolean = when {
+        isClaudeCode -> claudeCodeCommands != null
         isCodex -> codexCommands != null
         else -> commands != null
     }
@@ -335,6 +350,7 @@ class ChatViewModel(
                 delay(1500)
                 if (!hasCommands()) break
                 val result = when {
+                    isClaudeCode -> claudeCodeCommands!!.getLastReply()
                     isCodex -> codexCommands!!.getLastReply()
                     else -> commands!!.getLastReply()
                 }
@@ -356,7 +372,7 @@ class ChatViewModel(
                     }
 
                     // Antigravity 独有：每 5 次轮询主动检查服务器错误并自动重试
-                    if (!isCodex && !isWindsurf && pollCount > 0 && pollCount % 5 == 0) {
+                    if (!isCodex && !isWindsurf && !isClaudeCode && pollCount > 0 && pollCount % 5 == 0) {
                         val midRetry = commands!!.checkAndRetryIfBusy()
                         if (midRetry is CdpResult.Success && midRetry.data) {
                             addSystemMessage("检测到错误，已自动重试 🔄")
@@ -367,6 +383,7 @@ class ChatViewModel(
                     }
 
                     val isStillGenerating = when {
+                        isClaudeCode -> claudeCodeCommands!!.isGenerating()
                         isCodex -> codexCommands!!.isGenerating()
                         else -> commands!!.isGenerating()
                     }
@@ -374,6 +391,7 @@ class ChatViewModel(
                     // 自动放行 Agent 的 Action 确认按钮（Run/Allow/Approve 等）
                     if (isStillGenerating) {
                         val accepted = when {
+                            isClaudeCode -> claudeCodeCommands!!.autoAcceptActions()
                             isCodex -> codexCommands!!.autoAcceptActions()
                             else -> commands!!.autoAcceptActions()
                         }
@@ -388,7 +406,7 @@ class ChatViewModel(
                     if (!isStillGenerating) {
                         // Antigravity 独有：生成结束后最终错误检查
                         // 多次尝试，因为 Retry 按钮可能还没渲染出来
-                        if (!isCodex && !isWindsurf) {
+                        if (!isCodex && !isWindsurf && !isClaudeCode) {
                             var retried = false
                             for (retryAttempt in 1..3) {
                                 val retryResult = commands!!.checkAndRetryIfBusy()
@@ -459,6 +477,7 @@ class ChatViewModel(
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.startNewSession()
                 isCodex -> codexCommands!!.startNewSession()
                 else -> commands!!.startNewSession()
             }
@@ -473,6 +492,7 @@ class ChatViewModel(
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.showRecentSessions()
                 isCodex -> codexCommands!!.showRecentSessions()
                 else -> commands!!.showRecentSessions()
             }
@@ -487,6 +507,7 @@ class ChatViewModel(
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.switchSession(isNext)
                 isCodex -> codexCommands!!.switchSession(isNext)
                 else -> commands!!.switchSession(isNext)
             }
@@ -505,6 +526,7 @@ class ChatViewModel(
                 return@launch
             }
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.getRecentSessionsList()
                 isCodex -> codexCommands!!.getRecentSessionsList()
                 else -> commands!!.getRecentSessionsList()
             }
@@ -524,6 +546,7 @@ class ChatViewModel(
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.switchSessionByIndex(index)
                 isCodex -> codexCommands!!.switchSessionByIndex(index)
                 else -> commands!!.switchSessionByIndex(index)
             }
@@ -541,12 +564,77 @@ class ChatViewModel(
         uiState = uiState.copy(recentSessions = emptyList(), isSessionsLoading = false)
     }
 
+    // ─── Codex 项目管理 ─────────────────────────────────────────────
+
+    fun fetchCodexProjects() {
+        if (!isCodex || codexCommands == null) return
+        uiState = uiState.copy(codexProjectsLoading = true)
+        viewModelScope.launch {
+            val result = codexCommands!!.listProjects()
+            when (result) {
+                is CdpResult.Success -> {
+                    val current = result.data.firstOrNull { it.isCurrent }?.name ?: ""
+                    uiState = uiState.copy(
+                        codexProjects = result.data,
+                        codexProjectsLoading = false,
+                        codexCurrentProject = current
+                    )
+                }
+                is CdpResult.Error -> {
+                    uiState = uiState.copy(codexProjectsLoading = false)
+                    addSystemMessage("获取项目列表失败: ${result.message}")
+                }
+            }
+        }
+    }
+
+    fun switchCodexProject(projectName: String) {
+        if (!isCodex || codexCommands == null) return
+        viewModelScope.launch {
+            val result = codexCommands!!.switchProject(projectName)
+            when (result) {
+                is CdpResult.Success -> {
+                    uiState = uiState.copy(codexCurrentProject = projectName)
+                    addSystemMessage("已切换到项目: $projectName 📁")
+                }
+                is CdpResult.Error -> addSystemMessage("切换项目失败: ${result.message}")
+            }
+        }
+    }
+
+    fun startNewChatInProject(projectName: String) {
+        if (!isCodex || codexCommands == null) return
+        viewModelScope.launch {
+            val result = codexCommands!!.startNewChatInProject(projectName)
+            when (result) {
+                is CdpResult.Success -> addSystemMessage("已在 $projectName 中新建聊天 🆕")
+                is CdpResult.Error -> addSystemMessage("新建聊天失败: ${result.message}")
+            }
+        }
+    }
+
+    fun addCodexProject() {
+        if (!isCodex || codexCommands == null) return
+        viewModelScope.launch {
+            val result = codexCommands!!.addNewProject()
+            when (result) {
+                is CdpResult.Success -> addSystemMessage("已打开添加项目对话框 📂")
+                is CdpResult.Error -> addSystemMessage("添加项目失败: ${result.message}")
+            }
+        }
+    }
+
+    fun closeProjectDialog() {
+        uiState = uiState.copy(codexProjects = emptyList(), codexProjectsLoading = false)
+    }
+
     fun stopGeneration() {
         pollJob?.cancel()
         uiState = uiState.copy(isGenerating = false)
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             when {
+                isClaudeCode -> claudeCodeCommands!!.stopGeneration()
                 isCodex -> codexCommands!!.stopGeneration()
                 else -> commands!!.stopGeneration()
             }
@@ -586,6 +674,7 @@ class ChatViewModel(
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.acceptAll()
                 isCodex -> codexCommands!!.acceptAll()
                 else -> commands!!.acceptAll()
             }
@@ -600,6 +689,7 @@ class ChatViewModel(
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
+                isClaudeCode -> claudeCodeCommands!!.rejectAll()
                 isCodex -> codexCommands!!.rejectAll()
                 else -> commands!!.rejectAll()
             }
@@ -638,6 +728,7 @@ class ChatViewModel(
             var lastError = ""
             for (attempt in 1..maxRetries) {
                 val result = when {
+                    isClaudeCode -> claudeCodeCommands!!.switchModel(modelName)
                     isCodex -> codexCommands!!.switchModel(modelName)
                     else -> commands!!.switchModel(modelName)
                 }

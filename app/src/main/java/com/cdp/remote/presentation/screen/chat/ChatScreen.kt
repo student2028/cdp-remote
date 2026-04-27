@@ -127,9 +127,11 @@ fun ChatScreen(
     var showModelDialog by remember { mutableStateOf(false) }
     var showScreenshotDialog by remember { mutableStateOf(false) }
     var showSessionDialog by remember { mutableStateOf(false) }
+    var showProjectDialog by remember { mutableStateOf(false) }
     var showGlobalRuleDialog by remember { mutableStateOf(false) }
     var globalRuleDraft by remember { mutableStateOf("") }
     val showAntigravityGlobalRule = appName.contains("Antigravity", ignoreCase = true)
+    val isCodexApp = appName.contains("Codex", ignoreCase = true)
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -235,7 +237,7 @@ fun ChatScreen(
                 },
                 actions = {
                     var expanded by remember { mutableStateOf(false) }
-                    IconButton(onClick = { 
+                    IconButton(onClick = {
                         expanded = true
                         viewModel.fetchAvailableApps(hostIp, hostPort)
                     }) {
@@ -254,7 +256,7 @@ fun ChatScreen(
                             )
                             sortedMenuApps.forEach { page ->
                                 DropdownMenuItem(
-                                    text = { 
+                                    text = {
                                         val portLabel = page.cdpPort?.let { ":$it " } ?: ""
                                         Text("${page.appType.displayName} $portLabel")
                                     },
@@ -380,22 +382,45 @@ fun ChatScreen(
             }
 
             // 浮动历史会话按钮
-            IconButton(
-                onClick = {
-                    showSessionDialog = true
-                    viewModel.fetchRecentSessionsList()
-                },
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(start = 16.dp, bottom = 8.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
+                    .padding(start = 16.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    Icons.Default.List,
-                    contentDescription = "会话列表",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                IconButton(
+                    onClick = {
+                        showSessionDialog = true
+                        viewModel.fetchRecentSessionsList()
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
+                ) {
+                    Icon(
+                        Icons.Default.List,
+                        contentDescription = "会话列表",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                // Codex 专属：项目管理按钮
+                if (isCodexApp) {
+                    IconButton(
+                        onClick = {
+                            showProjectDialog = true
+                            viewModel.fetchCodexProjects()
+                        },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f))
+                    ) {
+                        Icon(
+                            Icons.Default.FolderOpen,
+                            contentDescription = "项目管理",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
             }
 
             // 浮动上下切换按钮（按主页拖拽排序顺序）
@@ -518,6 +543,31 @@ fun ChatScreen(
         )
     }
 
+    // Codex Project Dialog
+    if (showProjectDialog) {
+        CodexProjectDialog(
+            projects = state.codexProjects,
+            isLoading = state.codexProjectsLoading,
+            currentProject = state.codexCurrentProject,
+            onDismiss = {
+                showProjectDialog = false
+                viewModel.closeProjectDialog()
+            },
+            onSwitchProject = { name ->
+                showProjectDialog = false
+                viewModel.switchCodexProject(name)
+            },
+            onNewChatInProject = { name ->
+                showProjectDialog = false
+                viewModel.startNewChatInProject(name)
+            },
+            onAddProject = {
+                showProjectDialog = false
+                viewModel.addCodexProject()
+            }
+        )
+    }
+
     // Screenshot Dialog
     if (showScreenshotDialog && state.lastScreenshot != null) {
         ScreenshotDialog(
@@ -614,7 +664,7 @@ fun ModelSwitchDialog(
                     isWindsurf -> listOf("Claude Opus 4.7", "Claude Opus 4.6", "Claude Sonnet 4.6", "GPT-5.3-Codex", "GPT-5.4", "Kimi K2.6", "SWE-1.6", "Gemini 3.1 Pro", "Adaptive")
                     isCodex -> listOf(
                         // 智能等级
-                        "Extra High", "High", "Medium", "Low", 
+                        "Extra High", "High", "Medium", "Low",
                         // 速度设置
                         "Fast", "Standard",
                         // 模型
@@ -746,6 +796,120 @@ fun SessionListDialog(
                                         text = time,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                                         style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+/**
+ * Codex 专属的项目管理对话框。
+ * 显示侧边栏所有项目，支持切换项目、在项目内新建聊天、添加新项目。
+ */
+@Composable
+fun CodexProjectDialog(
+    projects: List<com.cdp.remote.data.cdp.CodexProject>,
+    isLoading: Boolean,
+    currentProject: String,
+    onDismiss: () -> Unit,
+    onSwitchProject: (String) -> Unit,
+    onNewChatInProject: (String) -> Unit,
+    onAddProject: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("📦 Codex 项目")
+                IconButton(onClick = onAddProject) {
+                    Icon(Icons.Default.Add, contentDescription = "添加项目")
+                }
+            }
+        },
+        text = {
+            val scroll = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(scroll)
+            ) {
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    }
+                } else if (projects.isEmpty()) {
+                    Text(
+                        text = "暂无项目或无法读取",
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    projects.forEach { project ->
+                        val isCurrent = project.name == currentProject || project.isCurrent
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isCurrent)
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // 项目名（点击切换）
+                                TextButton(
+                                    onClick = { onSwitchProject(project.name) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            if (isCurrent) Icons.Default.Folder else Icons.Default.FolderOpen,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = if (isCurrent) MaterialTheme.colorScheme.primary
+                                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            text = if (isCurrent) "● ${project.name}" else project.name,
+                                            color = if (isCurrent) MaterialTheme.colorScheme.primary
+                                                    else MaterialTheme.colorScheme.onSurface,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
+                                // 在此项目中新建聊天
+                                IconButton(
+                                    onClick = { onNewChatInProject(project.name) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.AddComment,
+                                        contentDescription = "新建聊天",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }

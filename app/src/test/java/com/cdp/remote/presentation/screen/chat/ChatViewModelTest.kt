@@ -1,6 +1,7 @@
 package com.cdp.remote.presentation.screen.chat
 
 import com.cdp.remote.data.cdp.*
+import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -253,5 +254,38 @@ class ChatViewModelTest {
         assertTrue("应有鼠标事件", fakeCdp.mouseEvents.isNotEmpty() ||
             fakeCdp.callHistory.contains("Input.dispatchMouseEvent") ||
             fakeCdp.callHistory.contains("Input.dispatchMouseEvent.scroll"))
+    }
+
+    @Test
+    fun `Claude Code polling does not call Antigravity retry commands`() = runTest {
+        ChatViewModel::class.java.getDeclaredField("isClaudeCode").apply {
+            isAccessible = true
+            set(vm, true)
+        }
+        ChatViewModel::class.java.getDeclaredField("claudeCodeCommands").apply {
+            isAccessible = true
+            set(vm, ClaudeCodeCommands(fakeCdp))
+        }
+        fakeCdp.evaluateHandler = { expr ->
+            when {
+                expr.contains("xterm-helper-textarea") -> CdpResult.Success("ok")
+                expr.contains("xterm-accessibility") -> CdpResult.Success("")
+                expr.contains("animate-spin") -> CdpResult.Success("true")
+                else -> CdpResult.Success("")
+            }
+        }
+        fakeCdp.callResult = CdpResult.Success(JsonObject())
+
+        vm.updateInputText("hello")
+        vm.sendMessage()
+
+        advanceTimeBy(1500L * 6)
+        runCurrent()
+
+        assertFalse(
+            "Claude Code must not route retry checks through Antigravity commands",
+            fakeCdp.callHistory.contains("AntigravityCommands.checkAndRetryIfBusy")
+        )
+        vm.stopSync()
     }
 }

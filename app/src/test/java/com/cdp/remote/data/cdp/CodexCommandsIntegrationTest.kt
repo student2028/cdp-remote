@@ -403,4 +403,19 @@ class CodexCommandsIntegrationTest {
         assertTrue(result.isSuccess)
         assertTrue(result.getOrThrow())
     }
+
+    @Test
+    fun `switchProject escapes project name before embedding in JavaScript`() = runBlocking {
+        codex.switchProject("a'b\\c")
+
+        val expression = mockServer.receivedExpressions.last()
+        assertTrue(
+            "project name should be represented as a JS string literal",
+            expression.contains("""var projectName = "a'b\\c";""")
+        )
+        assertFalse(
+            "raw project name must not be interpolated inside a JS single-quoted string",
+            expression.contains("=== 'a\\'b\\c'")
+        )
+    }
 }
