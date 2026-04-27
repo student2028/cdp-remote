@@ -707,26 +707,9 @@ class ChatViewModel(
                         }
                         return false;
                     }
-                    if (!/MODEL QUOTA/i.test(bodyText())) {
-                        clickModels();
-                        await new Promise(r => setTimeout(r, 600));
-                    }
-                    var text = bodyText();
-                    var credits = (text.match(/Available AI Credits:\s*([0-9,]+)/i) || [])[1] || '';
-                    var rows = [];
-                    var lines = text.split('\n').map(s => s.trim()).filter(Boolean);
-                    for (var i = 0; i < lines.length; i++) {
-                        if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[i]) && i + 1 < lines.length && /Refreshes/i.test(lines[i + 1])) {
-                            rows.push({ name: lines[i], reset: lines[i + 1], remaining: '' });
-                        }
-                    }
-                    var fills = [];
-                    var groups = document.querySelectorAll('.flex.gap-1');
-                    for (var g = 0; g < groups.length; g++) {
-                        var gr = groups[g].getBoundingClientRect();
-                        if (!isVisible(groups[g]) || gr.x < 250 || gr.width < 100 || gr.height > 16) continue;
-                        var segments = groups[g].querySelectorAll('[class*="bg-gray-500"]');
-                        if (segments.length === 0) continue;
+                    function segmentFill(group) {
+                        var segments = group.querySelectorAll('[class*="bg-gray-500"]');
+                        if (segments.length === 0) return null;
                         var filled = 0;
                         for (var s = 0; s < segments.length; s++) {
                             var fill = segments[s].firstElementChild;
@@ -743,15 +726,87 @@ class ChatViewModel(
                             if (percent >= 90) filled += 1;
                             else if (percent > 5) filled += percent / 100;
                         }
-                        fills.push({ filled: filled, total: segments.length });
+                        return {
+                            filled: Math.round(filled * 10) / 10,
+                            total: segments.length
+                        };
                     }
-                    for (var ri = 0; ri < rows.length && ri < fills.length; ri++) {
-                        var f = fills[ri];
-                        rows[ri].remaining = (Math.round(f.filled * 10) / 10) + '/' + f.total;
+
+                    function findProgressGroup(container) {
+                        var groups = container.querySelectorAll('div');
+                        for (var i = 0; i < groups.length; i++) {
+                            var gr = groups[i].getBoundingClientRect();
+                            if (!isVisible(groups[i]) || gr.width < 100 || gr.height > 8) continue;
+                            var segments = groups[i].querySelectorAll('[class*="bg-gray-500"]');
+                            if (segments.length >= 3) return groups[i];
+                        }
+                        return null;
                     }
-                    if (!credits && rows.length === 0) {
-                        return JSON.stringify({ ok: false, error: 'Settings 已打开，但未读取到 Models 用量' });
+
+                    function readQuotaRows() {
+                        var rows = [];
+                        var containers = document.querySelectorAll('[class*="py-3"][class*="border-b"]');
+                        for (var i = 0; i < containers.length; i++) {
+                            var el = containers[i];
+                            if (!isVisible(el)) continue;
+                            var text = (el.innerText || el.textContent || '').trim();
+                            if (!/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(text)) continue;
+                            var lines = text.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+                            var name = '';
+                            var reset = '';
+                            for (var li = 0; li < lines.length; li++) {
+                                if (!name && /^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[li])) name = lines[li];
+                                if (!reset && /Refreshes/i.test(lines[li])) reset = lines[li];
+                            }
+                            if (!reset) {
+                                var resetMatch = text.match(/Refreshes[^\n]*/i);
+                                reset = resetMatch ? resetMatch[0].trim() : '';
+                            }
+                            if (!name) continue;
+                            var group = findProgressGroup(el);
+                            var fill = group ? segmentFill(group) : null;
+                            rows.push({
+                                name: name,
+                                reset: reset,
+                                remaining: fill ? (fill.filled + '/' + fill.total) : ''
+                            });
+                        }
+
+                        if (rows.length > 0) return rows;
+
+                        var text = bodyText();
+                        var lines = text.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+                        for (var j = 0; j < lines.length; j++) {
+                            if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[j]) && j + 1 < lines.length && /Refreshes/i.test(lines[j + 1])) {
+                                rows.push({ name: lines[j], reset: lines[j + 1], remaining: '' });
+                            }
+                        }
+                        var fills = [];
+                        var groups = document.querySelectorAll('div');
+                        for (var g = 0; g < groups.length; g++) {
+                            var gr = groups[g].getBoundingClientRect();
+                            if (!isVisible(groups[g]) || gr.x < 250 || gr.width < 100 || gr.height > 8) continue;
+                            if (groups[g].querySelectorAll('[class*="bg-gray-500"]').length < 3) continue;
+                            var f = segmentFill(groups[g]);
+                            if (f) fills.push(f);
+                        }
+                        for (var ri = 0; ri < rows.length && ri < fills.length; ri++) {
+                            rows[ri].remaining = fills[ri].filled + '/' + fills[ri].total;
+                        }
+                        return rows;
                     }
+
+                    var credits = '';
+                    var rows = [];
+                    for (var attempt = 0; attempt < 5; attempt++) {
+                        if (!/MODEL QUOTA/i.test(bodyText())) clickModels();
+                        await new Promise(r => setTimeout(r, attempt === 0 ? 600 : 400));
+                        var text = bodyText();
+                        credits = (text.match(/Available AI Credits:\s*([0-9,]+)/i) || [])[1] || credits;
+                        rows = readQuotaRows();
+                        if (rows.length > 0) break;
+                    }
+                    if (rows.length === 0) return JSON.stringify({ ok: false, error: 'Settings 已打开，但未读取到模型额度' });
                     return JSON.stringify({ ok: true, credits: credits, rows: rows.slice(0, 8) });
                 })()
             """.trimIndent(), awaitPromise = true)
