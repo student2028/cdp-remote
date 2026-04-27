@@ -132,6 +132,7 @@ fun ChatScreen(
     var globalRuleDraft by remember { mutableStateOf("") }
     val showAntigravityGlobalRule = appName.contains("Antigravity", ignoreCase = true)
     val isCodexApp = appName.contains("Codex", ignoreCase = true)
+    val showUsageButton = isCodexApp || state.isWindsurf || showAntigravityGlobalRule
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -300,6 +301,7 @@ fun ChatScreen(
                         viewModel.fetchCodexProjects()
                     },
                     onCheckUsage = { viewModel.checkRateLimits() },
+                    showUsageButton = showUsageButton,
                     showGlobalRuleButton = showAntigravityGlobalRule,
                     onGlobalRule = { showGlobalRuleDialog = true }
                 )

@@ -1625,6 +1625,43 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
         return CdpResult.Error("当前 IDE 不支持取消任务功能")
     }
 
+    /**
+     * 打开 Antigravity User Settings。Models/Quota 页面在独立 CDP target 中，
+     * 这里只负责把设置窗口唤出来，读取额度由上层连接 Settings target 完成。
+     */
+    open suspend fun showUsagePanel(): CdpResult<String> {
+        val current = cdp.evaluate("""
+            (function() {
+                var text = document.body ? (document.body.innerText || '') : '';
+                if (/MODEL QUOTA/i.test(text) || /Available AI Credits/i.test(text)) return 'models';
+                if (/Settings/i.test(document.title || '')) return 'settings';
+                return '';
+            })()
+        """.trimIndent()).getOrNull().orEmpty()
+        if (current == "models") return CdpResult.Success("Antigravity Models")
+
+        // Antigravity 菜单里的 "Open Antigravity User Settings" 绑定 Cmd+,。
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "rawKeyDown")
+            addProperty("key", ",")
+            addProperty("code", "Comma")
+            addProperty("modifiers", 4)
+            addProperty("windowsVirtualKeyCode", 188)
+            addProperty("nativeVirtualKeyCode", 188)
+        })
+        delay(50)
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyUp")
+            addProperty("key", ",")
+            addProperty("code", "Comma")
+            addProperty("modifiers", 4)
+            addProperty("windowsVirtualKeyCode", 188)
+            addProperty("nativeVirtualKeyCode", 188)
+        })
+        delay(700)
+        return CdpResult.Success("已打开 Antigravity User Settings")
+    }
+
     // ─────────────────── 模型切换 ───────────────────
     // 移植自: antigravity_switch_model.js
 

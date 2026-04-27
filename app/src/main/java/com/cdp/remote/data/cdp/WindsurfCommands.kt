@@ -117,7 +117,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
 
     // ─────────────────── 用量面板 (Plan / Quota) ───────────────────
 
-    suspend fun showUsagePanel(): CdpResult<String> {
+    override suspend fun showUsagePanel(): CdpResult<String> {
         val openResult = cdp.evaluate("""
             (function() {
                 function isVisible(el) {

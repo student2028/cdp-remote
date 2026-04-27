@@ -27,6 +27,7 @@ class ChatViewModel(
     private var codexCommands: CodexCommands? = null
     private var claudeCodeCommands: ClaudeCodeCommands? = null
     private var isCodex: Boolean = false
+    private var isAntigravity: Boolean = false
     private var isClaudeCode: Boolean = false
     private var isWindsurf: Boolean = false
     private var connectHost: HostInfo? = null
@@ -130,6 +131,7 @@ class ChatViewModel(
             is CdpResult.Success -> {
                 val appType = ElectronAppType.fromAppName(appName)
                 isCodex = appType == ElectronAppType.CODEX
+                isAntigravity = appType == ElectronAppType.ANTIGRAVITY
                 isClaudeCode = appType == ElectronAppType.CLAUDE_CODE
                 isWindsurf = appType == ElectronAppType.WINDSURF
                 if (isClaudeCode) {
@@ -632,20 +634,160 @@ class ChatViewModel(
     }
 
     /**
-     * 查看 IDE 用量面板：Codex 打开 Rate limits，Windsurf 打开 Plan Info。
+     * 查看 IDE 用量面板：Codex 打开 Rate limits，Windsurf 打开 Plan Info，
+     * Antigravity 打开 Settings → Models 并读取 quota target。
      */
     fun checkRateLimits() {
-        if ((!isCodex || codexCommands == null) && (!isWindsurf || commands !is WindsurfCommands)) return
+        if ((!isCodex || codexCommands == null) &&
+            (!isWindsurf || commands !is WindsurfCommands) &&
+            (!isAntigravity || commands == null)
+        ) return
         viewModelScope.launch {
             val result = when {
                 isCodex -> codexCommands!!.showRateLimits()
                 isWindsurf -> (commands as WindsurfCommands).showUsagePanel()
+                isAntigravity -> showAntigravityUsagePanel()
                 else -> CdpResult.Error("当前 IDE 不支持查看用量")
             }
             when (result) {
                 is CdpResult.Success -> addSystemMessage("用量面板已打开 📊 ${result.data}")
                 is CdpResult.Error -> addSystemMessage("查看用量失败: ${result.message}")
             }
+        }
+    }
+
+    private suspend fun showAntigravityUsagePanel(): CdpResult<String> {
+        val openResult = commands?.showUsagePanel()
+            ?: return CdpResult.Error("Antigravity 命令未初始化")
+        if (openResult is CdpResult.Error) return CdpResult.Error(openResult.message)
+
+        delay(900)
+        val settingsPage = findAntigravitySettingsPage()
+            ?: return CdpResult.Error("未找到 Antigravity Settings CDP target")
+
+        val settingsClient = CdpClient()
+        return try {
+            val connectResult = settingsClient.connectDirect(settingsPage.webSocketDebuggerUrl)
+            if (connectResult is CdpResult.Error) return CdpResult.Error(connectResult.message)
+
+            val detail = settingsClient.evaluate("""
+                (async function() {
+                    function isVisible(el) {
+                        if (!el) return false;
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    }
+                    function fullClick(el) {
+                        try {
+                            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+                            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+                            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+                        } catch (e) {}
+                        el.click();
+                    }
+                    function bodyText() {
+                        return (document.body ? (document.body.innerText || '') : '').replace(/\r/g, '');
+                    }
+                    function clickModels() {
+                        var items = document.querySelectorAll('[role="button"], button, a, .settings-toc-entry, .monaco-list-row, div');
+                        for (var i = 0; i < items.length; i++) {
+                            var el = items[i];
+                            if (!isVisible(el)) continue;
+                            var t = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').toLowerCase();
+                            var a = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+                            if (t === 'models' || t === 'model' || a === 'models' || a === 'model') {
+                                fullClick(el);
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    if (!/MODEL QUOTA/i.test(bodyText())) {
+                        clickModels();
+                        await new Promise(r => setTimeout(r, 600));
+                    }
+                    var text = bodyText();
+                    var credits = (text.match(/Available AI Credits:\s*([0-9,]+)/i) || [])[1] || '';
+                    var rows = [];
+                    var lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+                    for (var i = 0; i < lines.length; i++) {
+                        if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[i]) && i + 1 < lines.length && /Refreshes/i.test(lines[i + 1])) {
+                            rows.push(lines[i] + ': ' + lines[i + 1]);
+                        }
+                    }
+                    if (!credits && rows.length === 0) {
+                        return JSON.stringify({ ok: false, error: 'Settings 已打开，但未读取到 Models 用量' });
+                    }
+                    return JSON.stringify({ ok: true, credits: credits, rows: rows.slice(0, 8) });
+                })()
+            """.trimIndent(), awaitPromise = true)
+            if (detail is CdpResult.Error) return CdpResult.Error(detail.message)
+            val jsonStr = detail.getOrNull() ?: return CdpResult.Error("Settings target 无返回结果")
+            val json = com.google.gson.JsonParser.parseString(jsonStr).asJsonObject
+            if (json.get("ok")?.asBoolean != true) {
+                return CdpResult.Error(json.get("error")?.asString ?: "未读取到 Antigravity 用量")
+            }
+
+            val parts = mutableListOf<String>()
+            json.get("credits")?.asString?.takeIf { it.isNotBlank() }?.let {
+                parts.add("AI Credits: $it")
+            }
+            val rows = json.getAsJsonArray("rows")?.map { it.asString }.orEmpty()
+            if (rows.isNotEmpty()) parts.add(rows.joinToString(" · "))
+            CdpResult.Success(parts.joinToString(" · ").ifBlank { "Antigravity Models" })
+        } catch (e: Exception) {
+            CdpResult.Error("读取 Antigravity 用量失败: ${e.message}")
+        } finally {
+            settingsClient.disconnect()
+        }
+    }
+
+    private suspend fun findAntigravitySettingsPage(): CdpPage? = withContext(Dispatchers.IO) {
+        val host = connectHost ?: return@withContext null
+        val pages = mutableListOf<CdpPage>()
+
+        runCatching {
+            val request = okhttp3.Request.Builder()
+                .url("http://${host.ip}:${host.port}/targets")
+                .build()
+            val response = httpClient.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+            val root = com.google.gson.JsonParser.parseString(body).asJsonObject
+            val targets = root.getAsJsonArray("targets")
+            targets?.forEach { targetElem ->
+                val target = targetElem.asJsonObject
+                val appType = ElectronAppType.fromAppName(target.get("appName")?.asString)
+                val pagesArray = target.getAsJsonArray("pages") ?: return@forEach
+                pagesArray.forEach { pageElem ->
+                    val obj = pageElem.asJsonObject
+                    pages.add(CdpPage(
+                        id = obj.get("id")?.asString ?: "",
+                        type = obj.get("type")?.asString ?: "",
+                        title = obj.get("title")?.asString ?: "",
+                        url = obj.get("url")?.asString ?: "",
+                        webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
+                        devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
+                        appType = appType
+                    ))
+                }
+            }
+        }
+
+        if (pages.isEmpty()) {
+            when (val discovered = cdpClient.discoverPages(host)) {
+                is CdpResult.Success -> pages.addAll(discovered.data)
+                is CdpResult.Error -> Unit
+            }
+        }
+
+        pages.firstOrNull {
+            it.type == "page" &&
+                it.title.contains("Settings", ignoreCase = true) &&
+                (it.appType == ElectronAppType.ANTIGRAVITY || it.url.contains("jetski", ignoreCase = true))
+        } ?: pages.firstOrNull {
+            it.type == "page" && it.title.contains("Settings", ignoreCase = true)
         }
     }
 
