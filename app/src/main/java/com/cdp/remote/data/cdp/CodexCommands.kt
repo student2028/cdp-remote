@@ -1265,6 +1265,60 @@ class CodexCommands(private val cdp: ICdpClient) {
         }
     }
 
+    // ─────────────────── 查看用量 ───────────────────
+
+    /**
+     * 点击底部状态栏 "Work locally x%" 按钮，弹出 Rate limits remaining 面板。
+     * 用户在手机端 TV 画面上即可直观查看 5h / Weekly 剩余额度。
+     */
+    suspend fun showRateLimits(): CdpResult<String> {
+        val result = cdp.evaluate("""
+            (function() {
+                try {
+                    // 底部状态栏按钮，文字包含 "Work locally" 和百分比
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (!btns[i].offsetParent) continue;
+                        var t = (btns[i].textContent || '').trim();
+                        if (t.indexOf('Work locally') >= 0 || t.indexOf('ork locally') >= 0) {
+                            var r = btns[i].getBoundingClientRect();
+                            return JSON.stringify({found:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
+                        }
+                    }
+                    // 备选: 查找包含 "Rate limit" 文字的可点击元素
+                    var all = document.querySelectorAll('button, [role="button"]');
+                    for (var j = 0; j < all.length; j++) {
+                        if (!all[j].offsetParent) continue;
+                        var t2 = (all[j].textContent || '').trim();
+                        if (t2.indexOf('Rate limit') >= 0 || t2.indexOf('rate limit') >= 0) {
+                            var r2 = all[j].getBoundingClientRect();
+                            return JSON.stringify({found:true, x:r2.x+r2.width/2, y:r2.y+r2.height/2, text:t2});
+                        }
+                    }
+                    return JSON.stringify({found:false});
+                } catch(e) { return JSON.stringify({found:false, error:e.message}); }
+            })()
+        """.trimIndent())
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val evalStr = result.getOrNull() ?: return CdpResult.Error("无返回结果")
+        return try {
+            val json = JsonParser.parseString(evalStr).asJsonObject
+            if (json.get("found")?.asBoolean == true) {
+                val x = json.get("x").asDouble
+                val y = json.get("y").asDouble
+                cdpMouseClick(x, y)
+                delay(300)
+                val info = json.get("text")?.asString ?: ""
+                CdpResult.Success(info)
+            } else {
+                CdpResult.Error("未找到用量按钮")
+            }
+        } catch (e: Exception) {
+            CdpResult.Error("解析失败: ${e.message}")
+        }
+    }
+
     // ─────────────────── 自动重试 ───────────────────
 
     suspend fun checkAndRetryIfBusy(): CdpResult<Boolean> {

@@ -631,6 +631,20 @@ class ChatViewModel(
         uiState = uiState.copy(codexProjects = emptyList(), codexProjectsLoading = false)
     }
 
+    /**
+     * Codex 专属：点击底部 "Work locally" 按钮弹出 Rate limits remaining 面板
+     */
+    fun checkRateLimits() {
+        if (!isCodex || codexCommands == null) return
+        viewModelScope.launch {
+            val result = codexCommands!!.showRateLimits()
+            when (result) {
+                is CdpResult.Success -> addSystemMessage("用量面板已打开 📊 ${result.data}")
+                is CdpResult.Error -> addSystemMessage("查看用量失败: ${result.message}")
+            }
+        }
+    }
+
     fun stopGeneration() {
         pollJob?.cancel()
         uiState = uiState.copy(isGenerating = false)

@@ -299,6 +299,7 @@ fun ChatScreen(
                         showProjectDialog = true
                         viewModel.fetchCodexProjects()
                     },
+                    onCheckUsage = { viewModel.checkRateLimits() },
                     showGlobalRuleButton = showAntigravityGlobalRule,
                     onGlobalRule = { showGlobalRuleDialog = true }
                 )
