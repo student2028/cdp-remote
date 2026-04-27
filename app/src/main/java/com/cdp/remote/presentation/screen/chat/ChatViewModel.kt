@@ -766,14 +766,29 @@ class ChatViewModel(
             json.get("credits")?.asString?.takeIf { it.isNotBlank() }?.let {
                 parts.add("AI 点数: $it")
             }
-            val rows = json.getAsJsonArray("rows")?.mapNotNull { elem ->
+            val allQuotaRows = json.getAsJsonArray("rows")?.mapNotNull { elem ->
                 val row = elem.asJsonObject
                 val name = row.get("name")?.asString.orEmpty()
                 if (name.isBlank()) return@mapNotNull null
-                val lowerName = name.lowercase()
-                if (!lowerName.contains("gemini 3.1 pro (high)") &&
-                    !lowerName.contains("claude opus")
-                ) return@mapNotNull null
+                row
+            }.orEmpty()
+            val selectedRows = allQuotaRows.filter { row ->
+                val normalized = row.get("name")?.asString.orEmpty()
+                    .lowercase()
+                    .replace(Regex("[^a-z0-9.]+"), " ")
+                    .trim()
+                val isGeminiHigh = normalized.contains("gemini") &&
+                    normalized.contains("3.1") &&
+                    normalized.contains("pro") &&
+                    normalized.contains("high")
+                val isOpus = normalized.contains("claude") && normalized.contains("opus")
+                isGeminiHigh || isOpus
+            }.ifEmpty {
+                listOfNotNull(allQuotaRows.getOrNull(0), allQuotaRows.getOrNull(4))
+            }
+            val rows = selectedRows.mapNotNull { row ->
+                val name = row.get("name")?.asString.orEmpty()
+                if (name.isBlank()) return@mapNotNull null
                 val remaining = row.get("remaining")?.asString.orEmpty()
                 val reset = row.get("reset")?.asString
                     ?.replace("Refreshes in", "刷新")
@@ -787,7 +802,7 @@ class ChatViewModel(
                     if (remaining.isNotBlank()) append(" 剩余 ").append(remaining)
                     if (reset.isNotBlank()) append("，").append(reset)
                 }
-            }.orEmpty()
+            }
             if (rows.isNotEmpty()) parts.add("模型额度: ${rows.joinToString("；")}")
             CdpResult.Success(parts.joinToString(" · ").ifBlank { "Antigravity Models" })
         } catch (e: Exception) {
