@@ -120,6 +120,11 @@ class FakeCdpClient : ICdpClient {
         return callResult
     }
 
+    override suspend fun insertText(text: String): CdpResult<JsonObject> {
+        callHistory.add("Input.insertText")
+        return callResult
+    }
+
     override suspend fun dispatchMouseEvent(
         type: String, x: Double, y: Double,
         button: String, clickCount: Int

@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import com.cdp.remote.data.cdp.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class ChatViewModel(
     private val cdpClient: ICdpClient = CdpClient()
@@ -34,6 +36,7 @@ class ChatViewModel(
     private var reconnectJob: Job? = null
     private var errorWatchdogJob: Job? = null
     private var reconnectAttempts: Int = 0
+    private val remoteInputMutex = Mutex()
 
     // ─── Connection ─────────────────────────────────────────────────
 
@@ -925,19 +928,21 @@ class ChatViewModel(
      */
     fun dispatchRemoteInput(type: String, ratioX: Float, ratioY: Float, button: String = "left") {
         viewModelScope.launch {
-            var pw = uiState.tvPageWidth
-            var ph = uiState.tvPageHeight
-            if (pw <= 0 || ph <= 0) {
-                // 尺寸未就绪，同步重新获取一次再继续
-                fetchPageDimensionsSync()
-                pw = uiState.tvPageWidth
-                ph = uiState.tvPageHeight
-                if (pw <= 0 || ph <= 0) return@launch
+            remoteInputMutex.withLock {
+                var pw = uiState.tvPageWidth
+                var ph = uiState.tvPageHeight
+                if (pw <= 0 || ph <= 0) {
+                    // 尺寸未就绪，同步重新获取一次再继续
+                    fetchPageDimensionsSync()
+                    pw = uiState.tvPageWidth
+                    ph = uiState.tvPageHeight
+                    if (pw <= 0 || ph <= 0) return@withLock
+                }
+                val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
+                val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
+                val clickCount = if (type == "mousePressed") 1 else 0
+                cdpClient.dispatchMouseEvent(type, x, y, button, clickCount)
             }
-            val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
-            val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
-            val clickCount = if (type == "mousePressed") 1 else 0
-            cdpClient.dispatchMouseEvent(type, x, y, button, clickCount)
         }
     }
 

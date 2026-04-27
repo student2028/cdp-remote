@@ -403,4 +403,42 @@ class CodexCommandsIntegrationTest {
         assertTrue(result.isSuccess)
         assertTrue(result.getOrThrow())
     }
+
+    @Test
+    fun `switchModel escapes model name before embedding in JavaScript`() = runBlocking {
+        var evaluateCount = 0
+        mockServer.onRequest { req ->
+            when (req.get("method")?.asString) {
+                "Runtime.evaluate" -> {
+                    evaluateCount += 1
+                    val value = when (evaluateCount) {
+                        1 -> "10,20"
+                        2 -> "30,40"
+                        else -> """{"err":"子菜单中无匹配","avail":[]}"""
+                    }
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("value", value)
+                        })
+                    }
+                }
+                "Input.dispatchMouseEvent",
+                "Input.dispatchKeyEvent" -> JsonObject()
+                else -> null
+            }
+        }
+
+        codex.switchModel("gpt'5\\test")
+
+        val targetExpression = mockServer.receivedExpressions.last { it.contains("子菜单中无匹配") }
+        assertFalse(
+            "raw model name must not be interpolated inside a JS single-quoted string",
+            targetExpression.contains("t.indexOf('gpt'5\\test')")
+        )
+        assertTrue(
+            "escaped model name should be represented as a JS string literal",
+            targetExpression.contains("""var input = "gpt'5\\test";""")
+        )
+    }
 }
