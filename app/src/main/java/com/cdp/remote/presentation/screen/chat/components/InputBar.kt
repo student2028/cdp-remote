@@ -102,17 +102,6 @@ fun ActionToolbar(
                 iconColor = Accent,
                 onClick = onStopGeneration
             )
-            // Windsurf 专属：取消运行中任务按钮
-            // 不依赖 isGenerating（任务可能从 IDE 直接发起，手机端状态未同步）
-            if (isWindsurf) {
-                ToolbarBtn(
-                    icon = Icons.Default.Close,
-                    label = "取消任务",
-                    enabled = isConnected,
-                    iconColor = Color(0xFFE53935),
-                    onClick = onCancelRunningTask
-                )
-            }
             // 上翻/下翻：Codex 不需要（侧边栏已含会话与项目入口，节省横向空间）
             if (!isCodex) {
                 ToolbarBtn(
@@ -149,6 +138,17 @@ fun ActionToolbar(
                 iconColor = Primary,
                 onClick = onSwitchModel
             )
+            // Windsurf 专属：取消运行中任务按钮（放在"切换"之后，避免误触常用按钮）
+            // 不依赖 isGenerating（任务可能从 IDE 直接发起，手机端状态未同步）
+            if (isWindsurf) {
+                ToolbarBtn(
+                    icon = Icons.Default.Close,
+                    label = "取消任务",
+                    enabled = isConnected,
+                    iconColor = Color(0xFFE53935),
+                    onClick = onCancelRunningTask
+                )
+            }
             if (showGlobalRuleButton) {
                 ToolbarBtn(
                     icon = Icons.Default.Tune,
