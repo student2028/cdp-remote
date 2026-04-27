@@ -1120,6 +1120,7 @@ class CodexCommands(private val cdp: ICdpClient) {
      */
     suspend fun switchModel(modelName: String): CdpResult<Unit> {
         val input = modelName.lowercase().trim()
+        val inputLiteral = com.google.gson.JsonPrimitive(input).toString()
         Log.d(TAG, "switchModel: $input")
         val btnCenter = getModelBtnCenter() ?: return CdpResult.Error("找不到模型按钮")
 
@@ -1135,11 +1136,12 @@ class CodexCommands(private val cdp: ICdpClient) {
             // 在主菜单中直接找等级项并点击
             val pos = cdp.evaluate("""
                 (function(){
+                    var input = $inputLiteral;
                     var menus = document.querySelectorAll('[role=menu]');
                     if (!menus.length) return '';
                     var spans = menus[0].querySelectorAll('span');
                     for (var i = 0; i < spans.length; i++) {
-                        if ((spans[i].textContent||'').trim().toLowerCase() === '$input') {
+                        if ((spans[i].textContent||'').trim().toLowerCase() === input) {
                             var r = spans[i].getBoundingClientRect();
                             return (r.x+r.width/2)+','+(r.y+r.height/2);
                         }
@@ -1202,13 +1204,14 @@ class CodexCommands(private val cdp: ICdpClient) {
         // 4. 在子菜单中找目标模型
         val targetPos = cdp.evaluate("""
             (function(){
+                var input = $inputLiteral;
                 var menus = document.querySelectorAll('[role=menu]');
                 if (menus.length < 2) return JSON.stringify({err:'子菜单未展开',count:menus.length});
                 var sub = menus[menus.length-1];
                 var spans = sub.querySelectorAll('span');
                 for (var i = 0; i < spans.length; i++) {
                     var t = (spans[i].textContent||'').trim().toLowerCase();
-                    if (t.indexOf('$input') >= 0 && t !== 'change model' && t !== 'other models') {
+                    if (t.indexOf(input) >= 0 && t !== 'change model' && t !== 'other models') {
                         var r = spans[i].getBoundingClientRect();
                         return JSON.stringify({ok:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
                     }

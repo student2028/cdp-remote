@@ -275,13 +275,17 @@ class CdpClient(
     override suspend fun insertText(text: String): CdpResult<JsonObject> {
         // 使用连续的 char 事件代替 insertText，避免部分 IDE (如 Monaco/Codex) 过滤纯文本插入
         var lastResult: CdpResult<JsonObject> = CdpResult.Success(JsonObject())
-        for (c in text) {
+        var offset = 0
+        while (offset < text.length) {
+            val codePoint = text.codePointAt(offset)
+            val charText = String(Character.toChars(codePoint))
             val params = JsonObject().apply {
                 addProperty("type", "char")
-                addProperty("text", c.toString())
+                addProperty("text", charText)
             }
             lastResult = call("Input.dispatchKeyEvent", params)
             if (lastResult is CdpResult.Error) break
+            offset += Character.charCount(codePoint)
         }
         return lastResult
     }

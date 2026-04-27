@@ -4,6 +4,9 @@ import com.cdp.remote.data.cdp.*
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -287,5 +290,65 @@ class ChatViewModelTest {
             fakeCdp.callHistory.contains("AntigravityCommands.checkAndRetryIfBusy")
         )
         vm.stopSync()
+    }
+
+    @Test
+    fun `dispatchRemoteInput preserves press release order while dimensions load`() = runTest {
+        val orderedCdp = DelayedDimensionCdpClient()
+        val orderedVm = ChatViewModel(orderedCdp)
+
+        orderedVm.dispatchRemoteInput("mousePressed", 0.25f, 0.5f)
+        orderedVm.dispatchRemoteInput("mouseReleased", 0.25f, 0.5f)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("mousePressed", "mouseReleased"),
+            orderedCdp.mouseEventTypes
+        )
+    }
+
+    private class DelayedDimensionCdpClient : ICdpClient {
+        private val state = MutableStateFlow(ConnectionState.CONNECTED)
+        private var evaluateCount = 0
+        val mouseEventTypes = mutableListOf<String>()
+
+        override val connectionState: StateFlow<ConnectionState> = state
+        override val isConnected: Boolean get() = true
+
+        override suspend fun discoverPages(host: HostInfo) = CdpResult.Success(emptyList<CdpPage>())
+        override suspend fun connect(host: HostInfo, page: CdpPage) = CdpResult.Success(Unit)
+        override suspend fun connectDirect(wsUrl: String) = CdpResult.Success(Unit)
+        override suspend fun connectToWorkbench(host: HostInfo) =
+            CdpResult.Success(CdpPage("1", "page", "Workbench", "app://-/index.html", "ws://test"))
+        override fun disconnect() {}
+
+        override suspend fun call(method: String, params: JsonObject) = CdpResult.Success(JsonObject())
+
+        override suspend fun evaluate(expression: String, awaitPromise: Boolean): CdpResult<String?> {
+            evaluateCount += 1
+            if (evaluateCount == 1) delay(100)
+            return CdpResult.Success("""{"w":1000,"h":800}""")
+        }
+
+        override suspend fun dispatchKeyEvent(type: String, key: String) = CdpResult.Success(JsonObject())
+        override suspend fun insertText(text: String) = CdpResult.Success(JsonObject())
+
+        override suspend fun dispatchMouseEvent(
+            type: String,
+            x: Double,
+            y: Double,
+            button: String,
+            clickCount: Int
+        ): CdpResult<JsonObject> {
+            mouseEventTypes.add(type)
+            return CdpResult.Success(JsonObject())
+        }
+
+        override suspend fun dispatchScrollEvent(deltaY: Double, x: Double, y: Double) =
+            CdpResult.Success(JsonObject())
+        override suspend fun captureScreenshot(quality: Int, clip: JsonObject?) =
+            CdpResult.Success(byteArrayOf())
+        override fun addEventListener(event: String, listener: (JsonObject) -> Unit) {}
+        override fun removeEventListeners(event: String) {}
     }
 }

@@ -2,6 +2,7 @@ package com.cdp.remote.data.cdp
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -140,6 +141,31 @@ class CdpClientTest {
         val client = CdpClient()
         assertEquals(ConnectionState.DISCONNECTED, client.connectionState.value)
         assertFalse(client.isConnected)
+    }
+
+    @Test
+    fun `insertText dispatches non BMP character as one char event`() = runBlocking {
+        val mockServer = MockCdpServer()
+        val client = CdpClient()
+        try {
+            mockServer.start()
+            assertTrue(client.connectDirect(mockServer.wsUrl).isSuccess)
+
+            val result = client.insertText("😀")
+
+            assertTrue(result.isSuccess)
+            val keyEvents = mockServer.receivedMessages.filter {
+                it.get("method")?.asString == "Input.dispatchKeyEvent"
+            }
+            assertEquals("emoji should be dispatched as one Unicode scalar", 1, keyEvents.size)
+            assertEquals(
+                "😀",
+                keyEvents.single().getAsJsonObject("params").get("text").asString
+            )
+        } finally {
+            client.disconnect()
+            mockServer.shutdown()
+        }
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
