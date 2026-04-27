@@ -536,23 +536,34 @@ class HostListViewModel : ViewModel() {
         stopTvMode()
     }
 
-    fun killPortProcess(hostIp: String, hostPort: Int, cdpPort: Int) {
+    fun exitPortProcess(hostIp: String, hostPort: Int, cdpPort: Int) {
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val killUrl = "http://$hostIp:$hostPort/kill?port=$cdpPort"
-                    Log.d(TAG, "终止进程: $killUrl")
-                    val request = Request.Builder().url(killUrl).build()
-                    httpClient.newCall(request).execute().close()
+                    val exitUrl = "http://$hostIp:$hostPort/kill?port=$cdpPort"
+                    Log.d(TAG, "退出 IDE: $exitUrl")
+                    val request = Request.Builder().url(exitUrl).build()
+                    httpClient.newCall(request).execute().use { response ->
+                        val body = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            error("HTTP ${response.code}")
+                        }
+                        val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                        val success = json?.get("success")?.asBoolean ?: false
+                        if (!success) {
+                            val message = json?.get("error")?.asString ?: "未知错误"
+                            error(message)
+                        }
+                    }
                 }
-                // Refresh after kill
+                // Refresh after graceful exit
                 delay(1000)
                 val host = uiState.hosts.firstOrNull { it.ip == hostIp && it.port == hostPort }
                     ?: HostInfo(hostIp, hostPort)
                 scanHost(host)
             } catch (e: Exception) {
-                Log.e(TAG, "终止进程失败: ${e.message}")
-                uiState = uiState.copy(scanError = "终止进程失败: ${e.message}")
+                Log.e(TAG, "退出 IDE 失败: ${e.message}")
+                uiState = uiState.copy(scanError = "退出 IDE 失败: ${e.message}")
             }
         }
     }

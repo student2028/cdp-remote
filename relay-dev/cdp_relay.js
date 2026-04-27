@@ -15,7 +15,7 @@
 const http = require('http');
 const urlModule = require('url');
 const { WebSocketServer, WebSocket } = require('ws');
-const { execSync, exec, spawn, execFile } = require('child_process');
+const { execSync, exec, spawn, execFile, execFileSync } = require('child_process');
 const { promisify } = require('util');
 const execFilePromise = promisify(execFile);
 const os = require('os');
@@ -169,6 +169,8 @@ const RELAY_PORT = parseInt(process.env.RELAY_PORT || '19336');
 const BIND_ADDR = process.env.BIND_ADDR || '0.0.0.0';
 const CHECK_INTERVAL = 10000;
 const SCAN_TIMEOUT = 2000;
+const GRACEFUL_EXIT_TIMEOUT_MS = parseInt(process.env.RELAY_GRACEFUL_EXIT_TIMEOUT_MS || '8000', 10);
+const FORCE_KILL_TIMEOUT_MS = parseInt(process.env.RELAY_FORCE_KILL_TIMEOUT_MS || '3000', 10);
 
 const RESTART_BACKOFF_SHORT_MS = parseInt(process.env.RELAY_RESTART_BACKOFF_SHORT_MS || '60000', 10);
 const RESTART_BACKOFF_LONG_MS = parseInt(process.env.RELAY_RESTART_BACKOFF_LONG_MS || String(5 * 60 * 1000), 10);
@@ -191,6 +193,152 @@ const ELECTRON_APPS = [
 // Map<port, { appName, appEmoji, pages[], lastSeen }>
 const activeCdpTargets = new Map();
 let connectionCount = 0;
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getCdpPidsByPort(port) {
+    try {
+        const out = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], {
+            timeout: 3000,
+            encoding: 'utf8'
+        }).trim();
+        if (out) return [...new Set(out.split('\n').map(s => s.trim()).filter(Boolean))];
+    } catch (_) {}
+
+    try {
+        const out = execFileSync('pgrep', ['-f', '--', `--remote-debugging-port=${port}`], {
+            timeout: 3000,
+            encoding: 'utf8'
+        }).trim();
+        return out ? [...new Set(out.split('\n').map(s => s.trim()).filter(Boolean))] : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function isPidAlive(pid) {
+    try {
+        process.kill(Number(pid), 0);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function waitForPidsExit(pids, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (pids.every(pid => !isPidAlive(pid))) return true;
+        await sleep(250);
+    }
+    return pids.every(pid => !isPidAlive(pid));
+}
+
+function getJson(url, timeoutMs = 3000) {
+    return new Promise((resolve, reject) => {
+        const req = http.get(url, { timeout: timeoutMs }, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(body)); }
+                catch (e) { reject(e); }
+            });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new Error('request timeout'));
+        });
+    });
+}
+
+async function sendBrowserClose(cdpPort) {
+    const version = await getJson(`http://${CDP_HOST}:${cdpPort}/json/version`);
+    const wsUrl = version.webSocketDebuggerUrl;
+    if (!wsUrl) throw new Error('CDP browser websocket not found');
+
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        const timer = setTimeout(() => {
+            try { ws.close(); } catch (_) {}
+            reject(new Error('Browser.close timeout'));
+        }, 3000);
+
+        let closeSent = false;
+        ws.on('open', () => {
+            closeSent = true;
+            ws.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
+        });
+        ws.on('message', (buf) => {
+            try {
+                const msg = JSON.parse(buf.toString());
+                if (msg.id === 1) {
+                    clearTimeout(timer);
+                    try { ws.close(); } catch (_) {}
+                    if (msg.error) reject(new Error(msg.error.message || 'Browser.close failed'));
+                    else resolve(true);
+                }
+            } catch (_) {}
+        });
+        ws.on('close', () => {
+            clearTimeout(timer);
+            if (closeSent) resolve(true);
+        });
+        ws.on('error', (e) => {
+            clearTimeout(timer);
+            reject(e);
+        });
+    });
+}
+
+async function gracefulExitCdpTarget(cdpPort, { force = false } = {}) {
+    const pids = getCdpPidsByPort(cdpPort);
+    if (pids.length === 0) {
+        return { success: false, port: cdpPort, error: `端口 ${cdpPort} 无进程` };
+    }
+
+    let browserCloseError = null;
+    try {
+        log(`🚪 /kill: 请求 CDP :${cdpPort} 通过 Browser.close 优雅退出 (PIDs: ${pids.join(', ')})`);
+        await sendBrowserClose(cdpPort);
+        const exited = await waitForPidsExit(pids, GRACEFUL_EXIT_TIMEOUT_MS);
+        if (exited) {
+            activeCdpTargets.delete(cdpPort);
+            return { success: true, port: cdpPort, mode: 'graceful', closedPids: pids };
+        }
+    } catch (e) {
+        browserCloseError = e;
+        log(`⚠️ /kill: CDP :${cdpPort} 优雅退出失败: ${e.message}`);
+    }
+
+    if (!force) {
+        return {
+            success: false,
+            port: cdpPort,
+            mode: 'graceful',
+            pids,
+            error: browserCloseError?.message || 'IDE 未在优雅退出超时内结束；如确需强制结束，请使用 force=1'
+        };
+    }
+
+    log(`⚠️ /kill: force=1，向 CDP :${cdpPort} 发送 SIGTERM`);
+    for (const pid of pids) {
+        try { process.kill(Number(pid), 'SIGTERM'); } catch (_) {}
+    }
+    let exited = await waitForPidsExit(pids, FORCE_KILL_TIMEOUT_MS);
+    const sigkillPids = pids.filter(isPidAlive);
+    if (!exited && sigkillPids.length > 0) {
+        log(`💥 /kill: SIGTERM 超时，向 PIDs ${sigkillPids.join(', ')} 发送 SIGKILL`);
+        for (const pid of sigkillPids) {
+            try { process.kill(Number(pid), 'SIGKILL'); } catch (_) {}
+        }
+        exited = await waitForPidsExit(sigkillPids, FORCE_KILL_TIMEOUT_MS);
+    }
+    if (exited) activeCdpTargets.delete(cdpPort);
+    return { success: exited, port: cdpPort, mode: 'force', terminatedPids: pids };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // V2 Workflow 模块：双轨制多 Agent 协同流水线
@@ -1481,7 +1629,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ── /kill?port=XXXX (终止指定 CDP 端口的进程) ──
+    // ── /kill?port=XXXX (兼容旧接口：默认优雅退出指定 CDP 端口的 IDE；force=1 才强制杀) ──
     if (req.url.startsWith('/kill')) {
         const parsed = urlModule.parse(req.url, true);
         const reqPort = parsed.query.port ? parseInt(parsed.query.port) : 0;
@@ -1491,19 +1639,9 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         try {
-            const pgrepOut = execSync(`pgrep -f -- "--remote-debugging-port=${reqPort}" 2>/dev/null || true`).toString().trim();
-            if (!pgrepOut) {
-                res.end(JSON.stringify({ success: false, error: `端口 ${reqPort} 无进程` }));
-                return;
-            }
-            const pids = pgrepOut.split('\n').filter(Boolean);
-            log(`🔪 /kill: 终止端口 :${reqPort} 的进程 (PIDs: ${pids.join(', ')})`);
-            for (const pid of pids) {
-                try { execSync(`kill ${pid}`); } catch (e) { }
-            }
-            // 从活跃目标中移除
-            activeCdpTargets.delete(reqPort);
-            res.end(JSON.stringify({ success: true, port: reqPort, killedPids: pids }));
+            const force = /^(1|true|yes)$/i.test(String(parsed.query.force || ''));
+            const result = await gracefulExitCdpTarget(reqPort, { force });
+            res.end(JSON.stringify(result));
         } catch (e) {
             res.end(JSON.stringify({ success: false, error: e.message }));
         }

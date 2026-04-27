@@ -42,4 +42,38 @@ else
   echo "OK: versionCode=$N （已写入 .ota_build_counter）。APK: app/build/outputs/apk/debug/CdpRemote-debug.apk"
 fi
 
-echo "下一步：启动 node relay/cdp_relay.js，手机连同一中继即可收到 OTA。"
+restart_relay_dev() {
+  local label="com.cdp.remote.relay-dev"
+  local uid
+  uid="$(id -u)"
+
+  if ! command -v launchctl >/dev/null 2>&1; then
+    echo "提示：未找到 launchctl，跳过 relay 自动重启。"
+    return 0
+  fi
+
+  # 清掉手动启动的旧 relay。否则它会继续占用 19336，LaunchAgent 的新版 relay 无法接管。
+  if command -v lsof >/dev/null 2>&1; then
+    local pids pid cmd
+    pids="$(lsof -tiTCP:19336 -sTCP:LISTEN 2>/dev/null || true)"
+    for pid in $pids; do
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"cdp_relay.js"* ]]; then
+        echo "重启 relay：停止旧 cdp_relay.js PID $pid"
+        kill "$pid" 2>/dev/null || true
+      fi
+    done
+    sleep 1
+  fi
+
+  if launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
+    launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+    echo "已重启 relay LaunchAgent：${label}"
+  else
+    echo "提示：未加载 ${label}，请手动启动 relay-dev/cdp_relay.js。"
+  fi
+}
+
+restart_relay_dev
+
+echo "下一步：手机退出聊天页重新进入，或在主机列表刷新，即可收到 OTA。"

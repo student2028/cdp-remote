@@ -244,12 +244,6 @@ fun HostListScreen(
                         )
                     },
                     onAppClose = { page -> pageToClose = page },
-                    onAppKill = { page ->
-                        val cdpPort = page.cdpPort
-                        if (cdpPort != null) {
-                            viewModel.killPortProcess(host.ip, host.port, cdpPort)
-                        }
-                    },
                     appOrder = state.appOrder[host.address] ?: emptyList(),
                     onReorder = { orderedWsUrls ->
                         viewModel.reorderApps(host.address, orderedWsUrls)
@@ -357,7 +351,7 @@ fun HostListScreen(
         AlertDialog(
             onDismissRequest = { pageToClose = null },
             title = { Text("${page.appType.displayName} :${page.cdpPort ?: ""}") },
-            text = { Text("关闭窗口仅关闭当前标签页，终止进程会完全退出该端口的 IDE") },
+            text = { Text("关闭窗口仅关闭当前标签页；退出 IDE 会请求该端口实例正常退出，不会直接杀进程。") },
             confirmButton = {
                 TextButton(onClick = {
                     val host = state.hosts.firstOrNull()
@@ -374,10 +368,10 @@ fun HostListScreen(
                         val host = state.hosts.firstOrNull()
                         val cdpPort = page.cdpPort
                         if (host != null && cdpPort != null) {
-                            viewModel.killPortProcess(host.ip, host.port, cdpPort)
+                            viewModel.exitPortProcess(host.ip, host.port, cdpPort)
                         }
                         pageToClose = null
-                    }) { Text("终止进程", color = MaterialTheme.colorScheme.error) }
+                    }) { Text("退出 IDE", color = MaterialTheme.colorScheme.error) }
                 }
             }
         )
@@ -427,7 +421,6 @@ fun HostCard(
     onRemove: () -> Unit,
     onAppClick: (CdpPage) -> Unit,
     onAppClose: (CdpPage) -> Unit,
-    onAppKill: (CdpPage) -> Unit = {},
     appOrder: List<String> = emptyList(),
     onReorder: (List<String>) -> Unit = {}
 ) {
