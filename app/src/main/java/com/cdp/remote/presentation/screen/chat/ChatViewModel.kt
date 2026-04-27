@@ -770,6 +770,10 @@ class ChatViewModel(
                 val row = elem.asJsonObject
                 val name = row.get("name")?.asString.orEmpty()
                 if (name.isBlank()) return@mapNotNull null
+                val lowerName = name.lowercase()
+                if (!lowerName.contains("gemini 3.1 pro (high)") &&
+                    !lowerName.contains("claude opus")
+                ) return@mapNotNull null
                 val remaining = row.get("remaining")?.asString.orEmpty()
                 val reset = row.get("reset")?.asString
                     ?.replace("Refreshes in", "刷新")
