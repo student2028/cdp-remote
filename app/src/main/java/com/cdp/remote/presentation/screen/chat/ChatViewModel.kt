@@ -155,6 +155,7 @@ class ChatViewModel(
     }
 
     private fun saveCurrentDraft() {
+        if (uiState.isGenerating && uiState.inputText.isBlank() && uiState.pendingImages.isEmpty()) return
         ChatDraftStore.save(draftKey, uiState.inputText, uiState.pendingImages)
     }
 
@@ -167,7 +168,15 @@ class ChatViewModel(
     }
 
     private fun restoreDraft(text: String, images: List<PendingImage>) {
-        saveDraft(text = text, images = images)
+        restoreDraftForKey(draftKey, text, images)
+    }
+
+    private fun restoreDraftForKey(key: String, text: String, images: List<PendingImage>) {
+        ChatDraftStore.save(key, text, images)
+        if (key != draftKey) {
+            uiState = uiState.copy(isGenerating = false)
+            return
+        }
         uiState = uiState.copy(
             inputText = text,
             pendingImages = images,
@@ -276,7 +285,7 @@ class ChatViewModel(
 
         if (!hasCommands()) {
             updateError("未连接")
-            restoreDraft(text, images)
+            restoreDraftForKey(sendDraftKey, text, images)
             return
         }
 
@@ -360,7 +369,7 @@ class ChatViewModel(
                 }
             } else {
                 val userStartedNextDraft = uiState.inputText.isNotBlank() || uiState.pendingImages.isNotEmpty()
-                if (!userStartedNextDraft) restoreDraft(text, imagesToSend)
+                if (!userStartedNextDraft) restoreDraftForKey(sendDraftKey, text, imagesToSend)
                 else saveCurrentDraft()
             }
 

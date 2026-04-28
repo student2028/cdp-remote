@@ -62,9 +62,9 @@ class ChatViewModelTest {
 
     @Test
     fun `sendMessage adds user message and clears input`() = runTest {
+        installAntigravityCommands()
         vm.updateInputText("帮我写一个排序算法")
         vm.sendMessage()
-        advanceUntilIdle()
 
         val userMsgs = vm.uiState.messages.filter { it.role == MessageRole.USER }
         assertEquals("应有且仅有1条用户消息", 1, userMsgs.size)
@@ -74,6 +74,7 @@ class ChatViewModelTest {
 
     @Test
     fun `sendMessage enters generating state immediately`() {
+        installAntigravityCommands()
         vm.updateInputText("Test")
         vm.sendMessage()
         assertTrue("发送后应立即标记为生成中", vm.uiState.isGenerating)
@@ -209,6 +210,27 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `in flight draft survives switching away and back`() {
+        val oldKey = "10.0.0.1|9333|ws://old|Antigravity"
+        setPrivateField("draftKey", oldKey)
+        setPrivateField("commands", AntigravityCommands(fakeCdp, "Antigravity"))
+
+        vm.attachImage("img1", "image/png")
+        vm.updateInputText("发送中不能丢")
+        vm.sendMessage()
+
+        assertEquals("", vm.uiState.inputText)
+        assertTrue(vm.uiState.pendingImages.isEmpty())
+        assertTrue(vm.uiState.isGenerating)
+
+        vm.connect("10.0.0.2", 9333, "ws://new", "Antigravity")
+        vm.connect("10.0.0.1", 9333, "ws://old", "Antigravity")
+
+        assertEquals("发送中不能丢", vm.uiState.inputText)
+        assertEquals(1, vm.uiState.pendingImages.size)
+    }
+
+    @Test
     fun `takeScreenshot uses injected cdpClient directly`() = runTest {
         val fakeScreenshot = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47) // PNG magic
         fakeCdp.screenshotResult = CdpResult.Success(fakeScreenshot)
@@ -237,6 +259,7 @@ class ChatViewModelTest {
     @Test
     fun `stopGeneration resets isGenerating flag`() = runTest {
         // 先手动设置为生成中
+        installAntigravityCommands()
         vm.updateInputText("test")
         vm.sendMessage()  // sets isGenerating = true
         assertTrue(vm.uiState.isGenerating)
@@ -350,5 +373,19 @@ class ChatViewModelTest {
             CdpResult.Success(byteArrayOf())
         override fun addEventListener(event: String, listener: (JsonObject) -> Unit) {}
         override fun removeEventListeners(event: String) {}
+    }
+
+    private fun setPrivateField(name: String, value: Any?) {
+        ChatViewModel::class.java.getDeclaredField(name).apply {
+            isAccessible = true
+            set(vm, value)
+        }
+    }
+
+    private fun installAntigravityCommands(
+        key: String = "127.0.0.1|9333|ws://test|Antigravity"
+    ) {
+        setPrivateField("draftKey", key)
+        setPrivateField("commands", AntigravityCommands(fakeCdp, "Antigravity"))
     }
 }
