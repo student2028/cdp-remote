@@ -12,6 +12,30 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+private data class ChatDraft(
+    val text: String = "",
+    val images: List<PendingImage> = emptyList()
+)
+
+private object ChatDraftStore {
+    private val drafts = mutableMapOf<String, ChatDraft>()
+
+    @Synchronized
+    fun save(key: String, text: String, images: List<PendingImage>) {
+        if (key.isBlank()) return
+        if (text.isBlank() && images.isEmpty()) drafts.remove(key)
+        else drafts[key] = ChatDraft(text, images)
+    }
+
+    @Synchronized
+    fun load(key: String): ChatDraft = drafts[key] ?: ChatDraft()
+
+    @Synchronized
+    fun clear(key: String) {
+        if (key.isNotBlank()) drafts.remove(key)
+    }
+}
+
 class ChatViewModel(
     private val cdpClient: ICdpClient = CdpClient()
 ) : ViewModel() {
@@ -32,6 +56,7 @@ class ChatViewModel(
     private var isWindsurf: Boolean = false
     private var connectHost: HostInfo? = null
     private var connectWsUrl: String = ""
+    private var draftKey: String = ""
     private var lastReplyText: String = ""
     private var pollJob: Job? = null
     private var pollCount: Int = 0
@@ -100,7 +125,17 @@ class ChatViewModel(
 
     fun connect(hostIp: String, hostPort: Int, wsUrl: String, appName: String) {
         val host = HostInfo(hostIp, hostPort)
-        uiState = uiState.copy(connectionState = ConnectionState.CONNECTING, appName = appName)
+        saveCurrentDraft()
+        draftKey = buildDraftKey(hostIp, hostPort, wsUrl, appName)
+        val draft = ChatDraftStore.load(draftKey)
+        uiState = uiState.copy(
+            connectionState = ConnectionState.CONNECTING,
+            appName = appName,
+            inputText = draft.text,
+            pendingImages = draft.images,
+            pendingImageBase64 = draft.images.lastOrNull()?.base64,
+            pendingImageMimeType = draft.images.lastOrNull()?.mimeType
+        )
         connectHost = host
         connectWsUrl = wsUrl
 
@@ -113,6 +148,33 @@ class ChatViewModel(
                 }
             }
         }
+    }
+
+    private fun buildDraftKey(hostIp: String, hostPort: Int, wsUrl: String, appName: String): String {
+        return listOf(hostIp.trim(), hostPort.toString(), wsUrl.trim(), appName.trim()).joinToString("|")
+    }
+
+    private fun saveCurrentDraft() {
+        ChatDraftStore.save(draftKey, uiState.inputText, uiState.pendingImages)
+    }
+
+    private fun saveDraft(text: String = uiState.inputText, images: List<PendingImage> = uiState.pendingImages) {
+        ChatDraftStore.save(draftKey, text, images)
+    }
+
+    private fun clearDraft() {
+        ChatDraftStore.clear(draftKey)
+    }
+
+    private fun restoreDraft(text: String, images: List<PendingImage>) {
+        saveDraft(text = text, images = images)
+        uiState = uiState.copy(
+            inputText = text,
+            pendingImages = images,
+            pendingImageBase64 = images.lastOrNull()?.base64,
+            pendingImageMimeType = images.lastOrNull()?.mimeType,
+            isGenerating = false
+        )
     }
 
     private suspend fun doConnect(host: HostInfo, wsUrl: String, appName: String) {
@@ -187,26 +249,32 @@ class ChatViewModel(
 
     fun updateInputText(text: String) {
         uiState = uiState.copy(inputText = text)
+        saveDraft(text = text)
     }
 
     fun sendMessage() {
         val text = uiState.inputText.trim()
         val images = uiState.pendingImages
         if (text.isBlank() && images.isEmpty()) return
+        saveDraft(text = text, images = images)
 
         val imgLabel = if (images.isNotEmpty()) "📷 [${images.size}张图片] " else ""
         val displayText = "$imgLabel$text".trim()
         val userMsg = ChatMessage(role = MessageRole.USER, content = displayText)
         val msgs = uiState.messages + userMsg
-        uiState = uiState.copy(messages = msgs, inputText = "", isGenerating = true, error = null)
+        uiState = uiState.copy(messages = msgs, isGenerating = true, error = null)
 
-        if (!hasCommands()) { updateError("未连接"); return }
+        if (!hasCommands()) {
+            updateError("未连接")
+            restoreDraft(text, images)
+            return
+        }
 
-        // Snapshot and clear pending images
+        // Snapshot draft. Do not clear it until CDP confirms the whole send path succeeded.
         val imagesToSend = images.toList()
-        uiState = uiState.copy(pendingImages = emptyList(), pendingImageBase64 = null, pendingImageMimeType = null)
 
         viewModelScope.launch {
+            var sendSucceeded = true
             // 图片+文字组合发送：先粘贴所有图片（不发送），再输入文字后一起发送
             if (imagesToSend.isNotEmpty() && text.isNotEmpty()) {
                 // Step 1: Paste images only (no Enter)
@@ -217,20 +285,25 @@ class ChatViewModel(
                         else -> commands!!.pasteImage(img.base64, img.mimeType)
                     }
                     if (pasteResult is CdpResult.Error) {
+                        sendSucceeded = false
                         addSystemMessage("第${index + 1}张图片粘贴失败: ${pasteResult.message} ❌")
+                        break
                     }
                     delay(500) // 等待 UI 渲染图片预览
                 }
 
                 // Step 2: Send text (types text + presses Enter, sending image+text together)
-                val result = when {
-                    isClaudeCode -> claudeCodeCommands!!.sendMessage(text)
-                    isCodex -> codexCommands!!.sendMessage(text)
-                    else -> commands!!.sendMessage(text)
-                }
-                if (result is CdpResult.Error) {
-                    uiState = uiState.copy(error = "发送失败: ${result.message}")
-                    addSystemMessage("发送失败: ${result.message} ❌")
+                if (sendSucceeded) {
+                    val result = when {
+                        isClaudeCode -> claudeCodeCommands!!.sendMessage(text)
+                        isCodex -> codexCommands!!.sendMessage(text)
+                        else -> commands!!.sendMessage(text)
+                    }
+                    if (result is CdpResult.Error) {
+                        sendSucceeded = false
+                        uiState = uiState.copy(error = "发送失败: ${result.message}")
+                        addSystemMessage("发送失败: ${result.message} ❌")
+                    }
                 }
             } else if (imagesToSend.isNotEmpty()) {
                 // 只有图片没有文字：用 sendImage（粘贴 + 发送）
@@ -241,7 +314,9 @@ class ChatViewModel(
                         else -> commands!!.sendImage(img.base64, img.mimeType)
                     }
                     if (imgResult is CdpResult.Error) {
+                        sendSucceeded = false
                         addSystemMessage("第${index + 1}张图片发送失败: ${imgResult.message} ❌")
+                        break
                     }
                 }
             } else if (text.isNotEmpty()) {
@@ -252,9 +327,28 @@ class ChatViewModel(
                     else -> commands!!.sendMessage(text)
                 }
                 if (result is CdpResult.Error) {
+                    sendSucceeded = false
                     uiState = uiState.copy(error = "发送失败: ${result.message}")
                     addSystemMessage("发送失败: ${result.message} ❌")
                 }
+            }
+
+            if (sendSucceeded) {
+                val stillSameDraft = uiState.inputText.trim() == text &&
+                    uiState.pendingImages.map { it.id } == imagesToSend.map { it.id }
+                if (stillSameDraft) {
+                    clearDraft()
+                    uiState = uiState.copy(
+                        inputText = "",
+                        pendingImages = emptyList(),
+                        pendingImageBase64 = null,
+                        pendingImageMimeType = null
+                    )
+                } else {
+                    saveCurrentDraft()
+                }
+            } else {
+                restoreDraft(text, imagesToSend)
             }
 
             // Start background sync after message send
@@ -457,6 +551,7 @@ class ChatViewModel(
             pendingImageBase64 = base64Data,
             pendingImageMimeType = mimeType
         )
+        saveDraft()
     }
 
     fun removeImage(imageId: Long) {
@@ -466,6 +561,7 @@ class ChatViewModel(
             pendingImageBase64 = updated.lastOrNull()?.base64,
             pendingImageMimeType = updated.lastOrNull()?.mimeType
         )
+        saveDraft(images = updated)
     }
 
     fun clearPendingImage() {
@@ -474,6 +570,7 @@ class ChatViewModel(
             pendingImageBase64 = null,
             pendingImageMimeType = null
         )
+        saveDraft(images = emptyList())
     }
 
     // ─── IDE Actions ────────────────────────────────────────────────
@@ -1446,6 +1543,7 @@ class ChatViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        saveCurrentDraft()
         stopSync()
         cdpClient.disconnect()
     }
