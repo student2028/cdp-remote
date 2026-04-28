@@ -377,7 +377,7 @@ fun InputBar(
                             )
                         }
                         // Send button — always send, never stop (stop is in toolbar)
-                        val canSend = isConnected && (text.isNotBlank() || pendingImages.isNotEmpty())
+                        val canSend = isConnected && !isGenerating && (text.isNotBlank() || pendingImages.isNotEmpty())
                         Box(
                             modifier = Modifier
                                 .size(32.dp)
@@ -395,7 +395,7 @@ fun InputBar(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.KeyboardArrowUp,
-                                    contentDescription = "发送",
+                                    contentDescription = if (isGenerating) "发送中" else "发送",
                                     modifier = Modifier.size(18.dp),
                                     tint = if (canSend) MaterialTheme.colorScheme.surface
                                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)

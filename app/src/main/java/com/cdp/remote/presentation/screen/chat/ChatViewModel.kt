@@ -253,16 +253,26 @@ class ChatViewModel(
     }
 
     fun sendMessage() {
+        if (uiState.isGenerating) return
         val text = uiState.inputText.trim()
         val images = uiState.pendingImages
         if (text.isBlank() && images.isEmpty()) return
         saveDraft(text = text, images = images)
+        val sendDraftKey = draftKey
 
         val imgLabel = if (images.isNotEmpty()) "📷 [${images.size}张图片] " else ""
         val displayText = "$imgLabel$text".trim()
         val userMsg = ChatMessage(role = MessageRole.USER, content = displayText)
         val msgs = uiState.messages + userMsg
-        uiState = uiState.copy(messages = msgs, isGenerating = true, error = null)
+        uiState = uiState.copy(
+            messages = msgs,
+            inputText = "",
+            pendingImages = emptyList(),
+            pendingImageBase64 = null,
+            pendingImageMimeType = null,
+            isGenerating = true,
+            error = null
+        )
 
         if (!hasCommands()) {
             updateError("未连接")
@@ -334,10 +344,11 @@ class ChatViewModel(
             }
 
             if (sendSucceeded) {
-                val stillSameDraft = uiState.inputText.trim() == text &&
-                    uiState.pendingImages.map { it.id } == imagesToSend.map { it.id }
+                val currentDraft = ChatDraftStore.load(sendDraftKey)
+                val stillSameDraft = currentDraft.text.trim() == text &&
+                    currentDraft.images.map { it.id } == imagesToSend.map { it.id }
                 if (stillSameDraft) {
-                    clearDraft()
+                    ChatDraftStore.clear(sendDraftKey)
                     uiState = uiState.copy(
                         inputText = "",
                         pendingImages = emptyList(),
@@ -348,7 +359,9 @@ class ChatViewModel(
                     saveCurrentDraft()
                 }
             } else {
-                restoreDraft(text, imagesToSend)
+                val userStartedNextDraft = uiState.inputText.isNotBlank() || uiState.pendingImages.isNotEmpty()
+                if (!userStartedNextDraft) restoreDraft(text, imagesToSend)
+                else saveCurrentDraft()
             }
 
             // Start background sync after message send

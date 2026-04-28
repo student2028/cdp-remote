@@ -232,10 +232,15 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
 
         val chunkSize = 50000
         val chunks = base64Data.chunked(chunkSize)
-        cdp.evaluate("window.__pasteImageB64 = '';")
+        val initResult = cdp.evaluate("window.__pasteImageB64 = '';")
+        if (initResult is CdpResult.Error) return CdpResult.Error("初始化图片传输失败: ${initResult.message}")
         for (chunk in chunks) {
-            val escaped = chunk.replace("'", "\\'")
-            cdp.evaluate("window.__pasteImageB64 += '$escaped';")
+            val literal = com.google.gson.JsonPrimitive(chunk).toString()
+            val appendResult = cdp.evaluate("window.__pasteImageB64 += $literal;")
+            if (appendResult is CdpResult.Error) {
+                cdp.evaluate("window.__pasteImageB64 = null;")
+                return CdpResult.Error("图片分块传输失败: ${appendResult.message}")
+            }
         }
 
         val result = cdp.evaluate("""
@@ -277,6 +282,10 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
                     
                     var base64 = window.__pasteImageB64;
                     if (!base64 || base64.length === 0) return 'no-data';
+                    base64 = String(base64).replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+                    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length % 4 === 1) {
+                        return 'bad-base64:' + base64.length;
+                    }
                     
                     var binary = atob(base64);
                     var bytes = new Uint8Array(binary.length);
