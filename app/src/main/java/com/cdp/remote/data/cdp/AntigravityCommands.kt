@@ -224,7 +224,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     /**
      * 点击发送按钮 - 更智能的查找或回车模拟
      */
-    suspend fun clickSendButton(): CdpResult<Boolean> {
+    open suspend fun clickSendButton(): CdpResult<Boolean> {
         val result = cdp.evaluate("""
             (function() {
                 var container = document.getElementById('$INPUT_BOX_ID');
@@ -286,7 +286,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     /**
      * 发送完整消息（聚焦 + 设置文字 + 点击发送）
      */
-    suspend fun sendMessage(text: String): CdpResult<Unit> {
+    open suspend fun sendMessage(text: String): CdpResult<Unit> {
         focusInput().let { if (it is CdpResult.Error) return CdpResult.Error("聚焦失败: ${it.message}") }
         delay(100)
         setInputText(text).let { if (it is CdpResult.Error) return CdpResult.Error("输入失败: ${it.message}") }

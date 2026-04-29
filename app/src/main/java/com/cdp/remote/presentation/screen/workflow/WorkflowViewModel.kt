@@ -315,7 +315,15 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             try {
                 val ides = fetchIdes()
-                uiState = uiState.copy(availableIdes = ides, isLoadingIdes = false)
+                val mergedIdes = mergeWorkflowDefaultIdes(ides)
+                uiState = uiState.copy(
+                    availableIdes = mergedIdes,
+                    isLoadingIdes = false,
+                    brainIde = uiState.brainIde.ifBlank { "Antigravity" },
+                    brainSelectedPort = uiState.brainSelectedPort.takeIf { it != 0 } ?: 9333,
+                    workerIde = uiState.workerIde.ifBlank { "Windsurf" },
+                    workerSelectedPort = uiState.workerSelectedPort.takeIf { it != 0 } ?: 9444,
+                )
                 // 同时拉取 CWD 历史
                 fetchCwdHistory()
             } catch (e: Exception) {
@@ -355,6 +363,10 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     activeCwd = status.cwd,
                     activeBrainIde = status.brainIde,
                     activeWorkerIde = status.workerIde,
+                    reviewRound = status.reviewRound,
+                    minReviewRounds = status.minReviewRounds,
+                    lastReviewVerdict = status.lastReviewVerdict,
+                    eventLog = status.eventLog,
                     lastError = status.lastError,
                     lastFinishedState = status.lastFinishedState,
                 )
@@ -513,7 +525,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     SchedulerViewModel.extractErrorMessage(body, "HTTP ${response.code}")
                 )
             }
-            SchedulerViewModel.parseIdesJsonOrThrow(body)
+            mergeWorkflowDefaultIdes(SchedulerViewModel.parseIdesJsonOrThrow(body))
         }
     }
 
@@ -548,12 +560,42 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         private const val TAG = "WorkflowVM"
         private const val POLL_INTERVAL_MS = 2_000L
 
+        private val workflowDefaultIdes = listOf(
+            IdeInfo("Antigravity", 9333, "可自动启动", emoji = "🚀"),
+            IdeInfo("Windsurf", 9444, "可自动启动", emoji = "🏄"),
+            IdeInfo("Cursor", 9233, "可自动启动", emoji = "🖱️"),
+            IdeInfo("Codex", 9666, "可自动启动", emoji = "📦"),
+        )
+
+        internal fun mergeWorkflowDefaultIdes(onlineIdes: List<IdeInfo>): List<IdeInfo> {
+            val byKey = linkedMapOf<Pair<String, Int>, IdeInfo>()
+            workflowDefaultIdes.forEach { byKey[it.name to it.port] = it }
+            onlineIdes.forEach { byKey[it.name to it.port] = it }
+            return byKey.values.toList()
+        }
+
         /** 解析 /workflow/status 响应（可独立测试） */
         internal fun parseStatusJson(json: String): WorkflowStatusDto {
             val obj = JsonParser.parseString(json).asJsonObject
             fun objOrNull(key: String) = obj.get(key)?.takeIf { it.isJsonObject }?.asJsonObject
             val brain = objOrNull("brain")
             val worker = objOrNull("worker")
+            val events = obj.get("eventLog")
+                ?.takeIf { it.isJsonArray }
+                ?.asJsonArray
+                ?.mapNotNull { el ->
+                    val event = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+                    WorkflowEvent(
+                        type = event.get("type")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        from = event.get("from")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        to = event.get("to")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        verb = event.get("verb")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        hash = event.get("hash")?.takeIf { !it.isJsonNull }?.asString,
+                        summary = event.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        time = event.get("time")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    )
+                }
+                ?: emptyList()
             return WorkflowStatusDto(
                 state = obj.get("state")?.asString ?: "IDLE",
                 elapsedMs = obj.get("elapsed_ms")?.asLong ?: 0,
@@ -563,6 +605,10 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                 workerPort = worker?.get("port")?.takeIf { !it.isJsonNull }?.asInt,
                 brainIde = brain?.get("ide")?.takeIf { !it.isJsonNull }?.asString,
                 workerIde = worker?.get("ide")?.takeIf { !it.isJsonNull }?.asString,
+                reviewRound = obj.get("reviewRound")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                minReviewRounds = obj.get("minReviewRounds")?.takeIf { !it.isJsonNull }?.asInt ?: 3,
+                lastReviewVerdict = obj.get("lastReviewVerdict")?.takeIf { !it.isJsonNull }?.asString,
+                eventLog = events,
                 lastError = obj.get("lastError")?.takeIf { !it.isJsonNull }?.asString,
                 lastFinishedState = obj.get("lastFinishedState")?.takeIf { !it.isJsonNull }?.asString,
             )
@@ -618,6 +664,10 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         val workerPort: Int?,
         val brainIde: String? = null,
         val workerIde: String? = null,
+        val reviewRound: Int = 0,
+        val minReviewRounds: Int = 3,
+        val lastReviewVerdict: String? = null,
+        val eventLog: List<WorkflowEvent> = emptyList(),
         val lastError: String? = null,
         val lastFinishedState: String? = null,
     )

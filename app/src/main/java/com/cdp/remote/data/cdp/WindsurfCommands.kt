@@ -24,6 +24,159 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         private const val TAG = "WindsurfCmds"
     }
 
+    // ─────────────────── 发送消息 (Windsurf Lexical 编辑器) ───────────────────
+
+    /**
+     * Windsurf 使用 Lexical 编辑器 (data-lexical-editor="true")：
+     * - 没有 <form>，button[type=submit] 的 .click() 无法触发发送
+     * - 发送由 React fiber 上的 onEnter(KeyboardEvent) 回调控制
+     * - onEnter 内部会检查 am (isGenerating)，为 true 时直接拒绝
+     * - Input.insertText (CDP 原生) 能正确同步 Lexical 内部状态
+     * - 清空需要用 CDP 键盘事件 (Cmd+A + Backspace)
+     *
+     * 通过 CDP 实测验证的完整流程：
+     * 1. 检测 am 状态（用 altKey 技巧调用 onEnter 判断返回值）
+     * 2. CDP 鼠标点击输入框获取真实焦点
+     * 3. Cmd+A + Backspace 清空
+     * 4. Input.insertText 输入文字
+     * 5. onEnter(KeyboardEvent{shiftKey:false}) 触发发送
+     */
+    override suspend fun sendMessage(text: String): CdpResult<Unit> {
+        // Step 1: 等待 isGenerating=false（最多 60 秒）
+        // 用 altKey 技巧检测: onEnter({altKey:true}) 如果返回 false 说明 am=true
+        Log.d(TAG, "Windsurf sendMessage: 检查生成状态...")
+        for (i in 0 until 120) {
+            val amCheck = cdp.evaluate("""
+                (function() {
+                    var el = document.querySelector('[data-lexical-editor="true"]');
+                    if (!el) return 'no-lexical';
+                    var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+                    if (!fiberKey) return 'no-fiber';
+                    var fiber = el[fiberKey];
+                    var current = fiber;
+                    for (var j = 0; j < 30 && current; j++) {
+                        if (current.memoizedProps && typeof current.memoizedProps.onEnter === 'function') {
+                            var e = new KeyboardEvent('keydown', { key: 'Enter', altKey: true, shiftKey: false });
+                            return current.memoizedProps.onEnter(e) === false ? 'generating' : 'idle';
+                        }
+                        current = current.return;
+                    }
+                    return 'idle';
+                })()
+            """.trimIndent())
+            if (amCheck.getOrNull() != "generating") break
+            if (i == 119) {
+                Log.w(TAG, "等待生成完毕超时")
+                return CdpResult.Error("Windsurf 仍在生成中，无法发送新消息")
+            }
+            delay(500)
+        }
+
+        // Step 2: CDP 鼠标点击 Lexical 输入框获取真实焦点
+        val clickResult = cdp.evaluate("""
+            (function() {
+                var el = document.querySelector('[data-lexical-editor="true"]');
+                if (!el) return 'no-lexical';
+                if (!el.offsetParent) return 'not-visible';
+                var r = el.getBoundingClientRect();
+                return JSON.stringify({x: Math.round(r.x + 10), y: Math.round(r.y + r.height / 2)});
+            })()
+        """.trimIndent())
+        val posJson = clickResult.getOrNull() ?: ""
+        if (posJson.startsWith("{")) {
+            try {
+                val pos = JsonParser.parseString(posJson).asJsonObject
+                val x = pos.get("x").asDouble
+                val y = pos.get("y").asDouble
+                cdp.call("Input.dispatchMouseEvent", JsonObject().apply {
+                    addProperty("type", "mousePressed"); addProperty("x", x); addProperty("y", y)
+                    addProperty("button", "left"); addProperty("clickCount", 1)
+                })
+                delay(30)
+                cdp.call("Input.dispatchMouseEvent", JsonObject().apply {
+                    addProperty("type", "mouseReleased"); addProperty("x", x); addProperty("y", y)
+                    addProperty("button", "left"); addProperty("clickCount", 1)
+                })
+            } catch (e: Exception) {
+                Log.w(TAG, "CDP 鼠标点击失败: ${e.message}")
+            }
+        }
+        delay(100)
+
+        // Step 3: Cmd+A + Backspace 清空（CDP 键盘事件，Lexical 能正确响应）
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyDown"); addProperty("key", "a"); addProperty("code", "KeyA")
+            addProperty("modifiers", 4); addProperty("windowsVirtualKeyCode", 65)
+        })
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyUp"); addProperty("key", "a"); addProperty("code", "KeyA")
+            addProperty("modifiers", 4); addProperty("windowsVirtualKeyCode", 65)
+        })
+        delay(30)
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyDown"); addProperty("key", "Backspace"); addProperty("code", "Backspace")
+            addProperty("windowsVirtualKeyCode", 8)
+        })
+        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+            addProperty("type", "keyUp"); addProperty("key", "Backspace"); addProperty("code", "Backspace")
+            addProperty("windowsVirtualKeyCode", 8)
+        })
+        delay(200)
+
+        // Step 4: Input.insertText（CDP 原生，能正确同步 Lexical 内部状态）
+        val insertResult = cdp.call("Input.insertText", JsonObject().apply {
+            addProperty("text", text)
+        })
+        if (insertResult is CdpResult.Error) {
+            Log.w(TAG, "Input.insertText 失败: ${insertResult.message}")
+            return CdpResult.Error("输入失败: ${insertResult.message}")
+        }
+        delay(300)
+
+        // Step 5: 通过 React fiber 调用 onEnter 发送
+        val sendResult = cdp.evaluate("""
+            (function() {
+                var el = document.querySelector('[data-lexical-editor="true"]');
+                if (!el) return 'no-lexical';
+                
+                var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+                if (!fiberKey) return 'no-fiber';
+                
+                var fiber = el[fiberKey];
+                var current = fiber;
+                for (var j = 0; j < 30 && current; j++) {
+                    if (current.memoizedProps && typeof current.memoizedProps.onEnter === 'function') {
+                        var fakeEvent = new KeyboardEvent('keydown', {
+                            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                            shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+                            bubbles: true, cancelable: true
+                        });
+                        try {
+                            Object.defineProperty(fakeEvent, 'preventDefault', { value: function() {} });
+                            Object.defineProperty(fakeEvent, 'stopPropagation', { value: function() {} });
+                        } catch(e) {}
+                        var ret = current.memoizedProps.onEnter(fakeEvent);
+                        return ret ? 'sent' : 'rejected';
+                    }
+                    current = current.return;
+                }
+                return 'no-onEnter';
+            })()
+        """.trimIndent())
+
+        val sendValue = sendResult.getOrNull() ?: ""
+        Log.d(TAG, "Windsurf onEnter result: $sendValue")
+
+        if (sendValue == "sent") {
+            return CdpResult.Success(Unit)
+        }
+
+        // 降级: 如果 onEnter 不可用或被拒绝，用父类的 clickSendButton
+        Log.d(TAG, "onEnter 未成功 ($sendValue)，降级到 clickSendButton")
+        clickSendButton()
+        return CdpResult.Success(Unit)
+    }
+
     // ─────────────────── Action 确认 (Run / Skip) ───────────────────
 
     override suspend fun autoAcceptActions(): Boolean {

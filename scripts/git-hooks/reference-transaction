@@ -1,0 +1,32 @@
+#!/bin/bash
+# Git hook for cdp-remote workflow.
+# Installed into target repositories by /workflow/start.
+set -euo pipefail
+
+[ "${1:-}" = "committed" ] || exit 0
+
+while read -r OLDREV NEWREV REFNAME; do
+  case "$REFNAME" in
+    refs/heads/main|refs/heads/master|refs/orchestra/pipeline) ;;
+    *) continue ;;
+  esac
+
+  MSG=$(git log -1 --pretty=%B "$NEWREV" 2>/dev/null || echo "")
+  PAYLOAD=$(python3 - "$MSG" "$REFNAME" "$NEWREV" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "message": sys.argv[1],
+    "ref": sys.argv[2],
+    "hash": sys.argv[3],
+}, ensure_ascii=False))
+PY
+)
+
+  curl -s --max-time 2 --fail \
+       -X POST http://127.0.0.1:19336/workflow/next \
+       -H "Content-Type: application/json" \
+       -d "$PAYLOAD" \
+       > /dev/null 2>> .git/orchestra.log &
+done

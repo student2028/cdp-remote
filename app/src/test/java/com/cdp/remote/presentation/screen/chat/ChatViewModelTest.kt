@@ -80,6 +80,25 @@ class ChatViewModelTest {
         assertTrue("发送后应立即标记为生成中", vm.uiState.isGenerating)
     }
 
+    @Test
+    fun `sendMessage accepts next draft after previous delivery while IDE is generating`() = runTest {
+        installAntigravityCommands()
+        vm.updateInputText("第一条")
+        vm.sendMessage()
+
+        // 让 CDP 输入/点击发送链路跑完，但不推进到后台轮询结束。
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue("远端生成状态仍可继续用于停止/同步", vm.uiState.isGenerating)
+
+        vm.updateInputText("第二条")
+        vm.sendMessage()
+
+        val userMsgs = vm.uiState.messages.filter { it.role == MessageRole.USER }
+        assertEquals("第一条送达后，手机端应允许继续发送下一条", 2, userMsgs.size)
+        assertTrue(userMsgs[1].content.contains("第二条"))
+    }
+
     // ─── 图片+文字组合发送 — 曾经出过消息拆分 bug ──────────────────
 
     @Test

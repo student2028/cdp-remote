@@ -196,15 +196,16 @@ class SchedulerViewModelTest {
     }
 
     @Test
-    fun `IDE with multiple valid workbench pages`() {
+    fun `IDE with multiple valid workbench pages is shown once per port`() {
         val json = """{"targets":[
             {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[
-                {"type":"page","url":"file:///workbench.html","title":"Windsurf Main","webSocketDebuggerUrl":"ws://t/1"},
-                {"type":"page","url":"file:///workbench2.html","title":"Windsurf Secondary","webSocketDebuggerUrl":"ws://t/2"}
+                {"type":"page","url":"file:///workbench-jetski-agent.html","title":"Settings","webSocketDebuggerUrl":"ws://t/1"},
+                {"type":"page","url":"file:///workbench.html","title":"Windsurf Main","webSocketDebuggerUrl":"ws://t/2"}
             ]}
         ]}"""
         val ides = SchedulerViewModel.parseIdesJson(json)
-        assertEquals(2, ides.size) // 两个 workbench 页面都保留
+        assertEquals(1, ides.size)
+        assertEquals("Windsurf Main", ides[0].title)
     }
 
     @Test

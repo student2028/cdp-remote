@@ -22,7 +22,19 @@ function parseBrainVerdict(replyText) {
         summary = summaryMatch[1].trim();
     }
 
-    return { verdict, issues, summary };
+    let nextAction = '';
+    const actionMatch = replyText.match(/NEXT_ACTION\s*[:：]\s*(REVIEW|TASK|DONE)/i);
+    if (actionMatch) {
+        nextAction = actionMatch[1].toUpperCase();
+    }
+
+    let nextTask = '';
+    const taskMatch = replyText.match(/[-—–]{2,}\s*NEXT[\s_]*TASK[\s_]*START\s*[-—–]{2,}\s*([\s\S]*?)\s*[-—–]{2,}\s*NEXT[\s_]*TASK[\s_]*END/i);
+    if (taskMatch && taskMatch[1].trim().length > 5) {
+        nextTask = taskMatch[1].trim();
+    }
+
+    return { verdict, issues, summary, nextAction, nextTask };
 }
 
 

@@ -1038,46 +1038,54 @@ fun LaunchIdeDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                cwdHistory.forEach { item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable {
-                                onCwdChange(item.path)
-                            }
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Folder,
-                            contentDescription = null,
-                            tint = purpleAccent,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            val parts = item.path.split("/").filter { it.isNotEmpty() }
-                            val shortPath = if (parts.size > 2) {
-                                ".../${parts.takeLast(2).joinToString("/")}"
-                            } else {
-                                item.path
-                            }
-                            Text(shortPath, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-                        }
-                        Box(
+                // 固定高度约 4 条，多的可以滑动
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 168.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    cwdHistory.forEach { item ->
+                        Row(
                             modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                                .clickable { onHistoryDelete(item.path) },
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    onCwdChange(item.path)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                Icons.Default.Close,
-                                contentDescription = "删除",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.size(14.dp)
+                                Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = purpleAccent,
+                                modifier = Modifier.size(20.dp)
                             )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                val parts = item.path.split("/").filter { it.isNotEmpty() }
+                                val shortPath = if (parts.size > 2) {
+                                    ".../${parts.takeLast(2).joinToString("/")}"
+                                } else {
+                                    item.path
+                                }
+                                Text(shortPath, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .clickable { onHistoryDelete(item.path) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "删除",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
                         }
                     }
                 }

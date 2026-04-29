@@ -462,6 +462,16 @@ private fun StatusCard(state: WorkflowUiState) {
                     )
                 }
 
+                if (!isIdle) {
+                    Spacer(Modifier.height(8.dp))
+                    WorkflowReviewMeta(state, accent)
+                }
+
+                if (state.eventLog.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    WorkflowEventLog(state.eventLog)
+                }
+
                 // Relay 错误
                 if (state.lastError != null) {
                     Spacer(Modifier.height(8.dp))
@@ -483,6 +493,105 @@ private fun StatusCard(state: WorkflowUiState) {
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkflowReviewMeta(state: WorkflowUiState, accent: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = accent.copy(alpha = 0.09f),
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                "审查 ${state.reviewRound}/${state.minReviewRounds}",
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        val verdict = state.lastReviewVerdict?.takeIf { it.isNotBlank() } ?: "等待判定"
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                verdict,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WorkflowEventLog(events: List<WorkflowEvent>) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.AccountTree,
+                    contentDescription = null,
+                    tint = purpleAccent.copy(alpha = 0.72f),
+                    modifier = Modifier.size(13.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "流水线事件",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            events.takeLast(3).asReversed().forEach { event ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        event.verb.ifBlank { event.type.ifBlank { "EVENT" } },
+                        modifier = Modifier.widthIn(min = 44.dp, max = 64.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = purpleAccent,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        event.summary.ifBlank { "${event.from} → ${event.to}" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    event.hash?.let {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                        )
                     }
                 }
             }

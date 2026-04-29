@@ -82,31 +82,7 @@ class ChatViewModel(
                         .build()
                     val response = httpClient.newCall(request).execute()
                     val body = response.body?.string() ?: return@withContext emptyList<CdpPage>()
-
-                    val root = com.google.gson.JsonParser.parseString(body).asJsonObject
-                    val targetsArray = root.getAsJsonArray("targets") ?: return@withContext emptyList<CdpPage>()
-
-                    val allPages = mutableListOf<CdpPage>()
-                    for (targetElem in targetsArray) {
-                        val target = targetElem.asJsonObject
-                        val pagesArray = target.getAsJsonArray("pages") ?: continue
-                        // target.appName 是中继按端口映射出的**权威** IDE 标识；走唯一通道
-                        // ElectronAppType.fromAppName 转成枚举一次性钉死，下游不再做任何推断。
-                        val pageAppType = ElectronAppType.fromAppName(target.get("appName")?.asString)
-                        for (pageElem in pagesArray) {
-                            val obj = pageElem.asJsonObject
-                            allPages.add(CdpPage(
-                                id = obj.get("id")?.asString ?: "",
-                                type = obj.get("type")?.asString ?: "",
-                                title = obj.get("title")?.asString ?: "",
-                                url = obj.get("url")?.asString ?: "",
-                                webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
-                                devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
-                                appType = pageAppType
-                            ))
-                        }
-                    }
-                    allPages
+                    IdeTargetsParser.parsePages(body)
                 }
                 
                 if (pages.isNotEmpty()) {
@@ -174,7 +150,7 @@ class ChatViewModel(
     private fun restoreDraftForKey(key: String, text: String, images: List<PendingImage>) {
         ChatDraftStore.save(key, text, images)
         if (key != draftKey) {
-            uiState = uiState.copy(isGenerating = false)
+            uiState = uiState.copy(isSendingMessage = false, isGenerating = false)
             return
         }
         uiState = uiState.copy(
@@ -182,6 +158,7 @@ class ChatViewModel(
             pendingImages = images,
             pendingImageBase64 = images.lastOrNull()?.base64,
             pendingImageMimeType = images.lastOrNull()?.mimeType,
+            isSendingMessage = false,
             isGenerating = false
         )
     }
@@ -262,7 +239,7 @@ class ChatViewModel(
     }
 
     fun sendMessage() {
-        if (uiState.isGenerating) return
+        if (uiState.isSendingMessage) return
         val text = uiState.inputText.trim()
         val images = uiState.pendingImages
         if (text.isBlank() && images.isEmpty()) return
@@ -279,6 +256,7 @@ class ChatViewModel(
             pendingImages = emptyList(),
             pendingImageBase64 = null,
             pendingImageMimeType = null,
+            isSendingMessage = true,
             isGenerating = true,
             error = null
         )
@@ -286,6 +264,7 @@ class ChatViewModel(
         if (!hasCommands()) {
             updateError("未连接")
             restoreDraftForKey(sendDraftKey, text, images)
+            uiState = uiState.copy(isSendingMessage = false)
             return
         }
 
@@ -362,21 +341,26 @@ class ChatViewModel(
                         inputText = "",
                         pendingImages = emptyList(),
                         pendingImageBase64 = null,
-                        pendingImageMimeType = null
+                        pendingImageMimeType = null,
+                        isSendingMessage = false
                     )
                 } else {
+                    uiState = uiState.copy(isSendingMessage = false)
                     saveCurrentDraft()
                 }
             } else {
                 val userStartedNextDraft = uiState.inputText.isNotBlank() || uiState.pendingImages.isNotEmpty()
                 if (!userStartedNextDraft) restoreDraftForKey(sendDraftKey, text, imagesToSend)
                 else saveCurrentDraft()
+                uiState = uiState.copy(isSendingMessage = false, isGenerating = false)
             }
 
             // Start background sync after message send
-            lastReplyText = ""
-            pollCount = 0
-            startBackgroundSync()
+            if (sendSucceeded) {
+                lastReplyText = ""
+                pollCount = 0
+                startBackgroundSync()
+            }
         }
     }
 
@@ -1024,25 +1008,7 @@ class ChatViewModel(
                 .build()
             val response = httpClient.newCall(request).execute()
             val body = response.body?.string().orEmpty()
-            val root = com.google.gson.JsonParser.parseString(body).asJsonObject
-            val targets = root.getAsJsonArray("targets")
-            targets?.forEach { targetElem ->
-                val target = targetElem.asJsonObject
-                val appType = ElectronAppType.fromAppName(target.get("appName")?.asString)
-                val pagesArray = target.getAsJsonArray("pages") ?: return@forEach
-                pagesArray.forEach { pageElem ->
-                    val obj = pageElem.asJsonObject
-                    pages.add(CdpPage(
-                        id = obj.get("id")?.asString ?: "",
-                        type = obj.get("type")?.asString ?: "",
-                        title = obj.get("title")?.asString ?: "",
-                        url = obj.get("url")?.asString ?: "",
-                        webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
-                        devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
-                        appType = appType
-                    ))
-                }
-            }
+            pages.addAll(IdeTargetsParser.parsePages(body))
         }
 
         if (pages.isEmpty()) {
@@ -1063,7 +1029,7 @@ class ChatViewModel(
 
     fun stopGeneration() {
         pollJob?.cancel()
-        uiState = uiState.copy(isGenerating = false)
+        uiState = uiState.copy(isGenerating = false, isSendingMessage = false)
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             when {

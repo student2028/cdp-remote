@@ -27,10 +27,15 @@ class HostListViewModel : ViewModel() {
         private const val TAG = "HostListVM"
         private const val TV_SCREENSHOT_TIMEOUT_MS = 3000L
         private const val TV_RECONNECT_THRESHOLD = 3
+        private const val TARGET_POLL_INTERVAL_MS = 5000L
     }
 
     var uiState by mutableStateOf(HostUiState())
         private set
+
+    /** 已知的 page ID 集合，用于检测新 target 出现 */
+    private var knownPageIds = setOf<String>()
+    private var targetPollJob: kotlinx.coroutines.Job? = null
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -142,11 +147,48 @@ class HostListViewModel : ViewModel() {
                     Log.e(TAG, "扫描 ${host.address} 失败", e)
                 }
             }
+            // 记录当前已知的 page ID 集合
+            knownPageIds = allApps.values.flatten().map { it.id }.toSet()
             uiState = uiState.copy(
                 isScanning = false,
                 discoveredApps = allApps,
                 scanError = if (allApps.isEmpty()) "未发现 IDE 应用，点击「远程启动」试试" else null
             )
+            // 启动后台 target 轮询（检测新弹窗）
+            startTargetPolling()
+        }
+    }
+
+    /** 后台轮询：检测新 target（弹窗/对话框），自动刷新列表 */
+    private fun startTargetPolling() {
+        targetPollJob?.cancel()
+        targetPollJob = viewModelScope.launch {
+            while (isActive) {
+                delay(TARGET_POLL_INTERVAL_MS)
+                try {
+                    val host = uiState.hosts.firstOrNull() ?: continue
+                    val pages = discoverViaTargets(host)
+                    if (pages.isEmpty()) continue
+
+                    val currentIds = pages.map { it.id }.toSet()
+                    val newIds = currentIds - knownPageIds
+                    val removedIds = knownPageIds - currentIds
+
+                    if (newIds.isNotEmpty() || removedIds.isNotEmpty()) {
+                        if (newIds.isNotEmpty()) {
+                            val newTitles = pages.filter { it.id in newIds }.joinToString { it.title.ifBlank { it.url.take(40) } }
+                            Log.d(TAG, "检测到新 target: $newTitles")
+                        }
+                        knownPageIds = currentIds
+                        // 自动更新列表
+                        val allApps = uiState.discoveredApps.toMutableMap()
+                        allApps[host.address] = pages
+                        uiState = uiState.copy(discoveredApps = allApps)
+                    }
+                } catch (e: Exception) {
+                    // 轮询失败不影响正常使用
+                }
+            }
         }
     }
 
@@ -192,33 +234,8 @@ class HostListViewModel : ViewModel() {
                 val response = httpClient.newCall(request).execute()
                 val body = response.use { it.body?.string() } ?: return@withContext emptyList()
 
-                // /targets returns: { "targets": [{ "cdpPort": 9333, "appName": "Antigravity", "pages": [...] }, ...] }
-                val root = JsonParser.parseString(body).asJsonObject
-                val targetsArray = root.getAsJsonArray("targets") ?: return@withContext emptyList()
-
-                val allPages = mutableListOf<CdpPage>()
-                for (targetElem in targetsArray) {
-                    val target = targetElem.asJsonObject
-                    val pagesArray = target.getAsJsonArray("pages") ?: continue
-                    // target.appName 是中继按端口映射出的**权威** IDE 标识；走唯一通道
-                    // ElectronAppType.fromAppName 转成枚举一次性钉死，下游不再做任何推断。
-                    // 不这样做的话，用户在 Windsurf 里打开 "CursorPresetModelsTest.kt" 就会
-                    // 被启发式误判为 Cursor（2026-04 的 9444 事故）。
-                    val pageAppType = ElectronAppType.fromAppName(target.get("appName")?.asString)
-                    for (pageElem in pagesArray) {
-                        val obj = pageElem.asJsonObject
-                        allPages.add(CdpPage(
-                            id = obj.get("id")?.asString ?: "",
-                            type = obj.get("type")?.asString ?: "",
-                            title = obj.get("title")?.asString ?: "",
-                            url = obj.get("url")?.asString ?: "",
-                            webSocketDebuggerUrl = obj.get("webSocketDebuggerUrl")?.asString ?: "",
-                            devtoolsFrontendUrl = obj.get("devtoolsFrontendUrl")?.asString ?: "",
-                            appType = pageAppType
-                        ))
-                    }
-                }
-                Log.d(TAG, "/targets 发现 ${allPages.size} 个页面 (${targetsArray.size()} 个 CDP 实例)")
+                val allPages = IdeTargetsParser.parsePages(body)
+                Log.d(TAG, "/targets 发现 ${allPages.size} 个页面")
                 allPages
             } catch (e: Exception) {
                 Log.d(TAG, "/targets 不可用: ${e.message}")
@@ -534,6 +551,7 @@ class HostListViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         stopTvMode()
+        targetPollJob?.cancel()
     }
 
     fun exitPortProcess(hostIp: String, hostPort: Int, cdpPort: Int) {

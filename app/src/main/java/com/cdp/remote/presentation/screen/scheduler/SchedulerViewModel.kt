@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.cdp.remote.data.cdp.IdeTargetsParser
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -263,31 +264,16 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         internal fun parseIdesJsonOrThrow(json: String): List<IdeInfo> {
-            val root = JsonParser.parseString(json).asJsonObject
-            val targets = root.getAsJsonArray("targets")
-                ?: throw IllegalStateException("缺少 targets 字段")
-            val result = mutableListOf<IdeInfo>()
-            for (t in targets) {
-                val obj = t.asJsonObject
-                val appName = obj.get("appName")?.asString ?: continue
-                val cdpPort = obj.get("cdpPort")?.asInt ?: continue
-                val emoji = obj.get("appEmoji")?.asString ?: ""
-                val workspace = obj.get("workspace")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                val pages = obj.getAsJsonArray("pages") ?: continue
-                for (p in pages) {
-                    val page = p.asJsonObject
-                    val type = page.get("type")?.asString ?: ""
-                    val pageUrl = page.get("url")?.asString ?: ""
-                    val title = page.get("title")?.asString ?: ""
-                    if (type == "page" && pageUrl.contains("workbench") && !title.contains("Launchpad")) {
-                        result.add(IdeInfo(
-                            name = appName, port = cdpPort, title = title,
-                            emoji = emoji, wsUrl = "", workspace = workspace
-                        ))
-                    }
-                }
+            return IdeTargetsParser.parseInstances(json).map { instance ->
+                IdeInfo(
+                    name = instance.name,
+                    port = instance.port,
+                    title = instance.title,
+                    emoji = instance.emoji,
+                    wsUrl = instance.wsUrl,
+                    workspace = instance.workspace
+                )
             }
-            return result
         }
 
         internal fun requireSuccessOrThrow(

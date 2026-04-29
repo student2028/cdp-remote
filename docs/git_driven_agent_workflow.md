@@ -78,11 +78,12 @@ Orchestra-Pipeline: pair_programming
 
 ---
 
-## 三、Relay 的角色：零 AI 状态机
+## 三、Relay 的角色：确定性状态机
 
-Voice7 / Relay 继续保持**零 AI、无脑**的纯净状态：
+Voice7 / Relay 本身不做代码判断，但会承担确定性的编排、守护和降级推进：
 
-- **触发源**：只有接收到 Git Hook 的 HTTP 请求，状态才会向前推一格。
+- **主触发源**：Git Hook 的 HTTP 请求推动状态前进。
+- **守护路径**：当 Hook 或 Agent 终端命令缺失时，watchdog 会读取 Brain 回复中的结构化 `TASK` / `VERDICT`，尽力自动补发 `orchestra` 事件。
 - **动作**：从状态转移表中提取一段固定的死文本 (Prompt)，通过 CDP 发送给下一个绑定的 IDE 窗口。
 - **归属识别**：Hook 同时上报 commit 所在的 **ref 名字**，Relay 据此**精确区分** 这次事件来自大脑（`refs/orchestra/pipeline`）还是工人（`refs/heads/main`），**不再依赖"前缀 + 当前状态" 的猜谜**。
 
@@ -292,7 +293,7 @@ echo "orchestra: $VERB → $REF @ ${NEW:0:7}"
 
 用 `reference-transaction` hook（Git 2.28+ 原生），比 `post-commit` 更底层，能捕获 `git update-ref` 等非 `git commit` 的操作。
 
-文件路径：`.git/hooks/reference-transaction`（记得 `chmod +x`）。
+模板文件路径：`scripts/git-hooks/reference-transaction`。Relay 启动流水线时会把它安装到目标仓库的 `.git/hooks/reference-transaction`。
 
 ```bash
 #!/bin/bash
@@ -445,17 +446,17 @@ Relay 对前端（Android 手机遥控器）暴露三个端点，用来**启动 
 |-------|---------|
 | 400 | 缺字段 / `brain == worker` / `cwd` 不是 Git 仓库 |
 | 409 | 当前流水线**非 IDLE**（还在跑），需要先 abort |
-| 503 | `brain` 或 `worker` IDE 未在线（response 附 `available` 列表） |
+| 503 | `brain` 或 `worker` IDE 自动启动失败（response 附 `available` 列表） |
 | 500 | `scripts/orchestra.sh` 执行失败 |
 
-**内部行为**：校验通过后，Relay 在 `cwd` 下同步执行 `./scripts/orchestra.sh task <initial_task>`，由 `reference-transaction` hook 异步触发 `/workflow/next`，状态机走 `IDLE → WORKER_CODE`。
+**内部行为**：校验通过后，Relay 会先确保 Brain / Worker IDE 就绪：若指定端口未在线，则自动启动对应 IDE，并让两个 IDE 打开同一个 `cwd`。随后 Relay 以 `cwd` 为工作目录执行本项目内置的 `scripts/orchestra.sh plan <initial_task>`，由 `reference-transaction` hook 异步触发 `/workflow/next`，状态机先走 `IDLE → BRAIN_PLAN`，再由 Brain 派发首个 `TASK` 进入 `WORKER_CODE`。
 
 #### 6.5.2 `GET /workflow/status`
 
 ```jsonc
 {
   "pipeline":   "pair_programming",
-  "state":      "WORKER_CODE",     // IDLE | WORKER_CODE | BRAIN_REVIEW | BRAIN_RECOVER
+  "state":      "WORKER_CODE",     // IDLE | BRAIN_PLAN | WORKER_CODE | BRAIN_REVIEW | BRAIN_RECOVER | DONE | ABORT
   "elapsed_ms": 1185,              // 进入当前状态至今的毫秒数
   "warned":     false,             // 是否超过 timeouts.default_ms（默认 10min）
   "brain":  { "ide": "Antigravity", "port": 9333 },
@@ -479,7 +480,7 @@ Relay 对前端（Android 手机遥控器）暴露三个端点，用来**启动 
 { "ok": true, "state": "IDLE", "note": "已在 IDLE，无需中断" }
 ```
 
-**内部行为**：在 `cwd` 下执行 `./scripts/orchestra.sh abort`，pipeline ref 追加一条 `ABORT`，状态机强制回到 `IDLE`。
+**内部行为**：Relay 以 `cwd` 为工作目录执行本项目内置的 `scripts/orchestra.sh abort`，pipeline ref 追加一条 `ABORT`，状态机进入 `ABORT`，随后延迟自愈回 `IDLE`。
 
 #### 6.5.4 前端集成概要（Android）
 
@@ -493,7 +494,7 @@ Jetpack Compose 页面路径：`presentation/screen/workflow/`
 
 入口：主机列表页（`HostListScreen`）TopBar 的 `AccountTree` 图标 → 跳转到 `Routes.WORKFLOW`。
 
-**前提要求**：用户先在主机列表页启动**两个**不同的 IDE（例如 Antigravity + Cursor），否则 `/workflow/start` 会直接返回 503。MVP 阶段 Relay **不会**替用户自动启动 IDE。
+**前提要求**：用户需要选择两个不同的 IDE 实例（例如 Antigravity + Windsurf）。若 IDE 没有打开，`/workflow/start` 会按端口自动启动并打开同一个 Git 工作目录；自动启动失败时才返回 503。
 
 ---
 

@@ -311,7 +311,7 @@ fun ChatScreen(
                     onSend = { viewModel.sendMessage() },
                     onAttachImage = { imagePickerLauncher.launch("image/*") },
                     isConnected = state.connectionState == ConnectionState.CONNECTED,
-                    isGenerating = state.isGenerating,
+                    isSendingMessage = state.isSendingMessage,
                     pendingImages = state.pendingImages,
                     onRemoveImage = { id -> viewModel.removeImage(id) }
                 )

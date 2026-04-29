@@ -44,6 +44,10 @@ data class WorkflowUiState(
     val activeBrainIde: String? = null,
     /** 运行中的工人 IDE 名称 */
     val activeWorkerIde: String? = null,
+    val reviewRound: Int = 0,
+    val minReviewRounds: Int = 3,
+    val lastReviewVerdict: String? = null,
+    val eventLog: List<WorkflowEvent> = emptyList(),
 
     // ── 操作中标志 ──
     val isStarting: Boolean = false,
@@ -74,6 +78,16 @@ data class TaskAttachment(
     val cachePath: String = "",
     /** 文件大小（字节） */
     val sizeBytes: Long = 0,
+)
+
+data class WorkflowEvent(
+    val type: String = "",
+    val from: String = "",
+    val to: String = "",
+    val verb: String = "",
+    val hash: String? = null,
+    val summary: String = "",
+    val time: Long = 0,
 )
 
 /** 与 Relay 端 safeName 逻辑完全一致：仅保留 [a-zA-Z0-9._-]，其余替换为 _ */

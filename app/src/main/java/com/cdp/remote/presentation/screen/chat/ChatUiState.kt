@@ -21,6 +21,7 @@ data class ChatUiState(
     val currentModel: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val inputText: String = "",
+    val isSendingMessage: Boolean = false,
     val isGenerating: Boolean = false,
     val error: String? = null,
     val lastScreenshot: ByteArray? = null,

@@ -26,6 +26,8 @@ const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
 const otaMeta = require('./ota_meta');
 // 智能检测：如果上层目录有 app/ 和 build/（说明在 git 仓库里），就用上层；否则用当前目录（独立 npm 包）
 const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(__dirname, '..') : __dirname;
+const ORCHESTRA_SCRIPT = path.join(REPO_ROOT, 'scripts', 'orchestra.sh');
+const REFERENCE_TRANSACTION_HOOK = path.join(REPO_ROOT, 'scripts', 'git-hooks', 'reference-transaction');
 
 // ─── 目录历史持久化 ───
 const CWD_HISTORY_DIR = path.join(os.homedir(), '.cdp-relay');
@@ -188,6 +190,12 @@ const ELECTRON_APPS = [
     { name: 'Cursor', bundleId: 'com.todesktop.230313mzl4w4u92', appPath: '/Applications/Cursor.app', binPath: '/Applications/Cursor.app/Contents/MacOS/Cursor' },
     { name: 'Windsurf', bundleId: 'com.codeium.windsurf', appPath: '/Applications/Windsurf.app', binPath: '/Applications/Windsurf.app/Contents/MacOS/Windsurf' }
 ];
+const DEFAULT_WORKFLOW_IDE_PORTS = {
+    Antigravity: 9333,
+    Windsurf: 9444,
+    Cursor: 9233,
+    Codex: 9666,
+};
 
 // ─── 多实例目标管理 ───
 // Map<port, { appName, appEmoji, pages[], lastSeen }>
@@ -376,6 +384,8 @@ function loadPipelineState() {
                     lastReviewVerdict: saved.lastReviewVerdict || null,
                     lastSeenPipelineHash: saved.lastSeenPipelineHash || null,
                     lastSeenMasterHash: saved.lastSeenMasterHash || null,
+                    currentTaskHash: saved.currentTaskHash || null,
+                    workerBaselineStatus: saved.workerBaselineStatus || '',
                 };
             }
         }
@@ -405,6 +415,8 @@ function savePipelineState(pl) {
             lastReviewVerdict: pl.lastReviewVerdict || null,
             lastSeenPipelineHash: pl.lastSeenPipelineHash || null,
             lastSeenMasterHash: pl.lastSeenMasterHash || null,
+            currentTaskHash: pl.currentTaskHash || null,
+            workerBaselineStatus: pl.workerBaselineStatus || '',
         }, null, 2));
     } catch (e) { log(`⚠️ 保存流水线状态失败: ${e.message}`); }
 }
@@ -440,6 +452,8 @@ let currentPipeline = loadPipelineState() || {
     lastReviewVerdict: null,
     lastSeenPipelineHash: null,
     lastSeenMasterHash: null,
+    currentTaskHash: null,
+    workerBaselineStatus: '',
 };
 function pushEvent(pl, event) {
     pl.eventLog.push({ ...event, time: Date.now() });
@@ -537,8 +551,8 @@ function getIdePortByName(ideName) {
 //   1. 超时告警（原有）
 //   2. Git 轮询：定期 git rev-parse refs/orchestra/pipeline 和 refs/heads/master，
 //      对比上次处理的 hash，发现新 commit 时模拟 hook 回调（Hook 的备份通道）
-//   3. 大脑回复自动解析：BRAIN_REVIEW 状态下通过 CDP 读取大脑 IDE 最后回复，
-//      解析 VERDICT: PASS|NEEDS_REWORK，自动执行 scripts/orchestra.sh
+//   3. 大脑回复自动解析：BRAIN_PLAN/BRAIN_REVIEW 状态下通过 CDP 读取大脑 IDE 最后回复，
+//      解析 TASK 或 VERDICT/NEXT_ACTION，Relay 自己写入 pipeline ref 推进。
 //
 const WATCHDOG_INTERVAL_MS = 15_000;
 // 大脑回复解析至少等 30 秒再开始（给 AI 生成时间）
@@ -578,6 +592,38 @@ function gitLogMessage(hash, cwd) {
             cwd, encoding: 'utf8', timeout: 5000
         }).trim() || '';
     } catch (_) { return ''; }
+}
+
+function gitStatusPorcelain(cwd) {
+    try {
+        return execSync('git status --porcelain', {
+            cwd, encoding: 'utf8', timeout: 5000
+        }).trim();
+    } catch (_) { return ''; }
+}
+
+function isUtilityCdpPage(page) {
+    const haystack = `${page.title || ''}\n${page.url || ''}`.toLowerCase();
+    return haystack.includes('settings')
+        || haystack.includes('launchpad')
+        || haystack.includes('workbench-jetski')
+        || haystack.includes('devtools://')
+        || haystack.includes('chrome://');
+}
+
+function scoreReplyPage(page, cwdHint) {
+    if (page.type !== 'page' || !page.webSocketDebuggerUrl || isUtilityCdpPage(page)) return -1;
+    const url = page.url || '';
+    const title = page.title || '';
+    let score = 0;
+    if (url.includes('workbench')) score += 30;
+    if (url.startsWith('app://')) score += 25;
+    if (title && !title.toLowerCase().includes('settings')) score += 5;
+    if (cwdHint) {
+        const dirName = cwdHint.split('/').filter(Boolean).pop() || '';
+        if (dirName && title.toLowerCase().includes(dirName.toLowerCase())) score += 50;
+    }
+    return score;
 }
 
 /** 通过 CDP 读取指定端口 IDE 的最后回复
@@ -732,16 +778,12 @@ async function readBrainLastReply(cdpPort, cwdHint) {
             res.on('end', () => {
                 try {
                     const pages = JSON.parse(data);
-                    const wbs = pages.filter(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
-                    if (wbs.length === 0) { resolve(''); return; }
-
-                    // 按 cwd basename 匹配 page title（精确定位打开了目标项目的窗口）
-                    let wb = wbs[0]; // fallback: 第一个
-                    if (cwdHint) {
-                        const dirName = cwdHint.split('/').filter(Boolean).pop() || '';
-                        const matched = wbs.find(p => p.title && p.title.toLowerCase().includes(dirName.toLowerCase()));
-                        if (matched) wb = matched;
-                    }
+                    const ranked = pages
+                        .map(p => ({ page: p, score: scoreReplyPage(p, cwdHint) }))
+                        .filter(x => x.score >= 0)
+                        .sort((a, b) => b.score - a.score);
+                    if (ranked.length === 0) { resolve(''); return; }
+                    const wb = ranked[0].page;
 
                     // 根据 IDE 类型选择 DOM 查询
                     const target = activeCdpTargets.get(cdpPort);
@@ -780,7 +822,7 @@ async function readBrainLastReply(cdpPort, cwdHint) {
 
 /** 执行 scripts/orchestra.sh 命令 */
 async function execOrchestra(verb, message, cwd) {
-    const scriptPath = path.join(cwd, 'scripts', 'orchestra.sh');
+    const scriptPath = ORCHESTRA_SCRIPT;
     if (!fs.existsSync(scriptPath)) {
         log(`⚠️ orchestra.sh 不存在: ${scriptPath}`);
         throw new Error('ORCHESTRA_SCRIPT_MISSING');
@@ -867,10 +909,16 @@ async function workflowWatchdogTick() {
     // ── 2b. WORKER_CODE 自动 commit：检测到 uncommitted changes 持续超时 → 自动 commit ──
     if (pl.state === 'WORKER_CODE') {
         try {
-            const statusOutput = execSync('git status --porcelain', {
-                cwd, encoding: 'utf8', timeout: 5000
-            }).trim();
+            const statusOutput = gitStatusPorcelain(cwd);
             if (statusOutput) {
+                if (pl.workerBaselineStatus) {
+                    if (!_workerDirtyDetectedAt) {
+                        log('👁️ watchdog WORKER_CODE: 目标仓库启动前已有未提交修改，跳过自动 commit，等待 Worker 显式提交');
+                        _workerDirtyDetectedAt = Date.now();
+                        _workerLastDirtyFiles = statusOutput;
+                    }
+                    return;
+                }
                 // 有 uncommitted changes
                 if (!_workerDirtyDetectedAt) {
                     _workerDirtyDetectedAt = Date.now();
@@ -889,14 +937,16 @@ async function workflowWatchdogTick() {
                         try {
                             execSync('git add -A', { cwd, timeout: 10000 });
                             const fileCount = statusOutput.split('\n').length;
+                            const taskHash = (pl.currentTaskHash || pl.lastSeenPipelineHash || 'unknown').toString().substring(0, 12);
+                            const pipelineName = pl.name || 'pair_programming';
                             // 用 spawn 异步执行 git commit，避免 reference-transaction hook 回调死锁
                             // watchdog 下一轮轮询会通过 hash 变化检测到 commit 完成
                             const { spawn } = require('child_process');
                             const child = spawn('git', [
                                 'commit', '--no-verify',
                                 '-m', `Auto-commit: Worker changes (${fileCount} files)`,
-                                '-m', `Orchestra-Task: auto-commit`,
-                                '-m', `Orchestra-Pipeline: pair_programming`,
+                                '-m', `Orchestra-Task: ${taskHash}`,
+                                '-m', `Orchestra-Pipeline: ${pipelineName}`,
                             ], { cwd, stdio: 'ignore', detached: true });
                             child.unref(); // 不等待子进程
                             log(`✅ watchdog 自动 commit 已提交 (${fileCount} 个文件，异步执行)`);
@@ -1050,7 +1100,12 @@ async function workflowWatchdogTick() {
                     const reviewMsg = parsed.issues || parsed.summary || '请修复审查发现的问题';
                     success = await execOrchestra('review', reviewMsg, cwd);
                 } else if (parsed.verdict === 'PASS') {
-                    if (round >= minRounds) {
+                    if (parsed.nextAction === 'TASK' && parsed.nextTask) {
+                        success = await execOrchestra('task', parsed.nextTask, cwd);
+                    } else if (parsed.nextAction === 'TASK') {
+                        log('⚠️ watchdog BRAIN_REVIEW: NEXT_ACTION=TASK 但未找到 NEXT_TASK，等待 Brain 补全任务块');
+                        return;
+                    } else if (round >= minRounds) {
                         // 通过且轮次足够：完成
                         success = await execOrchestra('done', null, cwd);
                     } else {
@@ -1064,7 +1119,13 @@ async function workflowWatchdogTick() {
                         _lastReplySnapshot = '';
                         _replyStableCount = 0;
                         _brainReviewEnteredAt = Date.now(); // 重置等待计时
-                        addEvent(pl, 'BRAIN_REVIEW', 'BRAIN_REVIEW', 'GATE', `质量门：PASS(${round}/${minRounds}) → 继续审查`);
+                        pushEvent(pl, {
+                            type: 'quality_gate',
+                            from: 'BRAIN_REVIEW',
+                            to: 'BRAIN_REVIEW',
+                            verb: 'GATE',
+                            summary: `质量门：PASS(${round}/${minRounds}) → 继续审查`,
+                        });
                         success = true;
                     }
                 } else {
@@ -1136,6 +1197,75 @@ function getWorkspaceForPort(port) {
         }
     } catch (_) {}
     return null;
+}
+
+function openCwdInRunningIde(port, appName, cwd) {
+    if (!cwd) return;
+    const target = activeCdpTargets.get(port);
+    const resolvedAppName = appName || target?.appName || '';
+    const appInfo = ELECTRON_APPS.find(a => a.name.toLowerCase() === resolvedAppName.toLowerCase());
+    if (!appInfo) return;
+
+    addCwdHistory(cwd, resolvedAppName);
+    let extractedUserDataDir = null;
+    try {
+        const pgrepOut = execSync(`pgrep -f -- "--remote-debugging-port=${port}" 2>/dev/null || true`).toString().trim();
+        const pids = pgrepOut.split('\n').filter(Boolean);
+        if (pids.length > 0) {
+            const psOut = execSync(`ps -ww -o command= -p ${pids[0]}`).toString();
+            const match = psOut.match(/--user-data-dir=(["']?)([^"'\s]+)\1/);
+            if (match) extractedUserDataDir = match[2];
+        }
+    } catch (e) {
+        log(`⚠️ 获取 CDP :${port} PID 信息失败: ${e.message}`);
+    }
+
+    const openArgs = [];
+    if (extractedUserDataDir) openArgs.push(`--user-data-dir=${extractedUserDataDir}`);
+    const proxyFlag = getElectronProxyFlag();
+    if (proxyFlag) openArgs.push(proxyFlag);
+    openArgs.push(cwd);
+
+    log(`📂 CDP :${port} 打开工作目录: ${cwd}`);
+    const userEnv = getUserEnv();
+    spawn('/usr/bin/open',
+        ['-n', '-a', appInfo.appPath, '--args', ...openArgs],
+        { detached: true, stdio: 'ignore', env: { ...process.env, ...userEnv } }).unref();
+}
+
+function defaultWorkflowPortForIde(ideName) {
+    const key = Object.keys(DEFAULT_WORKFLOW_IDE_PORTS)
+        .find(name => name.toLowerCase() === String(ideName || '').toLowerCase());
+    return key ? DEFAULT_WORKFLOW_IDE_PORTS[key] : null;
+}
+
+async function ensureWorkflowIdeReady({ ideName, requestedPort, cwd, roleName }) {
+    await scanAllCdpPorts();
+    let port = requestedPort || getIdePortByName(ideName) || defaultWorkflowPortForIde(ideName);
+    if (!port) {
+        throw new Error(`${roleName} IDE ${ideName} 未指定端口，且没有默认端口配置`);
+    }
+
+    const existing = activeCdpTargets.get(port);
+    if (existing) {
+        if (existing.appName.toLowerCase() !== ideName.toLowerCase()) {
+            throw new Error(`${roleName} 端口 ${port} 已被 ${existing.appName} 占用，不能作为 ${ideName}`);
+        }
+        openCwdInRunningIde(port, existing.appName, cwd);
+        return { port, launched: false, appName: existing.appName };
+    }
+
+    log(`🚀 /workflow/start: ${roleName} ${ideName}:${port} 未在线，自动启动并打开 ${cwd}`);
+    const ok = await autoLaunchWithCdp({ force: true, port, appName: ideName, cwd });
+    await scanAllCdpPorts();
+    if (!ok || !activeCdpTargets.has(port)) {
+        throw new Error(`${roleName} ${ideName}:${port} 自动启动失败`);
+    }
+    const launched = activeCdpTargets.get(port);
+    if (launched?.appName && launched.appName.toLowerCase() !== ideName.toLowerCase()) {
+        throw new Error(`${roleName} ${ideName}:${port} 启动后识别为 ${launched.appName}`);
+    }
+    return { port, launched: true, appName: launched?.appName || ideName };
 }
 
 // ─── 多端口扫描 ───
@@ -1661,35 +1791,7 @@ const server = http.createServer(async (req, res) => {
             const t = activeCdpTargets.get(reqPort);
             if (reqCwd) {
                 log(`✅ /launch: CDP :${reqPort} 已运行，尝试打开新窗口目录: ${reqCwd}`);
-                addCwdHistory(reqCwd, reqApp || t.appName);
-                const appInfo = ELECTRON_APPS.find(a => a.name === t.appName);
-                if (appInfo) {
-                    let extractedUserDataDir = null;
-                    try {
-                        const pgrepOut = execSync(`pgrep -f -- "--remote-debugging-port=${reqPort}" 2>/dev/null || true`).toString().trim();
-                        const pids = pgrepOut.split('\n').filter(Boolean);
-                        if (pids.length > 0) {
-                            const psOut = execSync(`ps -ww -o command= -p ${pids[0]}`).toString();
-                            const match = psOut.match(/--user-data-dir=(["']?)([^"'\s]+)\1/);
-                            if (match) extractedUserDataDir = match[2];
-                        }
-                    } catch (e) {
-                        log(`⚠️ 获取 PID 信息失败: ${e.message}`);
-                    }
-
-                    const openArgs = [];
-                    if (extractedUserDataDir) openArgs.push(`--user-data-dir=${extractedUserDataDir}`);
-                    const pf = getElectronProxyFlag();
-                    if (pf) openArgs.push(pf);
-                    openArgs.push(reqCwd);
-
-                    log(`📋 打开目录命令: open -n -a "${appInfo.appPath}" --args ${openArgs.join(' ')}`);
-                    const userEnv = getUserEnv();
-                    // 同 autoLaunchWithCdp：走 /usr/bin/open 让 IDE 独立于 relay 的进程组。
-                    spawn('/usr/bin/open',
-                        ['-n', '-a', appInfo.appPath, '--args', ...openArgs],
-                        { detached: true, stdio: 'ignore', env: { ...process.env, ...userEnv } }).unref();
-                }
+                openCwdInRunningIde(reqPort, reqApp || t.appName, reqCwd);
             } else {
                 log(`✅ /launch: CDP :${reqPort} 已运行 (${t.appName})`);
             }
@@ -1741,7 +1843,7 @@ const server = http.createServer(async (req, res) => {
     // GET /workflow/status — 查询当前流水线状态
     if (req.url === '/workflow/status' && req.method === 'GET') {
         const pl = currentPipeline;
-        // P0#2: 终态延迟自愈（10秒内保留 DONE/ABORT 供 App 轮询，之后归位 IDLE）
+        // 终态延迟自愈：保留 DONE/ABORT 一段时间供 App 轮询，之后归位 IDLE。
         const prevState = pl.state;
         const prevEnteredAt = pl.state_entered_at;
         if (maybeSelfHealTerminalState(pl)) {
@@ -1860,12 +1962,6 @@ const server = http.createServer(async (req, res) => {
                     res.end(JSON.stringify({ error: `缺少必填字段: ${missing.join(', ')}` }));
                     return;
                 }
-                if (brainIde.toLowerCase() === workerIde.toLowerCase()) {
-                    res.writeHead(400, { 'Content-Type': 'application/json', ...cors });
-                    res.end(JSON.stringify({ error: 'brain 和 worker 必须是不同的 IDE' }));
-                    return;
-                }
-
                 // cwd 必须是 Git 仓库
                 if (!fs.existsSync(path.join(cwd, '.git'))) {
                     res.writeHead(400, { 'Content-Type': 'application/json', ...cors });
@@ -1873,27 +1969,36 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
-                // 两个 IDE 都必须在线（优先用前端指定的端口，否则按名字查找）
-                const brainPort  = (parsed.brain?.port && activeCdpTargets.has(parsed.brain.port))
-                    ? parsed.brain.port : getIdePortByName(brainIde);
-                const workerPort = (parsed.worker?.port && activeCdpTargets.has(parsed.worker.port))
-                    ? parsed.worker.port : getIdePortByName(workerIde);
-                if (!brainPort) {
+                // 两个 IDE 自动就绪：未打开则 launch，已打开则尽力打开同一个 cwd。
+                let brainReady;
+                let workerReady;
+                try {
+                    brainReady = await ensureWorkflowIdeReady({
+                        ideName: brainIde,
+                        requestedPort: parsed.brain?.port ? Number(parsed.brain.port) : null,
+                        cwd,
+                        roleName: 'Brain',
+                    });
+                    workerReady = await ensureWorkflowIdeReady({
+                        ideName: workerIde,
+                        requestedPort: parsed.worker?.port ? Number(parsed.worker.port) : null,
+                        cwd,
+                        roleName: 'Worker',
+                    });
+                } catch (e) {
                     res.writeHead(503, { 'Content-Type': 'application/json', ...cors });
                     res.end(JSON.stringify({
-                        error: `${brainIde} 未在线`,
-                        hint: '请先在主机列表页启动该 IDE',
-                        available: [...activeCdpTargets.values()].map(t => t.appName),
+                        error: e.message,
+                        hint: 'Relay 已尝试自动启动 IDE；请确认应用已安装、端口未被其他应用占用',
+                        available: [...activeCdpTargets.entries()].map(([port, t]) => ({ port, appName: t.appName })),
                     }));
                     return;
                 }
-                if (!workerPort) {
-                    res.writeHead(503, { 'Content-Type': 'application/json', ...cors });
-                    res.end(JSON.stringify({
-                        error: `${workerIde} 未在线`,
-                        hint: '请先在主机列表页启动该 IDE',
-                        available: [...activeCdpTargets.values()].map(t => t.appName),
-                    }));
+                const brainPort = brainReady.port;
+                const workerPort = workerReady.port;
+                if (brainPort === workerPort) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', ...cors });
+                    res.end(JSON.stringify({ error: 'brain 和 worker 必须是不同的 IDE 实例' }));
                     return;
                 }
 
@@ -1910,16 +2015,21 @@ const server = http.createServer(async (req, res) => {
 
                 // 先执行 orchestra.sh（确保成功后才更新 currentPipeline，避免竞态）
                 // 使用 execAsync 避免阻塞事件循环（withWorkflowLock 保证串行安全）
-                const scriptPath = path.join(REPO_ROOT, 'scripts', 'orchestra.sh');
+                const scriptPath = ORCHESTRA_SCRIPT;
 
                 // 自动安装 reference-transaction Hook（流水线的核心通信机制）
-                const hookSrc = path.join(REPO_ROOT, '.git', 'hooks', 'reference-transaction');
+                const hookSrc = REFERENCE_TRANSACTION_HOOK;
                 const targetHooksDir = path.join(cwd, '.git', 'hooks');
                 const targetHook = path.join(targetHooksDir, 'reference-transaction');
                 try {
                     if (fs.existsSync(hookSrc) && fs.existsSync(path.join(cwd, '.git'))) {
                         fs.mkdirSync(targetHooksDir, { recursive: true });
-                        if (!fs.existsSync(targetHook)) {
+                        const needsInstall = !fs.existsSync(targetHook)
+                            || fs.readFileSync(targetHook, 'utf8') !== fs.readFileSync(hookSrc, 'utf8');
+                        if (needsInstall) {
+                            if (fs.existsSync(targetHook)) {
+                                fs.copyFileSync(targetHook, `${targetHook}.cdp-remote.bak`);
+                            }
                             fs.copyFileSync(hookSrc, targetHook);
                             fs.chmodSync(targetHook, 0o755);
                             log(`📎 已安装 reference-transaction Hook → ${targetHook}`);
@@ -1974,6 +2084,8 @@ const server = http.createServer(async (req, res) => {
                 _brainReviewEnteredAt = 0;
                 currentPipeline.lastSeenPipelineHash = gitRevParse('refs/orchestra/pipeline', cwd);
                 currentPipeline.lastSeenMasterHash = gitRevParse('refs/heads/master', cwd) || gitRevParse('refs/heads/main', cwd);
+                currentPipeline.currentTaskHash = null;
+                currentPipeline.workerBaselineStatus = gitStatusPorcelain(cwd);
                 savePipelineState(currentPipeline); // 持久化初始状态
                 pushEvent(currentPipeline, {
                     type: 'start',
@@ -1992,6 +2104,10 @@ const server = http.createServer(async (req, res) => {
                     brain:  { ide: brainIde,  port: brainPort  },
                     worker: { ide: workerIde, port: workerPort },
                     cwd,
+                    auto_launch: {
+                        brain: brainReady.launched,
+                        worker: workerReady.launched,
+                    },
                     script_output: scriptOut,
                     note: '状态将在 hook 到达后异步推进到 WORKER_CODE，可轮询 /workflow/status 查看',
                 }));
@@ -2039,7 +2155,7 @@ const server = http.createServer(async (req, res) => {
 
                 // 尽力而为：往 Git 持久化 ABORT 记录（失败不影响状态）
                 if (cwd && fs.existsSync(path.join(cwd, '.git'))) {
-                    const scriptPath = path.join(REPO_ROOT, 'scripts', 'orchestra.sh');
+                    const scriptPath = ORCHESTRA_SCRIPT;
                     try {
                         await execAsync(
                             `${JSON.stringify(scriptPath)} abort`,
@@ -2263,30 +2379,24 @@ const server = http.createServer(async (req, res) => {
                             `---`,
                             `REVIEW_ROUND: ${round}`,
                             `VERDICT: NEEDS_REWORK | PASS`,
+                            `NEXT_ACTION: REVIEW | TASK | DONE`,
                             `ISSUES:`,
                             `- [blocker|major|minor] <问题> / <为什么> / <建议改法>`,
                             `（没有就写 NONE）`,
                             `SUMMARY: <一句话结论>`,
+                            `---NEXT_TASK_START---`,
+                            `仅当 NEXT_ACTION 是 TASK 时，在这里写下一个子任务；否则留空`,
+                            `---NEXT_TASK_END---`,
                             `---`,
                             ``,
                             `判定规则：`,
-                            `- 任一 blocker 或 major → VERDICT 必须是 NEEDS_REWORK`,
-                            `- 全部 minor 或 NONE → 可以 PASS`,
+                            `- 任一 blocker 或 major → VERDICT 必须是 NEEDS_REWORK，NEXT_ACTION 必须是 REVIEW`,
+                            `- 当前提交通过但原始需求仍有未实现部分 → VERDICT: PASS，NEXT_ACTION: TASK，并填写 NEXT_TASK`,
+                            `- 当前提交通过且原始需求已全部完成 → VERDICT: PASS，NEXT_ACTION: DONE`,
                             ``,
                             `⚠️ 核心规则（非常重要）：`,
-                            `审查完成后，你必须且只能在终端执行【一条】命令来推进流水线：`,
-                            ``,
-                            `情况 A — VERDICT 是 NEEDS_REWORK：`,
-                            `  执行 scripts/orchestra.sh review "你的 ISSUES 摘要"`,
-                            ``,
-                            `情况 B — VERDICT 是 PASS，但原始需求还有未实现的部分：`,
-                            `  执行 scripts/orchestra.sh task "下一个子任务的完整描述"`,
-                            `  （必须先检查所有已有文件，确认哪些需求项已实现、哪些未实现）`,
-                            ``,
-                            `情况 C — VERDICT 是 PASS，且原始需求的所有项目均已完整实现：`,
-                            `  执行 scripts/orchestra.sh done`,
-                            ``,
-                            `⚠️ 绝对禁止同时执行多条 orchestra.sh 命令！只选一种情况执行一条。`,
+                            `你只需要输出上述结构化结果，Relay 会自动读取并推进流水线。`,
+                            `不要执行 scripts/orchestra.sh，也不要执行任何推进流水线的 shell 命令。`,
                             `⚠️ 在判断"全部完成"前，请用 ls -R 或 find 确认文件确实存在。`,
                             `⚠️ DONE 意味着整个需求 100% 完成，不是当前子任务完成。`,
                         ].join('\n');
@@ -2304,20 +2414,24 @@ const server = http.createServer(async (req, res) => {
                             `请完成以下步骤：`,
                             `1. 分析需求，识别风险和约定（平台、框架、技术栈等）`,
                             `2. 将需求拆分为若干子任务，只关注第一步（最小可交付单元）`,
-                            `3. 分析完成后，在终端执行以下命令派发任务给工人：`,
+                            `3. 分析完成后，只输出下面的任务块：`,
                             ``,
-                            `scripts/orchestra.sh task "<第一步的完整任务描述>"`,
+                            `---TASK_START---`,
+                            `<第一步的完整任务描述，包含目标、技术要求、完成标准>`,
+                            `---TASK_END---`,
                             ``,
                             `⚠️ 重要规则：`,
-                            `- 你必须在终端执行 scripts/orchestra.sh task "任务描述" 来派发任务`,
+                            `- 不要执行 scripts/orchestra.sh，也不要执行任何推进流水线的 shell 命令`,
                             `- 不要自己写代码，你的职责是统筹和拆解`,
-                            `- Relay 会通过 Git Hook 自动收到你的指令并推进流水线`,
+                            `- Relay 会自动读取 TASK 块并派发给工人`,
                             `- 任务描述要完整，包含：目标、技术要求、完成标准`,
                         ].join('\n');
                         await sendWithRetry(port, prompt, 'brain');
                     } else if (verb === 'TASK' || verb === 'REVIEW') {
                         const port = requireIde(pl.worker);
                         if (!port) return;
+                        pl.currentTaskHash = hash;
+                        pl.workerBaselineStatus = gitStatusPorcelain(pl.cwd);
                         // P1 修复：新子任务(TASK)重置 reviewRound；返工(REVIEW)才累加
                         if (verb === 'TASK') {
                             log(`🔄 新子任务到来，reviewRound 重置: ${pl.reviewRound} → 0`);

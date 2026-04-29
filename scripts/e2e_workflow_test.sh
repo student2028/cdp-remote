@@ -10,15 +10,15 @@
 #
 # 默认值：
 #   TEST_CWD  = /Users/student2028/code/cc/workflow-e2e-test
-#   BRAIN     = Antigravity:9334
-#   WORKER    = Windsurf:9445
+#   BRAIN     = Antigravity:9333
+#   WORKER    = Windsurf:9444
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 RELAY="http://127.0.0.1:19336"
 TEST_CWD="${1:-/Users/student2028/code/mychat}"
-BRAIN_PORT="${2:-9334}"
-WORKER_PORT="${3:-9445}"
+BRAIN_PORT="${2:-9333}"
+WORKER_PORT="${3:-9444}"
 MAX_WAIT_SECS=600   # 单阶段最长等待 10 分钟
 POLL_INTERVAL=10    # 每 10 秒轮询一次
 TOTAL_TIMEOUT=1800  # 全流程最长 30 分钟
@@ -144,17 +144,22 @@ else
     exit 1
 fi
 
+# 测试仓库检查
+if [ -d "${TEST_CWD}/.git" ]; then
+    pass "测试仓库就绪: ${TEST_CWD}"
+else
+    fail "测试仓库不存在或不是 Git 仓库"
+    exit 1
+fi
+
+log "确保两个 IDE 已打开 ${TEST_CWD}..."
+curl -sf "${RELAY}/launch?port=${BRAIN_PORT}&app=Antigravity&cwd=${TEST_CWD}" > /dev/null 2>&1 || true
+curl -sf "${RELAY}/launch?port=${WORKER_PORT}&app=Windsurf&cwd=${TEST_CWD}" > /dev/null 2>&1 || true
+sleep 3
+
 # IDE 检查
 check_ide "$BRAIN_PORT" "Antigravity (Brain)" || exit 1
 check_ide "$WORKER_PORT" "Windsurf (Worker)"  || exit 1
-
-# 测试仓库检查
-if [ -d "${TEST_CWD}/.git" ] && [ -f "${TEST_CWD}/scripts/orchestra.sh" ]; then
-    pass "测试仓库就绪: ${TEST_CWD}"
-else
-    fail "测试仓库不存在或缺少 scripts/orchestra.sh"
-    exit 1
-fi
 
 # 当前流水线状态
 current=$(get_state)
@@ -171,10 +176,7 @@ step "第 1 步：启动流水线 (PLAN)"
 TASK_MSG="请在项目中创建一个 utils/greeting.py 文件，实现一个 greet(name) 函数，返回 Hello, {name}! 字符串，并添加 docstring 和类型注解。这是一个非常简单的任务，请直接实现即可。"
 
 log "发送启动请求..."
-log "让两个 IDE 打开 ${TEST_CWD}..."
-curl -sf "${RELAY}/launch?port=${BRAIN_PORT}&app=Antigravity&cwd=${TEST_CWD}" > /dev/null 2>&1
-curl -sf "${RELAY}/launch?port=${WORKER_PORT}&app=Windsurf&cwd=${TEST_CWD}" > /dev/null 2>&1
-sleep 2
+log "Relay /workflow/start 也会在发现 IDE 不在线时自动启动并打开 ${TEST_CWD}"
 
 START_RESP=$(curl -sf -X POST "${RELAY}/workflow/start" \
     -H 'Content-Type: application/json' \

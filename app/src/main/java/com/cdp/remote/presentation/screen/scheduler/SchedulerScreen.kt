@@ -484,7 +484,7 @@ private fun TaskCreateSheet(
             Spacer(modifier = Modifier.height(20.dp))
 
             // ── IDE 选择网格 (2 列) ──
-            val uniqueIdes = availableIdes.distinctBy { it.name }
+            val uniqueIdes = availableIdes.distinctBy { it.name to it.port }
             if (uniqueIdes.isEmpty()) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
