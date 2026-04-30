@@ -34,4 +34,43 @@ function maybeSelfHealTerminalState(pl, now = Date.now()) {
     return true;
 }
 
-module.exports = { TERMINAL_VERBS, TERMINAL_RETENTION_MS, maybeSelfHealTerminalState };
+function hydratePipelineState(saved, { maxEventLog = 30 } = {}) {
+    if (!saved || !saved.state || ['IDLE', 'DONE', 'ABORT'].includes(saved.state)) {
+        return null;
+    }
+    return {
+        name: saved.name || 'pair_programming',
+        state: saved.state,
+        state_entered_at: saved.state_entered_at || Date.now(),
+        brain: saved.brain || { ide: 'Antigravity', port: null },
+        worker: saved.worker || { ide: 'Cursor', port: null },
+        cwd: saved.cwd || null,
+        initialTask: saved.initialTask || '',
+        timeouts: saved.timeouts || { default_ms: 180_000 },
+        warned: false,
+        lastError: saved.lastError || null,
+        lastErrorAt: saved.lastErrorAt || null,
+        lastFinishedState: saved.lastFinishedState || null,
+        lastFinishedAt: saved.lastFinishedAt || null,
+        eventLog: (saved.eventLog || []).slice(-maxEventLog),
+        reviewRound: saved.reviewRound || 0,
+        minReviewRounds: saved.minReviewRounds || 3,
+        lastReviewVerdict: saved.lastReviewVerdict || null,
+        lastSeenPipelineHash: saved.lastSeenPipelineHash || null,
+        lastSeenMasterHash: saved.lastSeenMasterHash || null,
+        currentTaskHash: saved.currentTaskHash || null,
+        workerBaselineStatus: saved.workerBaselineStatus || '',
+    };
+}
+
+function statusInitialTask(state, initialTask) {
+    return state === 'IDLE' ? '' : (initialTask || '');
+}
+
+module.exports = {
+    TERMINAL_VERBS,
+    TERMINAL_RETENTION_MS,
+    maybeSelfHealTerminalState,
+    hydratePipelineState,
+    statusInitialTask,
+};

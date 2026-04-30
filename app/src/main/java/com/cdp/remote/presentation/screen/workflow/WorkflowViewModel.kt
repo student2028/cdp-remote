@@ -355,8 +355,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 // 如果本地任务描述为空但服务端有（外部启动的流水线），用服务端的补全
-                val syncedTask = if (uiState.initialTask.isBlank() && !status.initialTask.isNullOrBlank())
-                    status.initialTask else uiState.initialTask
+                val syncedTask = mergeInitialTask(uiState.initialTask, status)
 
                 uiState = uiState.copy(
                     pipelineState = newState,
@@ -618,6 +617,12 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                 lastError = obj.get("lastError")?.takeIf { !it.isJsonNull }?.asString,
                 lastFinishedState = obj.get("lastFinishedState")?.takeIf { !it.isJsonNull }?.asString,
             )
+        }
+
+        internal fun mergeInitialTask(localTask: String, status: WorkflowStatusDto): String {
+            if (localTask.isNotBlank()) return localTask
+            if (WorkflowState.from(status.state) == WorkflowState.IDLE) return localTask
+            return status.initialTask?.takeIf { it.isNotBlank() } ?: localTask
         }
     }
 

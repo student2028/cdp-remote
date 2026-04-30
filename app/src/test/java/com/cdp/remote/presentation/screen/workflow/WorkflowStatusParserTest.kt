@@ -54,4 +54,22 @@ class WorkflowStatusParserTest {
         assertNull(dto.lastReviewVerdict)
         assertEquals(emptyList<WorkflowEvent>(), dto.eventLog)
     }
+
+    @Test
+    fun doesNotSyncStaleInitialTaskFromIdleStatus() {
+        val dto = WorkflowViewModel.parseStatusJson(
+            """{"state":"IDLE","initialTask":"old completed task"}"""
+        )
+
+        assertEquals("", WorkflowViewModel.mergeInitialTask("", dto))
+    }
+
+    @Test
+    fun syncsInitialTaskFromRunningStatusWhenLocalTaskIsBlank() {
+        val dto = WorkflowViewModel.parseStatusJson(
+            """{"state":"BRAIN_PLAN","initialTask":"externally started task"}"""
+        )
+
+        assertEquals("externally started task", WorkflowViewModel.mergeInitialTask("", dto))
+    }
 }

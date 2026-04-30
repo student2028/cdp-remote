@@ -356,37 +356,24 @@ async function gracefulExitCdpTarget(cdpPort, { force = false } = {}) {
 // 流水线运行时状态（模块级，驻留进程生命周期）
 // brain/worker 不再硬编码，由 /workflow/start 时由前端传入；默认值仅作占位。
 const PIPELINE_STATE_FILE = path.join(CWD_HISTORY_DIR, 'pipeline_state.json');
+// DONE / ABORT 是 verb（终态动词），不是合法的 pipeline state；
+// 终态延迟自愈和状态恢复逻辑抽到 relay-dev/workflow_state.js 便于单元测试。
+const {
+    TERMINAL_VERBS,
+    maybeSelfHealTerminalState,
+    hydratePipelineState,
+    statusInitialTask,
+} = require('./workflow_state.js');
 
 /** 从文件恢复上次的流水线状态（Relay 重启后不丢失进行中的流水线） */
 function loadPipelineState() {
     try {
         if (fs.existsSync(PIPELINE_STATE_FILE)) {
             const saved = JSON.parse(fs.readFileSync(PIPELINE_STATE_FILE, 'utf8'));
-            // 只恢复核心字段，运行时字段用默认值
-            if (saved && saved.state && !['IDLE', 'DONE', 'ABORT'].includes(saved.state)) {
+            const restored = hydratePipelineState(saved, { maxEventLog: MAX_EVENT_LOG });
+            if (restored) {
                 log(`📂 恢复流水线状态: ${saved.state} (${saved.name || 'pair_programming'})`);
-                return {
-                    name: saved.name || 'pair_programming',
-                    state: saved.state,
-                    state_entered_at: saved.state_entered_at || Date.now(),
-                    brain:  saved.brain  || { ide: 'Antigravity', port: null },
-                    worker: saved.worker || { ide: 'Cursor',      port: null },
-                    cwd: saved.cwd || null,
-                    timeouts: saved.timeouts || { default_ms: 180_000 },
-                    warned: false,
-                    lastError: saved.lastError || null,
-                    lastErrorAt: saved.lastErrorAt || null,
-                    lastFinishedState: saved.lastFinishedState || null,
-                    lastFinishedAt: saved.lastFinishedAt || null,
-                    eventLog: (saved.eventLog || []).slice(-MAX_EVENT_LOG),
-                    reviewRound: saved.reviewRound || 0,
-                    minReviewRounds: saved.minReviewRounds || 3,
-                    lastReviewVerdict: saved.lastReviewVerdict || null,
-                    lastSeenPipelineHash: saved.lastSeenPipelineHash || null,
-                    lastSeenMasterHash: saved.lastSeenMasterHash || null,
-                    currentTaskHash: saved.currentTaskHash || null,
-                    workerBaselineStatus: saved.workerBaselineStatus || '',
-                };
+                return restored;
             }
         }
     } catch (e) { log(`⚠️ 读取流水线状态文件失败: ${e.message}`); }
@@ -405,7 +392,7 @@ function savePipelineState(pl) {
             worker: pl.worker,
             cwd: pl.cwd,
             timeouts: pl.timeouts,
-            initialTask: pl.initialTask || '',
+            initialTask: statusInitialTask(pl.state, pl.initialTask),
             lastError: pl.lastError,
             lastErrorAt: pl.lastErrorAt,
             lastFinishedState: pl.lastFinishedState,
@@ -521,10 +508,6 @@ function isTransitionAllowed(state, isMainCommit, verb) {
     if (!rule) return false;
     return isMainCommit ? rule.main : rule.pipeline.includes(verb);
 }
-
-// DONE / ABORT 是 verb（终态动词），不是合法的 pipeline state；
-// 终态延迟自愈的逻辑抽到 relay-dev/workflow_state.js 便于单元测试。
-const { TERMINAL_VERBS, maybeSelfHealTerminalState } = require('./workflow_state.js');
 
 function nextWorkflowState(state, isMainCommit, verb) {
     // 终态自愈交给 /workflow/status 的延迟逻辑处理

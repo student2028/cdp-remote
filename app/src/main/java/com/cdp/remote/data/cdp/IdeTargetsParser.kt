@@ -93,6 +93,8 @@ object IdeTargetsParser {
         if (type != "page") return false
         // 过滤扩展 host 页面
         if (url.contains("extensionHost", ignoreCase = true)) return false
+        // 过滤 IDE 启动页；主机/任务列表只需要可操作页面和真正弹窗
+        if (isLaunchpadPage(url, title)) return false
         // 过滤空白页
         if (url == "about:blank" && title.isBlank()) return false
         return true
@@ -100,11 +102,15 @@ object IdeTargetsParser {
 
     /** 判断是否是主编辑器窗口 */
     private fun isWorkbenchPage(url: String, title: String, appName: String): Boolean {
-        if (title.contains("Launchpad", ignoreCase = true)) return false
+        if (isLaunchpadPage(url, title)) return false
         return url.contains("workbench", ignoreCase = true) ||
             url.startsWith("app://") ||
             ElectronAppType.fromAppName(appName) == ElectronAppType.CLAUDE_CODE
     }
+
+    private fun isLaunchpadPage(url: String, title: String): Boolean =
+        title.contains("Launchpad", ignoreCase = true) ||
+            url.contains("launchpad", ignoreCase = true)
 
     private fun pageRank(title: String, url: String): Int {
         val t = title.trim()

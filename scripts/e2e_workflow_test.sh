@@ -16,7 +16,7 @@
 set -euo pipefail
 
 RELAY="http://127.0.0.1:19336"
-TEST_CWD="${1:-/Users/student2028/code/mychat}"
+TEST_CWD="${1:-/Users/student2028/code/cc/workflow-e2e-test}"
 BRAIN_PORT="${2:-9333}"
 WORKER_PORT="${3:-9555}"
 WORKER_APP="${WORKER_APP:-Cursor}"
