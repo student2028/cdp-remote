@@ -49,6 +49,10 @@ data class WorkflowUiState(
     val lastReviewVerdict: String? = null,
     val eventLog: List<WorkflowEvent> = emptyList(),
 
+    // ── 运行中 IDE TV 监控 ──
+    val brainTv: WorkflowTvFrame = WorkflowTvFrame(),
+    val workerTv: WorkflowTvFrame = WorkflowTvFrame(),
+
     // ── 操作中标志 ──
     val isStarting: Boolean = false,
     val isAborting: Boolean = false,
@@ -64,6 +68,30 @@ data class WorkflowUiState(
     // ── Toast / 错误 ──
     val toastMessage: String? = null,
 )
+
+data class WorkflowTvFrame(
+    val frameData: ByteArray? = null,
+    val status: String = "等待画面",
+    val frameCount: Int = 0,
+    val bytesTotal: Long = 0L,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is WorkflowTvFrame) return false
+        return frameData.contentEquals(other.frameData) &&
+            status == other.status &&
+            frameCount == other.frameCount &&
+            bytesTotal == other.bytesTotal
+    }
+
+    override fun hashCode(): Int {
+        var result = frameData.contentHashCode()
+        result = 31 * result + status.hashCode()
+        result = 31 * result + frameCount
+        result = 31 * result + bytesTotal.hashCode()
+        return result
+    }
+}
 
 /** 初始任务附件（不持有 base64，数据缓存在 cacheDir） */
 data class TaskAttachment(

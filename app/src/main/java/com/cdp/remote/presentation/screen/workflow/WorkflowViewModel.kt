@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.cdp.remote.data.cdp.CdpClient
+import com.cdp.remote.data.cdp.CdpResult
 import com.cdp.remote.presentation.screen.hosts.CwdHistoryItem
 import com.cdp.remote.presentation.screen.hosts.DirItem
 import com.cdp.remote.presentation.screen.scheduler.IdeInfo
@@ -47,7 +49,12 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
 
     private var relayBase = ""
     private var pollJob: Job? = null
+    private var tvJob: Job? = null
     private var initialized = false   // 防重入
+    private val brainTvClient = CdpClient(viewModelScope)
+    private val workerTvClient = CdpClient(viewModelScope)
+    private var brainTvWsUrl: String? = null
+    private var workerTvWsUrl: String? = null
 
     // P1#6: 表单持久化
     private val prefs by lazy {
@@ -95,6 +102,9 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
     override fun onCleared() {
         super.onCleared()
         pollJob?.cancel()
+        tvJob?.cancel()
+        brainTvClient.disconnect()
+        workerTvClient.disconnect()
         // 清理附件缓存文件
         uiState.attachments.forEach { att ->
             runCatching { File(att.cachePath).delete() }
@@ -374,6 +384,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     lastFinishedState = status.lastFinishedState,
                     initialTask = syncedTask,
                 )
+                syncWorkflowTv(newState)
             } catch (_: Exception) {
                 // 轮询静默失败，不扰民
             }
@@ -518,6 +529,112 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    private fun syncWorkflowTv(state: WorkflowState) {
+        val running = state != WorkflowState.IDLE && state != WorkflowState.DONE && state != WorkflowState.ABORT
+        if (!running) {
+            tvJob?.cancel()
+            tvJob = null
+            brainTvClient.disconnect()
+            workerTvClient.disconnect()
+            brainTvWsUrl = null
+            workerTvWsUrl = null
+            uiState = uiState.copy(brainTv = WorkflowTvFrame(), workerTv = WorkflowTvFrame())
+            return
+        }
+        if (tvJob?.isActive == true) return
+        tvJob = viewModelScope.launch {
+            while (isActive) {
+                refreshTvFrames()
+                delay(1_500L)
+            }
+        }
+    }
+
+    private suspend fun refreshTvFrames() {
+        val snapshot = uiState
+        runCatching {
+            refreshTvFrame(
+                isBrain = true,
+                port = snapshot.brainPort,
+                ideName = snapshot.activeBrainIde ?: snapshot.brainIde,
+            )
+        }.onFailure { updateTvFrame(isBrain = true, status = "画面刷新失败", clearFrame = true) }
+        runCatching {
+            refreshTvFrame(
+                isBrain = false,
+                port = snapshot.workerPort,
+                ideName = snapshot.activeWorkerIde ?: snapshot.workerIde,
+            )
+        }.onFailure { updateTvFrame(isBrain = false, status = "画面刷新失败", clearFrame = true) }
+    }
+
+    private suspend fun refreshTvFrame(isBrain: Boolean, port: Int?, ideName: String) {
+        if (port == null || port == 0) {
+            updateTvFrame(isBrain, status = "等待端口", clearFrame = true)
+            return
+        }
+        val wsUrl = fetchWorkflowTvWsUrl(port)
+        if (wsUrl.isNullOrBlank()) {
+            updateTvFrame(isBrain, status = "未找到 ${ideName.ifBlank { "IDE" }} 画面", clearFrame = true)
+            return
+        }
+
+        val client = if (isBrain) brainTvClient else workerTvClient
+        val currentWs = if (isBrain) brainTvWsUrl else workerTvWsUrl
+        if (currentWs != wsUrl || !client.isConnected) {
+            client.disconnect()
+            when (val connected = client.connectDirect(wsUrl)) {
+                is CdpResult.Error -> {
+                    updateTvFrame(isBrain, status = connected.message, clearFrame = true)
+                    return
+                }
+                is CdpResult.Success -> {
+                    if (isBrain) brainTvWsUrl = wsUrl else workerTvWsUrl = wsUrl
+                }
+            }
+        }
+
+        when (val captured = client.captureScreenshot(42)) {
+            is CdpResult.Success -> {
+                val previous = if (isBrain) uiState.brainTv else uiState.workerTv
+                updateTvFrame(
+                    isBrain = isBrain,
+                    frameData = captured.data,
+                    status = "LIVE",
+                    frameCount = previous.frameCount + 1,
+                    bytesTotal = previous.bytesTotal + captured.data.size,
+                )
+            }
+            is CdpResult.Error -> updateTvFrame(isBrain, status = captured.message)
+        }
+    }
+
+    private fun updateTvFrame(
+        isBrain: Boolean,
+        frameData: ByteArray? = null,
+        status: String,
+        frameCount: Int? = null,
+        bytesTotal: Long? = null,
+        clearFrame: Boolean = false,
+    ) {
+        val current = if (isBrain) uiState.brainTv else uiState.workerTv
+        val next = current.copy(
+            frameData = if (clearFrame) null else frameData ?: current.frameData,
+            status = status,
+            frameCount = frameCount ?: current.frameCount,
+            bytesTotal = bytesTotal ?: current.bytesTotal,
+        )
+        uiState = if (isBrain) uiState.copy(brainTv = next) else uiState.copy(workerTv = next)
+    }
+
+    private suspend fun fetchWorkflowTvWsUrl(port: Int): String? = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$relayBase/cdp/$port/json").build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return@withContext null
+            selectWorkflowTvWebSocket(response.body?.string() ?: "[]")
+        }
+    }
+
     // ─── HTTP ────────────────────────────────────────────────────
 
     private suspend fun fetchIdes() = withContext(Dispatchers.IO) {
@@ -623,6 +740,28 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
             if (localTask.isNotBlank()) return localTask
             if (WorkflowState.from(status.state) == WorkflowState.IDLE) return localTask
             return status.initialTask?.takeIf { it.isNotBlank() } ?: localTask
+        }
+
+        internal fun selectWorkflowTvWebSocket(json: String): String? {
+            val pages = runCatching { JsonParser.parseString(json).asJsonArray }.getOrNull() ?: return null
+            return pages
+                .mapNotNull { it.takeIf { el -> el.isJsonObject }?.asJsonObject }
+                .filter { page ->
+                    val type = page.get("type")?.asString.orEmpty()
+                    val url = page.get("url")?.asString.orEmpty()
+                    val title = page.get("title")?.asString.orEmpty()
+                    type == "page" &&
+                        !url.contains("jetski", ignoreCase = true) &&
+                        !url.contains("launchpad", ignoreCase = true) &&
+                        !title.contains("Launchpad", ignoreCase = true)
+                }
+                .firstOrNull { page ->
+                    val url = page.get("url")?.asString.orEmpty()
+                    url.contains("workbench.html", ignoreCase = true) || url.startsWith("app://")
+                }
+                ?.get("webSocketDebuggerUrl")
+                ?.takeIf { !it.isJsonNull }
+                ?.asString
         }
     }
 

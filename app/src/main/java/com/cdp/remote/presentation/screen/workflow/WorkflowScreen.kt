@@ -3,11 +3,13 @@ package com.cdp.remote.presentation.screen.workflow
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -40,7 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -224,56 +228,64 @@ fun WorkflowScreen(
 
             StatusCard(state)
 
-            // ── 所有配置项合并到同一张卡片，用细线分隔，形成清晰的视觉层次 ──
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(1.dp),
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+            if (isRunning) {
+                WorkflowTvDeck(
+                    state = state,
+                    hostIp = hostIp,
+                    hostPort = hostPort,
+                )
+            } else {
+                // ── 所有配置项合并到同一张卡片，用细线分隔，形成清晰的视觉层次 ──
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(1.dp),
                 ) {
-                    RoleSelectorSection(
-                        icon = Icons.Outlined.Psychology,
-                        title = "大脑 · Brain",
-                        hint = "派发任务与审查代码",
-                        instances = state.availableIdes,
-                        selectedPort = state.brainSelectedPort,
-                        isLoading = state.isLoadingIdes,
-                        onSelect = viewModel::updateBrainIde,
-                        enabled = !isRunning,
-                    )
-                    SectionDivider()
-                    RoleSelectorSection(
-                        icon = Icons.Outlined.Build,
-                        title = "工人 · Worker",
-                        hint = "接收任务并提交代码",
-                        instances = state.availableIdes,
-                        selectedPort = state.workerSelectedPort,
-                        isLoading = state.isLoadingIdes,
-                        onSelect = viewModel::updateWorkerIde,
-                        enabled = !isRunning,
-                    )
-                    SectionDivider()
-                    CwdSection(
-                        cwd = state.cwd,
-                        onCwdChange = viewModel::updateCwd,
-                        cwdHistory = state.cwdHistory,
-                        onBrowse = { viewModel.openFolderBrowser() },
-                        onHistoryDelete = { viewModel.removeCwdHistoryItem(it) },
-                        enabled = !isRunning,
-                    )
-                    SectionDivider()
-                    InitialTaskSection(
-                        value = state.initialTask,
-                        onValueChange = viewModel::updateInitialTask,
-                        attachments = state.attachments,
-                        onAttach = { attachPickerLauncher.launch(arrayOf("*/*")) },
-                        onRemoveAttachment = viewModel::removeAttachment,
-                        enabled = !isRunning,
-                    )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        RoleSelectorSection(
+                            icon = Icons.Outlined.Psychology,
+                            title = "大脑 · Brain",
+                            hint = "派发任务与审查代码",
+                            instances = state.availableIdes,
+                            selectedPort = state.brainSelectedPort,
+                            isLoading = state.isLoadingIdes,
+                            onSelect = viewModel::updateBrainIde,
+                            enabled = !isRunning,
+                        )
+                        SectionDivider()
+                        RoleSelectorSection(
+                            icon = Icons.Outlined.Build,
+                            title = "工人 · Worker",
+                            hint = "接收任务并提交代码",
+                            instances = state.availableIdes,
+                            selectedPort = state.workerSelectedPort,
+                            isLoading = state.isLoadingIdes,
+                            onSelect = viewModel::updateWorkerIde,
+                            enabled = !isRunning,
+                        )
+                        SectionDivider()
+                        CwdSection(
+                            cwd = state.cwd,
+                            onCwdChange = viewModel::updateCwd,
+                            cwdHistory = state.cwdHistory,
+                            onBrowse = { viewModel.openFolderBrowser() },
+                            onHistoryDelete = { viewModel.removeCwdHistoryItem(it) },
+                            enabled = !isRunning,
+                        )
+                        SectionDivider()
+                        InitialTaskSection(
+                            value = state.initialTask,
+                            onValueChange = viewModel::updateInitialTask,
+                            attachments = state.attachments,
+                            onAttach = { attachPickerLauncher.launch(arrayOf("*/*")) },
+                            onRemoveAttachment = viewModel::removeAttachment,
+                            enabled = !isRunning,
+                        )
+                    }
                 }
             }
 
@@ -591,6 +603,195 @@ private fun WorkflowEventLog(events: List<WorkflowEvent>) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── 运行中 TV 监控 ─────────────────────────────────────────────
+
+@Composable
+private fun WorkflowTvDeck(
+    state: WorkflowUiState,
+    hostIp: String,
+    hostPort: Int,
+) {
+    val brainActive = state.pipelineState == WorkflowState.BRAIN_PLAN ||
+        state.pipelineState == WorkflowState.BRAIN_REVIEW ||
+        state.pipelineState == WorkflowState.BRAIN_RECOVER
+    val workerActive = state.pipelineState == WorkflowState.WORKER_CODE
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(1.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Terminal,
+                    contentDescription = null,
+                    tint = purpleAccent.copy(alpha = 0.8f),
+                    modifier = Modifier.size(15.dp),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "协作 TV",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "$hostIp:$hostPort",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            WorkflowTvPane(
+                role = "大脑 · Brain",
+                ideName = state.activeBrainIde ?: state.brainIde.ifBlank { "Brain" },
+                port = state.brainPort,
+                frame = state.brainTv,
+                active = brainActive,
+                icon = Icons.Outlined.Psychology,
+                color = purpleAccent,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (brainActive) 220.dp else 132.dp),
+            )
+            WorkflowTvPane(
+                role = "工人 · Worker",
+                ideName = state.activeWorkerIde ?: state.workerIde.ifBlank { "Worker" },
+                port = state.workerPort,
+                frame = state.workerTv,
+                active = workerActive,
+                icon = Icons.Outlined.Build,
+                color = emeraldAccent,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (workerActive) 220.dp else 132.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun WorkflowTvPane(
+    role: String,
+    ideName: String,
+    port: Int?,
+    frame: WorkflowTvFrame,
+    active: Boolean,
+    icon: ImageVector,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val bitmap = remember(frame.frameData) {
+        frame.frameData?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+    val borderColor = if (active) color.copy(alpha = 0.72f) else subtleBorder.copy(alpha = 0.7f)
+    val bg = if (active) color.copy(alpha = 0.045f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = bg,
+        border = androidx.compose.foundation.BorderStroke(if (active) 1.2.dp else 0.8.dp, borderColor),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (active) color else MaterialTheme.colorScheme.outlineVariant),
+                )
+                Spacer(Modifier.width(7.dp))
+                Icon(icon, null, tint = color, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    role,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "${ideName}${port?.let { ":$it" } ?: ""}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = color.copy(alpha = if (frame.status == "LIVE") 0.12f else 0.07f),
+                ) {
+                    Text(
+                        if (frame.status == "LIVE") "LIVE ${frame.frameCount}" else frame.status,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = color,
+                        fontSize = 8.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF111318)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "$role IDE 画面",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        alignment = if (ideName.contains("Cursor", ignoreCase = true)) Alignment.TopStart else Alignment.TopEnd,
+                    )
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = color,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            frame.status,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.72f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }

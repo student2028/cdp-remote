@@ -72,4 +72,32 @@ class WorkflowStatusParserTest {
 
         assertEquals("externally started task", WorkflowViewModel.mergeInitialTask("", dto))
     }
+
+    @Test
+    fun selectsWorkbenchPageForWorkflowTv() {
+        val ws = WorkflowViewModel.selectWorkflowTvWebSocket(
+            """
+            [
+              {"type":"page","url":"vscode-file://workbench/workbench-jetski-agent.html","title":"Launchpad","webSocketDebuggerUrl":"ws://t/launchpad"},
+              {"type":"page","url":"vscode-file://workbench/workbench.html","title":"Project","webSocketDebuggerUrl":"ws://t/workbench"},
+              {"type":"worker","url":"","title":"","webSocketDebuggerUrl":"ws://t/worker"}
+            ]
+            """.trimIndent()
+        )
+
+        assertEquals("ws://t/workbench", ws)
+    }
+
+    @Test
+    fun ignoresLaunchpadWhenSelectingWorkflowTvPage() {
+        val ws = WorkflowViewModel.selectWorkflowTvWebSocket(
+            """
+            [
+              {"type":"page","url":"file:///launchpad.html","title":"Launchpad","webSocketDebuggerUrl":"ws://t/launchpad"}
+            ]
+            """.trimIndent()
+        )
+
+        assertNull(ws)
+    }
 }
