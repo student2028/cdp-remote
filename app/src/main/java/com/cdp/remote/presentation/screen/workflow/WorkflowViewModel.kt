@@ -16,10 +16,14 @@ import com.cdp.remote.presentation.screen.scheduler.SchedulerViewModel
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -552,29 +556,39 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun refreshTvFrames() {
         val snapshot = uiState
-        runCatching {
-            refreshTvFrame(
-                isBrain = true,
-                port = snapshot.brainPort,
-                ideName = snapshot.activeBrainIde ?: snapshot.brainIde,
-            )
-        }.onFailure { updateTvFrame(isBrain = true, status = "画面刷新失败", clearFrame = true) }
-        runCatching {
-            refreshTvFrame(
-                isBrain = false,
-                port = snapshot.workerPort,
-                ideName = snapshot.activeWorkerIde ?: snapshot.workerIde,
-            )
-        }.onFailure { updateTvFrame(isBrain = false, status = "画面刷新失败", clearFrame = true) }
+        coroutineScope {
+            listOf(
+                async {
+                    runCatching {
+                        refreshTvFrame(
+                            isBrain = true,
+                            port = snapshot.brainPort,
+                            ideName = snapshot.activeBrainIde ?: snapshot.brainIde,
+                        )
+                    }.onFailure { updateTvFrame(isBrain = true, status = "画面刷新失败", clearFrame = true) }
+                },
+                async {
+                    runCatching {
+                        refreshTvFrame(
+                            isBrain = false,
+                            port = snapshot.workerPort,
+                            ideName = snapshot.activeWorkerIde ?: snapshot.workerIde,
+                        )
+                    }.onFailure { updateTvFrame(isBrain = false, status = "画面刷新失败", clearFrame = true) }
+                },
+            ).awaitAll()
+        }
     }
 
     private suspend fun refreshTvFrame(isBrain: Boolean, port: Int?, ideName: String) {
         if (port == null || port == 0) {
+            disconnectTvFrame(isBrain)
             updateTvFrame(isBrain, status = "等待端口", clearFrame = true)
             return
         }
-        val wsUrl = fetchWorkflowTvWsUrl(port)
+        val wsUrl = withTimeoutOrNull(TV_DISCOVERY_TIMEOUT_MS) { fetchWorkflowTvWsUrl(port) }
         if (wsUrl.isNullOrBlank()) {
+            disconnectTvFrame(isBrain)
             updateTvFrame(isBrain, status = "未找到 ${ideName.ifBlank { "IDE" }} 画面", clearFrame = true)
             return
         }
@@ -583,8 +597,14 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         val currentWs = if (isBrain) brainTvWsUrl else workerTvWsUrl
         if (currentWs != wsUrl || !client.isConnected) {
             client.disconnect()
-            when (val connected = client.connectDirect(wsUrl)) {
+            when (val connected = withTimeoutOrNull(TV_CONNECT_TIMEOUT_MS) { client.connectDirect(wsUrl) }) {
+                null -> {
+                    disconnectTvFrame(isBrain)
+                    updateTvFrame(isBrain, status = "连接超时", clearFrame = true)
+                    return
+                }
                 is CdpResult.Error -> {
+                    disconnectTvFrame(isBrain)
                     updateTvFrame(isBrain, status = connected.message, clearFrame = true)
                     return
                 }
@@ -594,7 +614,8 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
             }
         }
 
-        when (val captured = client.captureScreenshot(42)) {
+        when (val captured = withTimeoutOrNull(TV_SCREENSHOT_TIMEOUT_MS) { client.captureScreenshot(42) }) {
+            null -> updateTvFrame(isBrain, status = "截图超时")
             is CdpResult.Success -> {
                 val previous = if (isBrain) uiState.brainTv else uiState.workerTv
                 updateTvFrame(
@@ -606,6 +627,16 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                 )
             }
             is CdpResult.Error -> updateTvFrame(isBrain, status = captured.message)
+        }
+    }
+
+    private fun disconnectTvFrame(isBrain: Boolean) {
+        if (isBrain) {
+            brainTvClient.disconnect()
+            brainTvWsUrl = null
+        } else {
+            workerTvClient.disconnect()
+            workerTvWsUrl = null
         }
     }
 
@@ -680,6 +711,9 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
     companion object {
         private const val TAG = "WorkflowVM"
         private const val POLL_INTERVAL_MS = 2_000L
+        private const val TV_DISCOVERY_TIMEOUT_MS = 3_000L
+        private const val TV_CONNECT_TIMEOUT_MS = 3_000L
+        private const val TV_SCREENSHOT_TIMEOUT_MS = 3_000L
 
         private val workflowDefaultIdes = listOf(
             IdeInfo("Antigravity", 9333, "可自动启动", emoji = "🚀"),
@@ -743,7 +777,13 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         }
 
         internal fun selectWorkflowTvWebSocket(json: String): String? {
-            val pages = runCatching { JsonParser.parseString(json).asJsonArray }.getOrNull() ?: return null
+            val root = runCatching { JsonParser.parseString(json) }.getOrNull() ?: return null
+            val pages = when {
+                root.isJsonArray -> root.asJsonArray
+                root.isJsonObject -> root.asJsonObject.get("pages")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?: return null
+                else -> return null
+            }
             return pages
                 .mapNotNull { it.takeIf { el -> el.isJsonObject }?.asJsonObject }
                 .filter { page ->

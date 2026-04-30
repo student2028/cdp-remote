@@ -100,4 +100,19 @@ class WorkflowStatusParserTest {
 
         assertNull(ws)
     }
+
+    @Test
+    fun selectsWorkflowTvPageFromWrappedPagesObject() {
+        val ws = WorkflowViewModel.selectWorkflowTvWebSocket(
+            """
+            {
+              "pages": [
+                {"type":"page","url":"app://-/index.html","title":"Codex","webSocketDebuggerUrl":"ws://t/codex"}
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertEquals("ws://t/codex", ws)
+    }
 }
