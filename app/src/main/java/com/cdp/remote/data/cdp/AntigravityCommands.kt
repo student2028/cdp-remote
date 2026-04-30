@@ -5,6 +5,8 @@ import com.cdp.remote.CdpRemoteApp
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.delay
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * Antigravity IDE 专用 CDP 命令集
@@ -20,6 +22,15 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
         private val companionLock = Any()
         @Volatile
         private var cdpHelpersScriptCache: String? = null
+
+        /** 复用的 HTTP 客户端（图片上传到 relay），避免每次创建新连接池 */
+        private val uploadHttpClient by lazy {
+            okhttp3.OkHttpClient.Builder()
+                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+        }
     }
 
     // 排序后的显示索引到原始 DOM 索引的映射
@@ -308,7 +319,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
 
         // 分块传输 base64 数据（避免 JS 字符串过大）
         // 先把 base64 存到一个全局变量
-        val chunkSize = 50000
+        val chunkSize = 200_000  // 200KB per chunk; 压缩后图片 ≤500KB 仅需 ~4 次调用
         val chunks = base64Data.chunked(chunkSize)
 
         // 初始化全局变量
@@ -425,11 +436,163 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     }
 
     /**
-     * 发送图片消息（粘贴图片 + 点击发送）
+     * 通过 Relay HTTP 直传图片（绕开 WebSocket 分块）
+     *
+     * 流程：
+     * 1. Android 将原始图片二进制 POST 到 relay `/upload`
+     * 2. Relay 暂存文件并返回可下载 URL
+     * 3. 一次 CDP evaluate: IDE 端 `fetch(url)` 下载 → 构造 File → 派发 paste 事件
+     *
+     * 优势：无论图片多大，只需 **1 次** CDP evaluate 调用，不会超时。
      */
-    suspend fun sendImage(base64Data: String, mimeType: String = "image/png"): CdpResult<Unit> {
-        pasteImage(base64Data, mimeType).let { 
-            if (it is CdpResult.Error) return CdpResult.Error(it.message) 
+    open suspend fun pasteImageViaRelay(
+        imageBytes: ByteArray,
+        mimeType: String = "image/png",
+        fileName: String = "image.png",
+        relayBaseUrl: String
+    ): CdpResult<Boolean> {
+        // 先聚焦输入框
+        focusInput().let { if (it is CdpResult.Error) return CdpResult.Error("聚焦失败: ${it.message}") }
+        delay(100)
+
+        // 1. HTTP POST 上传到 Relay
+        val ext = when {
+            mimeType.contains("jpeg") || mimeType.contains("jpg") -> ".jpg"
+            mimeType.contains("png") -> ".png"
+            mimeType.contains("gif") -> ".gif"
+            mimeType.contains("webp") -> ".webp"
+            else -> ".bin"
+        }
+        val uploadFileName = fileName.let {
+            if (it.contains('.')) it else "${it}$ext"
+        }
+
+        val uploadUrl: String
+        try {
+            val url = "$relayBaseUrl/upload?filename=${java.net.URLEncoder.encode(uploadFileName, "UTF-8")}&mime=${java.net.URLEncoder.encode(mimeType, "UTF-8")}"
+            val requestBody = imageBytes.toRequestBody(mimeType.toMediaTypeOrNull())
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .build()
+            val response = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                uploadHttpClient.newCall(request).execute()
+            }
+            val body = response.body?.string() ?: return CdpResult.Error("Relay 上传返回空响应")
+            if (!response.isSuccessful) return CdpResult.Error("Relay 上传失败: HTTP ${response.code} $body")
+            val json = JsonParser.parseString(body).asJsonObject
+            uploadUrl = json.get("url")?.asString ?: return CdpResult.Error("Relay 返回无 URL")
+            Log.d(TAG, "图片已上传到 Relay: $uploadUrl (${imageBytes.size} bytes)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Relay 上传异常", e)
+            return CdpResult.Error("Relay 上传异常: ${e.message}")
+        }
+
+        // 2. 一次 CDP evaluate: fetch → Blob → File → paste
+        // IDE 和 Relay 在同一台机器上，用 127.0.0.1 替换 Android 端的 relay IP
+        // 避免 IDE Electron 进程无法解析 Android 局域网地址
+        val ideAccessibleUrl = uploadUrl.replace(
+            Regex("http://[^:/]+"),
+            "http://127.0.0.1"
+        )
+        val escapedUrl = ideAccessibleUrl.replace("'", "\\'")
+        val escapedMime = mimeType.replace("'", "\\'")
+        val escapedName = uploadFileName.replace("'", "\\'")
+
+        val result = cdp.evaluate("""
+            (async function() {
+                try {
+                    var editableDiv = null;
+                    // 1. Antigravity 专用路径
+                    var container = document.getElementById('$INPUT_BOX_ID');
+                    if (container) {
+                        editableDiv = container.querySelector('[contenteditable="true"]');
+                    }
+                    // 2. Windsurf: #chat 内的 contenteditable
+                    if (!editableDiv) {
+                        var chatDiv = document.getElementById('chat');
+                        if (chatDiv) editableDiv = chatDiv.querySelector('[contenteditable="true"]');
+                    }
+                    // 3. Windsurf: #windsurf.cascadePanel
+                    if (!editableDiv) {
+                        var panel = document.getElementById('windsurf.cascadePanel');
+                        if (panel) editableDiv = panel.querySelector('[contenteditable="true"]');
+                    }
+                    // 4. 通用: role=textbox 或 min-h- 类名的 contenteditable
+                    if (!editableDiv) {
+                        var ces = document.querySelectorAll('div[contenteditable="true"]');
+                        for (var i = 0; i < ces.length; i++) {
+                            var el = ces[i];
+                            if (!el.offsetParent) continue;
+                            var cls = el.className || '';
+                            var role = el.getAttribute('role') || '';
+                            var parent = el.closest('[class*="chat"], [class*="composer"], [class*="interactive"], [class*="aichat"]');
+                            if (role === 'textbox' || parent || cls.indexOf('min-h-') >= 0 || cls.indexOf('outline-none') >= 0) {
+                                editableDiv = el;
+                                break;
+                            }
+                        }
+                    }
+                    if (!editableDiv) return 'no-container';
+                    editableDiv.focus();
+                    
+                    // fetch 图片
+                    var resp = await fetch('$escapedUrl');
+                    if (!resp.ok) return 'fetch-failed:' + resp.status;
+                    var blob = await resp.blob();
+                    var file = new File([blob], '$escapedName', {type: '$escapedMime', lastModified: Date.now()});
+                    
+                    // 创建 DataTransfer 并派发 paste 事件
+                    var dt = new DataTransfer();
+                    dt.items.add(file);
+                    try {
+                        var pasteEvent = new ClipboardEvent('paste', {
+                            clipboardData: dt,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        editableDiv.dispatchEvent(pasteEvent);
+                    } catch(e1) {
+                        var dropEvent = new DragEvent('drop', {
+                            dataTransfer: dt,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        editableDiv.dispatchEvent(dropEvent);
+                    }
+                    return 'ok';
+                } catch(e) {
+                    return 'error:' + e.message;
+                }
+            })()
+        """.trimIndent(), awaitPromise = true)
+
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        val value = result.getOrNull() ?: ""
+        return when {
+            value == "ok" -> CdpResult.Success(true)
+            value.startsWith("error:") -> CdpResult.Error("粘贴图片失败: ${value.removePrefix("error:")}")
+            else -> CdpResult.Error("粘贴图片失败: $value")
+        }
+    }
+
+    /**
+     * 发送图片消息（粘贴图片 + 点击发送）
+     * @param relayBaseUrl 如果提供，使用 HTTP 直传通道（绕开 WebSocket 分块）
+     */
+    suspend fun sendImage(
+        base64Data: String,
+        mimeType: String = "image/png",
+        relayBaseUrl: String? = null,
+        rawBytes: ByteArray? = null
+    ): CdpResult<Unit> {
+        val pasteResult = if (relayBaseUrl != null && rawBytes != null) {
+            pasteImageViaRelay(rawBytes, mimeType, relayBaseUrl = relayBaseUrl)
+        } else {
+            pasteImage(base64Data, mimeType)
+        }
+        pasteResult.let {
+            if (it is CdpResult.Error) return CdpResult.Error(it.message)
         }
         delay(500) // 等待 UI 渲染图片预览
         clickSendButton().let { 

@@ -1,5 +1,7 @@
-66. Git 流水线多轮审查与任务描述修复：
-- 修复多轮审查质量门卡死 Bug（_brainReplyProcessed 被覆盖导致 Round 2+ 永远无法推进）
-- 修复任务描述丢失：Relay 端补全 initialTask 的持久化与 API 返回
-- App 端从 /workflow/status 同步 initialTask，外部启动的流水线也能显示任务描述
-- Workspace Trust 弹窗阻断修复：autoLaunchWithCdp 自动注入安全设置
+67. 高清图片发送优化：
+- 新增 ImageCompressor：选图时自动压缩到 1920px/500KB 以内
+- 新增 Relay HTTP 直传通道（/upload + /tmp）：绕开 WebSocket base64 分块
+- pasteImageViaRelay：1 次 CDP evaluate + fetch() 替代 100+ 次分块调用
+- 全局 CORS OPTIONS 预检支持
+- chunk size 50KB → 200KB（降级通道也更快）
+- 修复 OkHttpClient 连接池泄漏、ChatDraftStore 内存膨胀

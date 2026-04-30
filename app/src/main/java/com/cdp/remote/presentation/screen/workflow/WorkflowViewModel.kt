@@ -14,6 +14,7 @@ import com.cdp.remote.presentation.screen.hosts.DirItem
 import com.cdp.remote.presentation.screen.scheduler.IdeInfo
 import com.cdp.remote.presentation.screen.scheduler.SchedulerViewModel
 import com.google.gson.JsonParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -559,22 +560,30 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         coroutineScope {
             listOf(
                 async {
-                    runCatching {
+                    try {
                         refreshTvFrame(
                             isBrain = true,
                             port = snapshot.brainPort,
                             ideName = snapshot.activeBrainIde ?: snapshot.brainIde,
                         )
-                    }.onFailure { updateTvFrame(isBrain = true, status = "画面刷新失败", clearFrame = true) }
+                    } catch (e: CancellationException) {
+                        throw e // 放行协程取消，避免 tvJob 被 cancel 后残留错误状态
+                    } catch (_: Exception) {
+                        updateTvFrame(isBrain = true, status = "画面刷新失败", clearFrame = true)
+                    }
                 },
                 async {
-                    runCatching {
+                    try {
                         refreshTvFrame(
                             isBrain = false,
                             port = snapshot.workerPort,
                             ideName = snapshot.activeWorkerIde ?: snapshot.workerIde,
                         )
-                    }.onFailure { updateTvFrame(isBrain = false, status = "画面刷新失败", clearFrame = true) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        updateTvFrame(isBrain = false, status = "画面刷新失败", clearFrame = true)
+                    }
                 },
             ).awaitAll()
         }

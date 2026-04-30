@@ -201,6 +201,9 @@ class CdpClient(
         } catch (e: TimeoutCancellationException) {
             pendingCalls.remove(id)
             CdpResult.Error("CDP 超时: $method")
+        } catch (e: CancellationException) {
+            pendingCalls.remove(id)
+            throw e // 放行外部 withTimeoutOrNull 等协程取消
         } catch (e: Exception) {
             pendingCalls.remove(id)
             CdpResult.Error("CDP 错误: ${e.message}")

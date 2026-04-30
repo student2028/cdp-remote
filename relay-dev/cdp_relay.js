@@ -1664,6 +1664,15 @@ function parseCdpPath(url) {
 const server = http.createServer(async (req, res) => {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', 'Access-Control-Allow-Headers': '*' };
 
+    // ── 全局 CORS 预检 ──
+    // IDE Electron 的 fetch() 跨域（origin: vscode-file:// → http://127.0.0.1）
+    // 浏览器会先发 OPTIONS 预检请求，必须在所有路由之前统一处理
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors);
+        res.end();
+        return;
+    }
+
     // ── /health ──
     if (req.url === '/health') {
         const targets = [];
@@ -1910,6 +1919,78 @@ const server = http.createServer(async (req, res) => {
 
         res.writeHead(405, { 'Content-Type': 'application/json', ...cors });
         res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+
+    // ── /upload — 图片直传通道：Android 上传原始二进制，IDE 端通过 fetch() 下载 ──
+    // POST /upload?filename=image.png&mime=image/png  body: raw binary
+    // 返回: { url: "http://relay:19336/tmp/xxx_image.png" }
+    // 文件 60 秒后自动清理
+    if (req.url.startsWith('/upload') && req.method === 'POST') {
+        const parsed = urlModule.parse(req.url, true);
+        const filename = (parsed.query.filename || 'image.bin').replace(/[^a-zA-Z0-9._\-]/g, '_');
+        const UPLOAD_MAX = 20 * 1024 * 1024; // 20MB 上限
+        const chunks = [];
+        let totalLen = 0;
+        let tooLarge = false;
+        req.on('data', chunk => {
+            if (tooLarge) return;
+            totalLen += chunk.length;
+            if (totalLen > UPLOAD_MAX) { tooLarge = true; chunks.length = 0; return; }
+            chunks.push(chunk);
+        });
+        req.on('end', () => {
+            if (tooLarge) {
+                res.writeHead(413, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({ error: '文件超过 20MB 上限' }));
+                return;
+            }
+            try {
+                const tmpDir = path.join(os.tmpdir(), 'cdp-relay-uploads');
+                fs.mkdirSync(tmpDir, { recursive: true });
+                const safeName = `${Date.now()}_${filename}`;
+                const filePath = path.join(tmpDir, safeName);
+                fs.writeFileSync(filePath, Buffer.concat(chunks));
+                const relayHost = req.headers.host || `${BIND_ADDR}:${RELAY_PORT}`;
+                const url = `http://${relayHost}/tmp/${safeName}`;
+                log(`📤 /upload: ${filePath} (${totalLen} bytes) → ${url}`);
+                // 60 秒后自动清理临时文件
+                setTimeout(() => {
+                    try { fs.unlinkSync(filePath); log(`🗑️ 已清理临时文件: ${safeName}`); } catch (_) {}
+                }, 60_000);
+                res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({ ok: true, url, size: totalLen }));
+            } catch (e) {
+                log(`❌ /upload 异常: ${e.message}`);
+                res.writeHead(500, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // ── /tmp/:filename — 提供上传的临时文件下载 ──
+    if (req.url.startsWith('/tmp/') && req.method === 'GET') {
+        const safeName = req.url.slice(5).split('?')[0]; // 去掉 /tmp/ 前缀和查询参数
+        if (!safeName || safeName.includes('..') || safeName.includes('/')) {
+            res.writeHead(400, { 'Content-Type': 'application/json', ...cors });
+            res.end(JSON.stringify({ error: '无效文件名' }));
+            return;
+        }
+        const tmpDir = path.join(os.tmpdir(), 'cdp-relay-uploads');
+        const filePath = path.join(tmpDir, safeName);
+        if (!fs.existsSync(filePath)) {
+            res.writeHead(404, { 'Content-Type': 'application/json', ...cors });
+            res.end(JSON.stringify({ error: '文件不存在或已过期' }));
+            return;
+        }
+        const data = fs.readFileSync(filePath);
+        // 从文件名推断 MIME
+        const ext = path.extname(safeName).toLowerCase();
+        const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
+        const mime = mimeMap[ext] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': data.length, ...cors });
+        res.end(data);
         return;
     }
 

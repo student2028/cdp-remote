@@ -9,6 +9,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import android.net.Uri
 import android.util.Base64
+import android.util.Log
+import com.cdp.remote.util.ImageCompressor
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -45,7 +47,9 @@ import com.cdp.remote.presentation.screen.chat.components.ActionToolbar
 import com.cdp.remote.presentation.screen.chat.components.InputBar
 import com.cdp.remote.presentation.screen.chat.components.MessageBubble
 import com.cdp.remote.presentation.screen.chat.components.TvLiveView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Cursor 桌面端「模型选择器」预置列表。
@@ -164,11 +168,22 @@ fun ChatScreen(
             for (uri in uris) {
                 try {
                     val inputStream = context.contentResolver.openInputStream(uri) ?: continue
-                    val bytes = inputStream.readBytes()
+                    val rawBytes = inputStream.readBytes()
                     inputStream.close()
-                    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                    val mimeType = context.contentResolver.getType(uri) ?: "image/png"
-                    viewModel.attachImage(base64, mimeType)
+
+                    // 压缩图片：缩放到 1920px 以内，JPEG 质量自适应，目标 ≤ 500 KB
+                    // 避免高清原图（3~8 MB）经 Base64 膨胀后 CDP 分块传输 100+ 次导致超时
+                    val compressed = withContext(Dispatchers.Default) {
+                        ImageCompressor.compressForUpload(rawBytes)
+                    }
+                    Log.d("ChatScreen", "图片压缩: ${rawBytes.size / 1024}KB → ${compressed.size / 1024}KB")
+
+                    val base64 = Base64.encodeToString(compressed, Base64.NO_WRAP)
+                    // 压缩后统一使用 JPEG（ImageCompressor 输出 JPEG 格式）
+                    val mimeType = if (compressed !== rawBytes) "image/jpeg"
+                        else (context.contentResolver.getType(uri) ?: "image/png")
+                    // 传压缩后字节给 relay 直传（IDE 不需要原始分辨率）
+                    viewModel.attachImage(base64, mimeType, compressed)
                 } catch (e: Exception) {
                     viewModel.addSystemMessage("图片读取失败: ${e.message}")
                 }

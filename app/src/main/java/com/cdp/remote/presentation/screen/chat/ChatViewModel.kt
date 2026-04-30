@@ -24,7 +24,11 @@ private object ChatDraftStore {
     fun save(key: String, text: String, images: List<PendingImage>) {
         if (key.isBlank()) return
         if (text.isBlank() && images.isEmpty()) drafts.remove(key)
-        else drafts[key] = ChatDraft(text, images)
+        else {
+            // 去掉 rawBytes 避免 static Map 内存膨胀（恢复时降级走 base64 分块发送）
+            val lightweight = images.map { it.copy(rawBytes = null) }
+            drafts[key] = ChatDraft(text, lightweight)
+        }
     }
 
     @Synchronized
@@ -273,14 +277,26 @@ class ChatViewModel(
 
         viewModelScope.launch {
             var sendSucceeded = true
+            // 构建 relay 基础 URL（用于 HTTP 直传图片）
+            val relayBase = connectHost?.let { "http://${it.ip}:${it.port}" }
+
             // 图片+文字组合发送：先粘贴所有图片（不发送），再输入文字后一起发送
             if (imagesToSend.isNotEmpty() && text.isNotEmpty()) {
                 // Step 1: Paste images only (no Enter)
                 for ((index, img) in imagesToSend.withIndex()) {
-                    val pasteResult = when {
+                    var pasteResult: CdpResult<Boolean> = when {
                         isClaudeCode -> claudeCodeCommands!!.pasteImage(img.base64, img.mimeType)
                         isCodex -> codexCommands!!.pasteImage(img.base64, img.mimeType)
+                        // 优先 relay HTTP 直传（有 rawBytes 时）；否则降级 base64 分块
+                        img.rawBytes != null && relayBase != null ->
+                            commands!!.pasteImageViaRelay(img.rawBytes, img.mimeType, relayBaseUrl = relayBase)
                         else -> commands!!.pasteImage(img.base64, img.mimeType)
+                    }
+                    // relay 直传失败时自动降级到 base64 分块
+                    if (pasteResult is CdpResult.Error && img.rawBytes != null && relayBase != null
+                        && !isClaudeCode && !isCodex) {
+                        Log.w("ChatVM", "Relay 直传失败，降级到 base64 分块: ${pasteResult.message}")
+                        pasteResult = commands!!.pasteImage(img.base64, img.mimeType)
                     }
                     if (pasteResult is CdpResult.Error) {
                         sendSucceeded = false
@@ -309,6 +325,9 @@ class ChatViewModel(
                     val imgResult = when {
                         isClaudeCode -> claudeCodeCommands!!.sendImage(img.base64, img.mimeType)
                         isCodex -> codexCommands!!.sendImage(img.base64, img.mimeType)
+                        // 优先 relay HTTP 直传
+                        img.rawBytes != null && relayBase != null ->
+                            commands!!.sendImage(img.base64, img.mimeType, relayBaseUrl = relayBase, rawBytes = img.rawBytes)
                         else -> commands!!.sendImage(img.base64, img.mimeType)
                     }
                     if (imgResult is CdpResult.Error) {
@@ -546,10 +565,11 @@ class ChatViewModel(
 
     // ─── Image Attachment ───────────────────────────────────────────
 
-    fun attachImage(base64Data: String, mimeType: String) {
+    fun attachImage(base64Data: String, mimeType: String, rawBytes: ByteArray? = null) {
         val img = PendingImage(
             base64 = base64Data,
-            mimeType = mimeType
+            mimeType = mimeType,
+            rawBytes = rawBytes
         )
         uiState = uiState.copy(
             pendingImages = uiState.pendingImages + img,

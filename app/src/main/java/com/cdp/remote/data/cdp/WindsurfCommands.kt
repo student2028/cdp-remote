@@ -383,7 +383,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         focusInput().let { if (it is CdpResult.Error) return CdpResult.Error("聚焦失败: ${it.message}") }
         delay(100)
 
-        val chunkSize = 50000
+        val chunkSize = 200_000  // 200KB per chunk; 压缩后图片 ≤500KB 仅需 ~4 次调用
         val chunks = base64Data.chunked(chunkSize)
         val initResult = cdp.evaluate("window.__pasteImageB64 = '';")
         if (initResult is CdpResult.Error) return CdpResult.Error("初始化图片传输失败: ${initResult.message}")
