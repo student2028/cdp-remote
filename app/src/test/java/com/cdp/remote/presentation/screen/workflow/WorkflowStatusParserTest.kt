@@ -16,7 +16,7 @@ class WorkflowStatusParserTest {
               "warned": false,
               "cwd": "/tmp/project",
               "brain": {"ide": "Antigravity", "port": 9333},
-              "worker": {"ide": "Windsurf", "port": 9444},
+              "worker": {"ide": "Cursor", "port": 9555},
               "reviewRound": 2,
               "minReviewRounds": 3,
               "lastReviewVerdict": "NEEDS_REWORK",

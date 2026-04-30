@@ -1075,7 +1075,14 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
         } catch (e: Exception) {
             return CdpResult.Error("解析失败: ${e.message}")
         }
-        return CdpResult.Error("未找到 Accept all 按钮")
+
+        // Cursor/agent 工具审批经常不是 “Accept all”，而是 Run/Allow/Approve。
+        // 手机端“接受”按钮在这种状态下也应该推进审批，而不是只找代码 diff 的 Accept all。
+        return if (autoAcceptActions()) {
+            CdpResult.Success(true)
+        } else {
+            CdpResult.Error("未找到 Accept all 或 Run/Allow/Approve 按钮")
+        }
     }
 
     /**

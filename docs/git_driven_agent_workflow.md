@@ -162,8 +162,8 @@ Orchestra-Pipeline: <流水线类型名，如 pair_programming>
 ```yaml
 pipeline: pair_programming
 roles:
-  brain:  { ide: Antigravity, cdp_port: 9222 }
-  worker: { ide: Windsurf,    cdp_port: 9333 }
+  brain:  { ide: Antigravity, cdp_port: 9333 }
+  worker: { ide: Cursor,      cdp_port: 9555, model: "Composer 2" }
 
 timeouts:
   default_ms: 600000   # 10 分钟无事件就告警
@@ -449,7 +449,7 @@ Relay 对前端（Android 手机遥控器）暴露三个端点，用来**启动 
 | 503 | `brain` 或 `worker` IDE 自动启动失败（response 附 `available` 列表） |
 | 500 | `scripts/orchestra.sh` 执行失败 |
 
-**内部行为**：校验通过后，Relay 会先确保 Brain / Worker IDE 就绪：若指定端口未在线，则自动启动对应 IDE，并让两个 IDE 打开同一个 `cwd`。随后 Relay 以 `cwd` 为工作目录执行本项目内置的 `scripts/orchestra.sh plan <initial_task>`，由 `reference-transaction` hook 异步触发 `/workflow/next`，状态机先走 `IDLE → BRAIN_PLAN`，再由 Brain 派发首个 `TASK` 进入 `WORKER_CODE`。
+**内部行为**：校验通过后，Relay 会先确保 Brain / Worker IDE 就绪：若指定端口未在线，则自动启动对应 IDE，并让两个 IDE 打开同一个 `cwd`。当 Worker 是 Cursor 时，Relay 会尝试把 Cursor Composer 模型切到 `Composer 2`。随后 Relay 以 `cwd` 为工作目录执行本项目内置的 `scripts/orchestra.sh plan <initial_task>`，由 `reference-transaction` hook 异步触发 `/workflow/next`，状态机先走 `IDLE → BRAIN_PLAN`，再由 Brain 派发首个 `TASK` 进入 `WORKER_CODE`。
 
 #### 6.5.2 `GET /workflow/status`
 
@@ -494,7 +494,7 @@ Jetpack Compose 页面路径：`presentation/screen/workflow/`
 
 入口：主机列表页（`HostListScreen`）TopBar 的 `AccountTree` 图标 → 跳转到 `Routes.WORKFLOW`。
 
-**前提要求**：用户需要选择两个不同的 IDE 实例（例如 Antigravity + Windsurf）。若 IDE 没有打开，`/workflow/start` 会按端口自动启动并打开同一个 Git 工作目录；自动启动失败时才返回 503。
+**前提要求**：用户需要选择两个不同的 IDE 实例（默认 Antigravity:9333 + Cursor:9555）。若 IDE 没有打开，`/workflow/start` 会按端口自动启动并打开同一个 Git 工作目录；自动启动失败时才返回 503。
 
 ---
 

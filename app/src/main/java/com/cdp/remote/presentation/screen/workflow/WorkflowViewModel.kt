@@ -321,8 +321,8 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     isLoadingIdes = false,
                     brainIde = uiState.brainIde.ifBlank { "Antigravity" },
                     brainSelectedPort = uiState.brainSelectedPort.takeIf { it != 0 } ?: 9333,
-                    workerIde = uiState.workerIde.ifBlank { "Windsurf" },
-                    workerSelectedPort = uiState.workerSelectedPort.takeIf { it != 0 } ?: 9444,
+                    workerIde = uiState.workerIde.ifBlank { "Cursor" },
+                    workerSelectedPort = uiState.workerSelectedPort.takeIf { it != 0 } ?: 9555,
                 )
                 // 同时拉取 CWD 历史
                 fetchCwdHistory()
@@ -354,6 +354,10 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     uiState = uiState.copy(toastMessage = msg)
                 }
 
+                // 如果本地任务描述为空但服务端有（外部启动的流水线），用服务端的补全
+                val syncedTask = if (uiState.initialTask.isBlank() && !status.initialTask.isNullOrBlank())
+                    status.initialTask else uiState.initialTask
+
                 uiState = uiState.copy(
                     pipelineState = newState,
                     brainPort = status.brainPort,
@@ -369,6 +373,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     eventLog = status.eventLog,
                     lastError = status.lastError,
                     lastFinishedState = status.lastFinishedState,
+                    initialTask = syncedTask,
                 )
             } catch (_: Exception) {
                 // 轮询静默失败，不扰民
@@ -562,8 +567,8 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
 
         private val workflowDefaultIdes = listOf(
             IdeInfo("Antigravity", 9333, "可自动启动", emoji = "🚀"),
+            IdeInfo("Cursor", 9555, "可自动启动", emoji = "🖱️"),
             IdeInfo("Windsurf", 9444, "可自动启动", emoji = "🏄"),
-            IdeInfo("Cursor", 9233, "可自动启动", emoji = "🖱️"),
             IdeInfo("Codex", 9666, "可自动启动", emoji = "📦"),
         )
 
@@ -601,6 +606,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                 elapsedMs = obj.get("elapsed_ms")?.asLong ?: 0,
                 warned = obj.get("warned")?.asBoolean ?: false,
                 cwd = obj.get("cwd")?.takeIf { !it.isJsonNull }?.asString,
+                initialTask = obj.get("initialTask")?.takeIf { !it.isJsonNull }?.asString,
                 brainPort = brain?.get("port")?.takeIf { !it.isJsonNull }?.asInt,
                 workerPort = worker?.get("port")?.takeIf { !it.isJsonNull }?.asInt,
                 brainIde = brain?.get("ide")?.takeIf { !it.isJsonNull }?.asString,
@@ -660,6 +666,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         val elapsedMs: Long,
         val warned: Boolean,
         val cwd: String?,
+        val initialTask: String? = null,
         val brainPort: Int?,
         val workerPort: Int?,
         val brainIde: String? = null,

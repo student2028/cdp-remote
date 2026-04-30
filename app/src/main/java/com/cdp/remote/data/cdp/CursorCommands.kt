@@ -195,6 +195,127 @@ class CursorCommands(cdp: ICdpClient, appName: String = "Cursor") : AntigravityC
     }
 
     /**
+     * Cursor Composer 的工具审批不是通用的 “Accept all”，而是 shell tool card 内的
+     * `button.ui-shell-tool-call__run-btn`，显示文本通常是 `Run⏎`。
+     */
+    override suspend fun autoAcceptActions(): Boolean {
+        val result = cdp.evaluate("""
+            (function() {
+                function allDocs() {
+                    var out = [document];
+                    var ifr = document.querySelectorAll('iframe');
+                    for (var i = 0; i < ifr.length; i++) {
+                        try { if (ifr[i].contentDocument) out.push(ifr[i].contentDocument); } catch(e) {}
+                    }
+                    return out;
+                }
+                function flatten(root) {
+                    var out = [];
+                    function walk(node) {
+                        if (!node) return;
+                        if (node.nodeType === 1) {
+                            out.push(node);
+                            if (node.shadowRoot) walk(node.shadowRoot);
+                        }
+                        for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+                    }
+                    walk(root);
+                    return out;
+                }
+                function visible(el) {
+                    if (!el || !el.getBoundingClientRect) return false;
+                    var r = el.getBoundingClientRect();
+                    var s = window.getComputedStyle ? getComputedStyle(el) : null;
+                    return r.width > 0 && r.height > 0 && (!s || (s.display !== 'none' && s.visibility !== 'hidden'));
+                }
+                function textOf(el) {
+                    return ((el.innerText || el.textContent || el.value || '') + '').trim();
+                }
+                function isApproval(text) {
+                    var lower = (text || '').toLowerCase().trim().replace(/\s+/g, ' ');
+                    var cmd = lower.replace(/[^a-z]/g, '');
+                    if (!lower || lower.indexOf('cancel') >= 0 || lower.indexOf('esc') >= 0) return false;
+                    return lower === 'run'
+                        || cmd === 'run'
+                        || lower === 'allow'
+                        || lower === 'approve'
+                        || lower === 'continue'
+                        || lower === 'yes'
+                        || lower === 'always allow'
+                        || lower === 'allow once'
+                        || lower === 'allow in workspace'
+                        || lower === 'approve action'
+                        || lower === 'run action'
+                        || (lower.indexOf('run') === 0 && lower.indexOf('(') >= 0)
+                        || (lower.indexOf('allow') === 0 && lower.indexOf('(') >= 0)
+                        || (lower.indexOf('approve') === 0 && lower.indexOf('(') >= 0);
+                }
+
+                var roots = [];
+                allDocs().forEach(function(doc) {
+                    Array.prototype.forEach.call(doc.querySelectorAll(
+                        '.composer-bar, .composer, .chat-view, .aichat, .interactive-session, .unified-agents-sidebar, .pane-body, body'
+                    ), function(root) { roots.push(root); });
+                    if (!roots.length && doc.body) roots.push(doc.body);
+                });
+
+                var seen = new Set();
+                var candidates = [];
+                roots.forEach(function(root) {
+                    flatten(root).forEach(function(el) {
+                        if (seen.has(el)) return;
+                        seen.add(el);
+                        var tag = (el.tagName || '').toLowerCase();
+                        var role = el.getAttribute && (el.getAttribute('role') || '');
+                        var cls = ((typeof el.className === 'string' ? el.className : '') || '').toLowerCase();
+                        if (tag !== 'button' && tag !== 'a' && role !== 'button' && cls.indexOf('button') < 0) return;
+                        if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') return;
+                        var txt = textOf(el);
+                        var aria = (el.getAttribute('aria-label') || '').trim();
+                        var title = (el.getAttribute('title') || '').trim();
+                        if (isApproval(txt) || isApproval(aria) || isApproval(title) || cls.indexOf('ui-shell-tool-call__run-btn') >= 0) {
+                            candidates.push({ el: el, text: txt || aria || title || cls, cls: cls });
+                        }
+                    });
+                });
+
+                if (!candidates.length) return JSON.stringify({found:false, reason:'no-approval-button'});
+                var choice = candidates.find(function(c) { return c.cls.indexOf('ui-shell-tool-call__run-btn') >= 0; }) || candidates[0];
+                var r = choice.el.getBoundingClientRect();
+                return JSON.stringify({
+                    found: true,
+                    text: choice.text,
+                    x: r.x + r.width / 2,
+                    y: r.y + r.height / 2
+                });
+            })()
+        """.trimIndent())
+
+        val value = result.getOrNull() ?: return false
+        return try {
+            val json = JsonParser.parseString(value).asJsonObject
+            if (json.get("found")?.asBoolean != true) return false
+            val x = json.get("x").asDouble
+            val y = json.get("y").asDouble
+            cdp.dispatchMouseEvent("mouseMoved", x, y)
+            kotlinx.coroutines.delay(50)
+            cdp.dispatchMouseEvent("mousePressed", x, y, "left", 1)
+            kotlinx.coroutines.delay(50)
+            cdp.dispatchMouseEvent("mouseReleased", x, y, "left", 1)
+            Log.d(TAG, "Cursor 自动审批按钮: ${json.get("text")?.asString.orEmpty()}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Cursor 自动审批解析失败", e)
+            false
+        }
+    }
+
+    override suspend fun acceptAll(): CdpResult<Boolean> {
+        if (autoAcceptActions()) return CdpResult.Success(true)
+        return super.acceptAll()
+    }
+
+    /**
      * 获取最后一条助手回复 — Cursor 专属覆写
      *
      * Cursor 的聊天 DOM 与 Antigravity 完全不同：

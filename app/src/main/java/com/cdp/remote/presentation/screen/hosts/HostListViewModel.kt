@@ -39,7 +39,7 @@ class HostListViewModel : ViewModel() {
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
     // ─── Host Management ────────────────────────────────────────────

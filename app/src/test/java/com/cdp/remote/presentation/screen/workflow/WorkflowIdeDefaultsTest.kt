@@ -14,8 +14,8 @@ class WorkflowIdeDefaultsTest {
         assertEquals(
             listOf(
                 "Antigravity" to 9333,
+                "Cursor" to 9555,
                 "Windsurf" to 9444,
-                "Cursor" to 9233,
                 "Codex" to 9666,
             ),
             ides.map { it.name to it.port }

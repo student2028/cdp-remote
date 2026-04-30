@@ -193,7 +193,7 @@ const ELECTRON_APPS = [
 const DEFAULT_WORKFLOW_IDE_PORTS = {
     Antigravity: 9333,
     Windsurf: 9444,
-    Cursor: 9233,
+    Cursor: 9555,
     Codex: 9666,
 };
 
@@ -272,7 +272,7 @@ async function sendBrowserClose(cdpPort) {
         const timer = setTimeout(() => {
             try { ws.close(); } catch (_) {}
             reject(new Error('Browser.close timeout'));
-        }, 3000);
+        }, 8000);
 
         let closeSent = false;
         ws.on('open', () => {
@@ -363,14 +363,14 @@ function loadPipelineState() {
         if (fs.existsSync(PIPELINE_STATE_FILE)) {
             const saved = JSON.parse(fs.readFileSync(PIPELINE_STATE_FILE, 'utf8'));
             // 只恢复核心字段，运行时字段用默认值
-            if (saved && saved.state && saved.state !== 'IDLE') {
+            if (saved && saved.state && !['IDLE', 'DONE', 'ABORT'].includes(saved.state)) {
                 log(`📂 恢复流水线状态: ${saved.state} (${saved.name || 'pair_programming'})`);
                 return {
                     name: saved.name || 'pair_programming',
                     state: saved.state,
                     state_entered_at: saved.state_entered_at || Date.now(),
                     brain:  saved.brain  || { ide: 'Antigravity', port: null },
-                    worker: saved.worker || { ide: 'Windsurf',    port: null },
+                    worker: saved.worker || { ide: 'Cursor',      port: null },
                     cwd: saved.cwd || null,
                     timeouts: saved.timeouts || { default_ms: 180_000 },
                     warned: false,
@@ -405,6 +405,7 @@ function savePipelineState(pl) {
             worker: pl.worker,
             cwd: pl.cwd,
             timeouts: pl.timeouts,
+            initialTask: pl.initialTask || '',
             lastError: pl.lastError,
             lastErrorAt: pl.lastErrorAt,
             lastFinishedState: pl.lastFinishedState,
@@ -438,8 +439,9 @@ let currentPipeline = loadPipelineState() || {
     state: 'IDLE',
     state_entered_at: Date.now(),
     brain:  { ide: 'Antigravity', port: null },
-    worker: { ide: 'Windsurf',    port: null },
+    worker: { ide: 'Cursor',      port: null },
     cwd: null,
+    initialTask: '',
     timeouts: { default_ms: 180_000 },
     warned: false,
     lastError: null,
@@ -818,6 +820,146 @@ async function readBrainLastReply(cdpPort, cwdHint) {
     });
 }
 
+async function autoAcceptWorkerActions(cdpPort, cwdHint) {
+    return new Promise((resolve) => {
+        const pagesReq = http.get(`http://${CDP_HOST}:${cdpPort}/json`, { timeout: 5000 }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                let ws;
+                let finished = false;
+                const done = (value) => {
+                    if (finished) return;
+                    finished = true;
+                    try { if (ws) ws.close(); } catch (_) {}
+                    resolve(value);
+                };
+
+                try {
+                    const pages = JSON.parse(data);
+                    const ranked = pages
+                        .map(p => ({ page: p, score: scoreReplyPage(p, cwdHint) }))
+                        .filter(x => x.score >= 0)
+                        .sort((a, b) => b.score - a.score);
+                    if (!ranked.length) { done({ found: false, reason: 'no-page' }); return; }
+
+                    const expr = `
+                        (function() {
+                            function visible(el) {
+                                if (!el || !el.getBoundingClientRect) return false;
+                                var r = el.getBoundingClientRect();
+                                var s = window.getComputedStyle ? getComputedStyle(el) : null;
+                                return r.width > 0 && r.height > 0 && (!s || (s.display !== 'none' && s.visibility !== 'hidden'));
+                            }
+                            function textOf(el) {
+                                return ((el.innerText || el.textContent || el.value || '') + '').trim();
+                            }
+                            function norm(text) {
+                                return (text || '').toLowerCase().trim().replace(/\\s+/g, ' ');
+                            }
+                            function isApproval(text) {
+                                var lower = norm(text);
+                                var cmd = lower.replace(/[^a-z]/g, '');
+                                if (!lower || lower.indexOf('cancel') >= 0 || lower.indexOf('esc') >= 0) return false;
+                                return lower === 'run'
+                                    || cmd === 'run'
+                                    || lower === 'allow'
+                                    || lower === 'approve'
+                                    || lower === 'continue'
+                                    || lower === 'yes'
+                                    || lower === 'always allow'
+                                    || lower === 'allow once'
+                                    || lower === 'allow in workspace'
+                                    || lower === 'approve action'
+                                    || lower === 'run action'
+                                    || (lower.indexOf('run') === 0 && lower.indexOf('(') >= 0)
+                                    || (lower.indexOf('allow') === 0 && lower.indexOf('(') >= 0)
+                                    || (lower.indexOf('approve') === 0 && lower.indexOf('(') >= 0);
+                            }
+                            function flatten(root) {
+                                var out = [];
+                                function walk(node) {
+                                    if (!node) return;
+                                    if (node.nodeType === 1) {
+                                        out.push(node);
+                                        if (node.shadowRoot) walk(node.shadowRoot);
+                                    }
+                                    for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+                                }
+                                walk(root);
+                                return out;
+                            }
+                            function fullClick(el) {
+                                var r = el.getBoundingClientRect();
+                                var x = r.x + r.width / 2;
+                                var y = r.y + r.height / 2;
+                                ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(type) {
+                                    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+                                });
+                                if (typeof el.click === 'function') el.click();
+                            }
+                            var roots = Array.from(document.querySelectorAll(
+                                '.composer-bar, .composer, .chat-view, .aichat, .interactive-session, .unified-agents-sidebar, .pane-body, body'
+                            ));
+                            if (!roots.length) roots = [document.body || document.documentElement];
+                            var seen = new Set();
+                            var candidates = [];
+                            roots.forEach(function(root) {
+                                flatten(root).forEach(function(el) {
+                                    if (seen.has(el)) return;
+                                    seen.add(el);
+                                    var tag = (el.tagName || '').toLowerCase();
+                                    var role = el.getAttribute && (el.getAttribute('role') || '');
+                                    var cls = ((typeof el.className === 'string' ? el.className : '') || '').toLowerCase();
+                                    if (tag !== 'button' && tag !== 'a' && role !== 'button' && cls.indexOf('button') < 0) return;
+                                    if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') return;
+                                    var txt = textOf(el);
+                                    var aria = (el.getAttribute('aria-label') || '').trim();
+                                    var title = (el.getAttribute('title') || '').trim();
+                                    if (isApproval(txt) || isApproval(aria) || isApproval(title) || cls.indexOf('ui-shell-tool-call__run-btn') >= 0) {
+                                        candidates.push({ el: el, text: txt || aria || title || cls, cls: cls });
+                                    }
+                                });
+                            });
+                            if (!candidates.length) return JSON.stringify({ found: false, reason: 'no-approval-button' });
+                            var choice = candidates.find(function(c) { return c.cls.indexOf('ui-shell-tool-call__run-btn') >= 0; }) || candidates[0];
+                            fullClick(choice.el);
+                            var rect = choice.el.getBoundingClientRect();
+                            return JSON.stringify({ found: true, text: choice.text, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
+                        })()
+                    `;
+
+                    ws = new WebSocket(ranked[0].page.webSocketDebuggerUrl);
+                    const timer = setTimeout(() => done({ found: false, reason: 'timeout' }), 10_000);
+                    ws.on('open', () => {
+                        ws.send(JSON.stringify({
+                            id: 1,
+                            method: 'Runtime.evaluate',
+                            params: { expression: expr, returnByValue: true }
+                        }));
+                    });
+                    ws.on('message', (d) => {
+                        try {
+                            const r = JSON.parse(d);
+                            if (r.id !== 1) return;
+                            clearTimeout(timer);
+                            const raw = r.result?.result?.value || '{}';
+                            done(JSON.parse(raw));
+                        } catch (e) {
+                            done({ found: false, reason: e.message });
+                        }
+                    });
+                    ws.on('error', e => done({ found: false, reason: e.message }));
+                } catch (e) {
+                    done({ found: false, reason: e.message });
+                }
+            });
+        });
+        pagesReq.on('error', e => resolve({ found: false, reason: e.message }));
+        pagesReq.on('timeout', () => { pagesReq.destroy(); resolve({ found: false, reason: 'http-timeout' }); });
+    });
+}
+
     // replaced in workflow_utils.js
 
 /** 执行 scripts/orchestra.sh 命令 */
@@ -909,6 +1051,15 @@ async function workflowWatchdogTick() {
     // ── 2b. WORKER_CODE 自动 commit：检测到 uncommitted changes 持续超时 → 自动 commit ──
     if (pl.state === 'WORKER_CODE') {
         try {
+            const workerPort = (pl.worker?.port && activeCdpTargets.has(pl.worker.port))
+                ? pl.worker.port : getIdePortByName(pl.worker?.ide);
+            if (workerPort) {
+                const accepted = await autoAcceptWorkerActions(workerPort, cwd);
+                if (accepted?.found) {
+                    log(`✅ watchdog WORKER_CODE: 自动审批 Worker action (${accepted.text || 'approval'})`);
+                }
+            }
+
             const statusOutput = gitStatusPorcelain(cwd);
             if (statusOutput) {
                 if (pl.workerBaselineStatus) {
@@ -1115,6 +1266,8 @@ async function workflowWatchdogTick() {
                         savePipelineState(pl);
                         log(`🔄 质量门：PASS 但轮次不足(${round}/${minRounds})，递增到 round=${round+1}，保持 BRAIN_REVIEW 等待下一轮审查`);
                         // 重置标记让 watchdog 下一轮重新读取 Brain 回复
+                        // 注意：必须 return 提前退出，否则下方 success 分支会把
+                        // _brainReplyProcessed 立刻覆盖回 true，导致多轮审查永久卡死。
                         _brainReplyProcessed = false;
                         _lastReplySnapshot = '';
                         _replyStableCount = 0;
@@ -1126,7 +1279,7 @@ async function workflowWatchdogTick() {
                             verb: 'GATE',
                             summary: `质量门：PASS(${round}/${minRounds}) → 继续审查`,
                         });
-                        success = true;
+                        return; // 提前退出，不走 success 后处理
                     }
                 } else {
                     success = true;
@@ -1237,6 +1390,27 @@ function defaultWorkflowPortForIde(ideName) {
     const key = Object.keys(DEFAULT_WORKFLOW_IDE_PORTS)
         .find(name => name.toLowerCase() === String(ideName || '').toLowerCase());
     return key ? DEFAULT_WORKFLOW_IDE_PORTS[key] : null;
+}
+
+async function maybeSwitchCursorComposerModel(port, modelName = 'Composer 2') {
+    const scriptPath = path.join(os.homedir(), '.agents', 'skills', 'cursor', 'scripts', 'cursor_switch_model.js');
+    if (!fs.existsSync(scriptPath)) {
+        log(`⚠️ Cursor 模型切换脚本不存在，跳过: ${scriptPath}`);
+        return { ok: false, skipped: true, error: 'missing cursor_switch_model.js' };
+    }
+    try {
+        const { stdout } = await execFilePromise(
+            process.execPath,
+            [scriptPath, modelName, '--port', String(port), '--quiet'],
+            { timeout: 45_000, env: { ...process.env, CURSOR_CDP_PORT: String(port) } }
+        );
+        log(`🎚️ Cursor:${port} 已尝试切换模型 → ${modelName}${stdout ? ` (${stdout.trim()})` : ''}`);
+        return { ok: true, model: modelName };
+    } catch (e) {
+        const detail = (e.stderr || e.message || '').toString().trim();
+        log(`⚠️ Cursor:${port} 切换模型到 ${modelName} 失败（不阻断流水线）: ${detail || e.message}`);
+        return { ok: false, model: modelName, error: detail || e.message };
+    }
 }
 
 async function ensureWorkflowIdeReady({ ideName, requestedPort, cwd, roleName }) {
@@ -1434,6 +1608,31 @@ async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '',
                     fs.mkdirSync(userDataDir, { recursive: true });
                 }
                 launchArgs.push(`--user-data-dir=${userDataDir}`);
+
+                // 注入关键设置：禁用 Workspace Trust 弹窗等阻断性对话框，
+                // 防止 /workflow/start 拉起的 IDE 被模态窗口卡死。
+                const instanceSettings = path.join(userDataDir, 'User', 'settings.json');
+                try {
+                    const REQUIRED_SETTINGS = {
+                        'security.workspace.trust.enabled': false,
+                        'security.workspace.trust.untrustedFiles': 'open',
+                        'application.shellEnvironmentResolutionTimeout': 30,
+                    };
+                    let existing = {};
+                    if (fs.existsSync(instanceSettings)) {
+                        try { existing = JSON.parse(fs.readFileSync(instanceSettings, 'utf8')); } catch (_) {}
+                    } else {
+                        fs.mkdirSync(path.join(userDataDir, 'User'), { recursive: true });
+                    }
+                    let dirty = false;
+                    for (const [k, v] of Object.entries(REQUIRED_SETTINGS)) {
+                        if (existing[k] !== v) { existing[k] = v; dirty = true; }
+                    }
+                    if (dirty) {
+                        fs.writeFileSync(instanceSettings, JSON.stringify(existing, null, 4));
+                        log(`🔧 已注入关键设置 → ${instanceSettings}`);
+                    }
+                } catch (e) { log(`⚠️ 注入设置失败（不阻断启动）: ${e.message}`); }
             }
             const proxyFlag = getElectronProxyFlag();
             if (proxyFlag) launchArgs.push(proxyFlag);
@@ -1861,6 +2060,7 @@ const server = http.createServer(async (req, res) => {
             brain:  { ide: pl.brain.ide,  port: pl.brain.port || getIdePortByName(pl.brain.ide)  },
             worker: { ide: pl.worker.ide, port: pl.worker.port || getIdePortByName(pl.worker.ide) },
             cwd: pl.cwd,
+            initialTask: pl.initialTask || '',
             timeouts: pl.timeouts,
             lastError: pl.lastError,
             lastErrorAt: pl.lastErrorAt,
@@ -1936,7 +2136,7 @@ const server = http.createServer(async (req, res) => {
     // body: {
     //   pipeline: "pair_programming",            // 可选，默认 pair_programming
     //   brain:  { ide: "Antigravity" },          // 必填
-    //   worker: { ide: "Windsurf" },             // 必填
+    //   worker: { ide: "Cursor" },               // 必填
     //   initial_task: "实现 LoginViewModel",     // 必填
     //   cwd: "/path/to/repo"                     // 必填，Git 仓库路径
     // }
@@ -2011,6 +2211,11 @@ const server = http.createServer(async (req, res) => {
                         state: currentPipeline.state,
                     }));
                     return;
+                }
+
+                let workerModel = null;
+                if (workerIde.toLowerCase() === 'cursor') {
+                    workerModel = await maybeSwitchCursorComposerModel(workerPort, 'Composer 2');
                 }
 
                 // 先执行 orchestra.sh（确保成功后才更新 currentPipeline，避免竞态）
@@ -2108,6 +2313,7 @@ const server = http.createServer(async (req, res) => {
                         brain: brainReady.launched,
                         worker: workerReady.launched,
                     },
+                    worker_model: workerModel,
                     script_output: scriptOut,
                     note: '状态将在 hook 到达后异步推进到 WORKER_CODE，可轮询 /workflow/status 查看',
                 }));
@@ -2809,6 +3015,173 @@ const CDP_TIMEOUT_MS = 8000;
 /** 查找输入框并聚焦的 JS 表达式（各 IDE 通用） */
 const FOCUS_INPUT_EXPR = `(function(){var ed=null;var ch=document.getElementById('chat');if(ch)ed=ch.querySelector('[contenteditable="true"]');if(!ed){var p=document.getElementById('windsurf.cascadePanel');if(p)ed=p.querySelector('[contenteditable="true"]');}if(!ed){var ces=document.querySelectorAll('div[contenteditable="true"]');for(var i=0;i<ces.length;i++){var e=ces[i];if(!e.offsetParent)continue;var c=e.className||'';var ro=e.getAttribute('role')||'';if(ro==='textbox'||c.indexOf('min-h-')>=0||c.indexOf('outline-none')>=0||c.indexOf('ProseMirror')>=0){ed=e;break;}}}if(!ed)return'no-input';ed.focus();ed.textContent='';return'ok';})()`;
 
+function windsurfSendExpression(message) {
+    return `
+        (async function() {
+            const text = ${JSON.stringify(message)};
+            function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+            function findEditor() {
+                var el = document.querySelector('[data-lexical-editor="true"]');
+                if (el && el.offsetParent) return el;
+                var panel = document.getElementById('windsurf.cascadePanel') || document;
+                var editors = panel.querySelectorAll('[contenteditable="true"]');
+                for (var i = 0; i < editors.length; i++) {
+                    if (editors[i].offsetParent) return editors[i];
+                }
+                return null;
+            }
+            function findOnEnter(el) {
+                var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+                if (!fiberKey) return null;
+                var current = el[fiberKey];
+                for (var j = 0; j < 40 && current; j++) {
+                    if (current.memoizedProps && typeof current.memoizedProps.onEnter === 'function') {
+                        return current.memoizedProps.onEnter;
+                    }
+                    current = current.return;
+                }
+                return null;
+            }
+            var el = findEditor();
+            if (!el) return 'no-lexical';
+
+            var onEnter = findOnEnter(el);
+            if (onEnter) {
+                try {
+                    var probe = new KeyboardEvent('keydown', { key: 'Enter', altKey: true, shiftKey: false, bubbles: true, cancelable: true });
+                    if (onEnter(probe) === false) return 'generating';
+                } catch (_) {}
+            }
+
+            el.focus();
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand('delete');
+            await sleep(50);
+
+            var inputEvent = new InputEvent('beforeinput', {
+                inputType: 'insertText',
+                data: text,
+                bubbles: true,
+                cancelable: true
+            });
+            el.dispatchEvent(inputEvent);
+            document.execCommand('insertText', false, text);
+            el.dispatchEvent(new InputEvent('input', {
+                inputType: 'insertText',
+                data: text,
+                bubbles: true
+            }));
+            await sleep(150);
+
+            onEnter = findOnEnter(el);
+            if (onEnter) {
+                var fakeEvent = new KeyboardEvent('keydown', {
+                    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                    shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+                    bubbles: true, cancelable: true
+                });
+                try {
+                    Object.defineProperty(fakeEvent, 'preventDefault', { value: function() {} });
+                    Object.defineProperty(fakeEvent, 'stopPropagation', { value: function() {} });
+                } catch (_) {}
+                var ret = onEnter(fakeEvent);
+                return ret ? 'sent' : 'rejected';
+            }
+
+            var btns = Array.from(document.querySelectorAll('button,[role="button"]')).filter(function(btn) {
+                if (!btn.offsetParent || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+                var label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.title || '') + ' ' + (btn.textContent || '')).toLowerCase();
+                return label.includes('send') || label.includes('submit') || label.includes('发送');
+            });
+            if (btns.length) {
+                btns[btns.length - 1].click();
+                return 'clicked-send';
+            }
+            return 'no-onEnter';
+        })()
+    `;
+}
+
+const WINDSURF_EDITOR_INFO_EXPR = `
+    (function() {
+        function findEditor() {
+            var el = document.querySelector('[data-lexical-editor="true"]');
+            if (el && el.offsetParent) return el;
+            var panel = document.getElementById('windsurf.cascadePanel') || document;
+            var editors = panel.querySelectorAll('[contenteditable="true"]');
+            for (var i = 0; i < editors.length; i++) {
+                if (editors[i].offsetParent) return editors[i];
+            }
+            return null;
+        }
+        function findOnEnter(el) {
+            var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+            if (!fiberKey) return null;
+            var current = el[fiberKey];
+            for (var j = 0; j < 40 && current; j++) {
+                if (current.memoizedProps && typeof current.memoizedProps.onEnter === 'function') {
+                    return current.memoizedProps.onEnter;
+                }
+                current = current.return;
+            }
+            return null;
+        }
+        var el = findEditor();
+        if (!el) return JSON.stringify({ ok: false, error: 'no-lexical' });
+        var onEnter = findOnEnter(el);
+        if (onEnter) {
+            try {
+                var probe = new KeyboardEvent('keydown', { key: 'Enter', altKey: true, shiftKey: false, bubbles: true, cancelable: true });
+                if (onEnter(probe) === false) return JSON.stringify({ ok: false, error: 'generating' });
+            } catch (_) {}
+        }
+        var r = el.getBoundingClientRect();
+        el.focus();
+        return JSON.stringify({ ok: true, x: Math.round(r.x + 10), y: Math.round(r.y + r.height / 2) });
+    })()
+`;
+
+const WINDSURF_SUBMIT_EXPR = `
+    (function() {
+        var el = document.querySelector('[data-lexical-editor="true"]');
+        if (!el) return 'no-lexical';
+        var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+        if (fiberKey) {
+            var current = el[fiberKey];
+            for (var j = 0; j < 40 && current; j++) {
+                if (current.memoizedProps && typeof current.memoizedProps.onEnter === 'function') {
+                    var fakeEvent = new KeyboardEvent('keydown', {
+                        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                        shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+                        bubbles: true, cancelable: true
+                    });
+                    try {
+                        Object.defineProperty(fakeEvent, 'preventDefault', { value: function() {} });
+                        Object.defineProperty(fakeEvent, 'stopPropagation', { value: function() {} });
+                    } catch (_) {}
+                    var ret = current.memoizedProps.onEnter(fakeEvent);
+                    return ret ? 'sent' : 'rejected';
+                }
+                current = current.return;
+            }
+        }
+        var btns = Array.from(document.querySelectorAll('button,[role="button"]')).filter(function(btn) {
+            if (!btn.offsetParent || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+            var label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.title || '') + ' ' + (btn.textContent || '')).toLowerCase();
+            return label.includes('send') || label.includes('submit') || label.includes('发送');
+        });
+        if (btns.length) {
+            btns[btns.length - 1].click();
+            return 'clicked-send';
+        }
+        return 'no-onEnter';
+    })()
+`;
+
 /**
  * 通过 CDP WebSocket 向指定端口的 IDE 发送消息。
  * 被 /cdp/{port}/send 路由和调度引擎共用。
@@ -2818,6 +3191,7 @@ const FOCUS_INPUT_EXPR = `(function(){var ed=null;var ch=document.getElementById
  * @throws {Error} 当目标不可用、无 workbench、或 CDP 操作失败时抛出
  */
 async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null) {
+    const targetAppName = activeCdpTargets.get(cdpPort)?.appName || '';
     // 1. 获取 workbench 页面列表
     const pages = await new Promise((resolve, reject) => {
         http.get(`http://${CDP_HOST}:${cdpPort}/json`, { timeout: 5000 }, (res) => {
@@ -2919,6 +3293,56 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null) {
                     if (!switchRes || !switchRes.result || switchRes.result.value !== 'ok') {
                         throw new Error(`固定会话切换失败: ${switchRes?.result?.value || '无返回结果'}`);
                     }
+                }
+
+                if (targetAppName.toLowerCase() === 'windsurf') {
+                    let infoRes = await cdpCall('Runtime.evaluate', {
+                        expression: WINDSURF_EDITOR_INFO_EXPR,
+                        returnByValue: true,
+                    });
+                    let info = {};
+                    try { info = JSON.parse(infoRes?.result?.value || '{}'); } catch (_) {}
+                    if (info.error === 'no-lexical') {
+                        log('📨 Windsurf 未找到输入框，尝试 Cmd+L 打开 Cascade 后重试');
+                        await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'l', code: 'KeyL', modifiers: 4, windowsVirtualKeyCode: 76 });
+                        await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'l', code: 'KeyL', modifiers: 4, windowsVirtualKeyCode: 76 });
+                        await new Promise(r => setTimeout(r, 1500));
+                        infoRes = await cdpCall('Runtime.evaluate', {
+                            expression: WINDSURF_EDITOR_INFO_EXPR,
+                            returnByValue: true,
+                        });
+                        try { info = JSON.parse(infoRes?.result?.value || '{}'); } catch (_) { info = {}; }
+                    }
+                    if (!info.ok) throw new Error(`Windsurf 发送失败: ${info.error || 'no-editor-info'}`);
+
+                    await cdpCall('Input.dispatchMouseEvent', {
+                        type: 'mousePressed', x: info.x, y: info.y, button: 'left', clickCount: 1,
+                    });
+                    await cdpCall('Input.dispatchMouseEvent', {
+                        type: 'mouseReleased', x: info.x, y: info.y, button: 'left', clickCount: 1,
+                    });
+                    await new Promise(r => setTimeout(r, 100));
+                    await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 4, windowsVirtualKeyCode: 65 });
+                    await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 4, windowsVirtualKeyCode: 65 });
+                    await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+                    await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+                    await new Promise(r => setTimeout(r, 150));
+                    await cdpCall('Input.insertText', { text: message });
+                    await new Promise(r => setTimeout(r, 300));
+
+                    const sendRes = await cdpCall('Runtime.evaluate', {
+                        expression: WINDSURF_SUBMIT_EXPR,
+                        returnByValue: true,
+                    });
+                    const sendValue = sendRes?.result?.value || '';
+                    log(`📨 Windsurf send result: ${sendValue}`);
+                    if (sendValue !== 'sent' && sendValue !== 'clicked-send') {
+                        throw new Error(`Windsurf 发送失败: ${sendValue || '无返回结果'}`);
+                    }
+                    clearTimeout(globalTimer);
+                    ws.close();
+                    resolve();
+                    return;
                 }
 
                 let r = await cdpCall('Runtime.evaluate', { expression: FOCUS_INPUT_EXPR, returnByValue: true });
