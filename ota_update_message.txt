@@ -1,7 +1,1 @@
-67. 高清图片发送优化：
-- 新增 ImageCompressor：选图时自动压缩到 1920px/500KB 以内
-- 新增 Relay HTTP 直传通道（/upload + /tmp）：绕开 WebSocket base64 分块
-- pasteImageViaRelay：1 次 CDP evaluate + fetch() 替代 100+ 次分块调用
-- 全局 CORS OPTIONS 预检支持
-- chunk size 50KB → 200KB（降级通道也更快）
-- 修复 OkHttpClient 连接池泄漏、ChatDraftStore 内存膨胀
+ota_update_message: 移除屏幕上关于右键的误导提示

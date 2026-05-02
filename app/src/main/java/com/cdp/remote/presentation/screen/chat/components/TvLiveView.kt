@@ -389,7 +389,7 @@ fun TvLiveView(
         // 操控模式下显示底部提示条
         if (controlMode) {
             Text(
-                text = "🖱️ 操控模式：点击=左键 | 长按=右键 | 双指=滚动",
+                text = "🖱️ 操控模式：点击=左键 | 拖拽=选中 | 双指=滚动",
                 fontSize = 10.sp,
                 color = Color(0xFFFF9800),
                 modifier = Modifier
