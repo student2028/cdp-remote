@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.unit.DpOffset
 
 /**
  * TV 实时画面组件 — 支持「观影模式」和「操控模式」双模切换。
@@ -74,10 +75,13 @@ fun TvLiveView(
     onRemoteInput: (type: String, ratioX: Float, ratioY: Float, button: String) -> Unit = { _, _, _, _ -> },
     onRemoteScroll: (ratioX: Float, ratioY: Float, deltaY: Float) -> Unit = { _, _, _ -> },
     onRemoteText: (String) -> Unit = {},
-    onRemoteKey: (type: String, key: String) -> Unit = { _, _ -> }
+    onRemoteKey: (type: String, key: String) -> Unit = { _, _ -> },
+    onContextMenuAction: (action: String) -> Unit = {}
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var showKeyboardInput by remember { mutableStateOf(false) }
+    var showContextMenu by remember { mutableStateOf(false) }
+    var contextMenuOffset by remember { mutableStateOf(DpOffset.Zero) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -98,6 +102,9 @@ fun TvLiveView(
     var vMouseRx by remember { mutableFloatStateOf(0.5f) }
     var vMouseRy by remember { mutableFloatStateOf(0.5f) }
     var isVirtualCursor by remember { mutableStateOf(false) }
+
+    // 使用 View 的 hapticFeedback（不需要 VIBRATE 权限！）
+    val view = androidx.compose.ui.platform.LocalView.current
 
     val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current).toFloat()
 
@@ -243,76 +250,42 @@ fun TvLiveView(
                                 offsetY += pan.y
                             }
                         } else {
-                            // ───── 触控板模式 (Trackpad v2 - 带指针加速) ─────
+                            // ───── 操控模式 v3 ─────
+                            // 手势映射（模拟专业远程桌面体验）：
+                            //   单指轻点(<500ms)  → 左键 click
+                            //   单指长按(≥500ms)  → 右键 click + 震动反馈
+                            //   单指拖拽(>18px)   → mousePressed→mouseMoved…→mouseReleased（可选中文本！）
+                            //   双指滑动          → 滚轮
+                            // 关键：down.consume() 阻止 Android 系统抢占长按事件
                             awaitPointerEventScope {
                                 while (true) {
                                     val down = awaitFirstDown(requireUnconsumed = false)
+                                    down.consume() // ★ 阻止 Android 系统长按智能感知拦截
+
                                     var isTwoFinger = false
                                     var isScrolling = false
                                     var isDragging = false
+                                    var dragSent = false  // 是否已发送过拖拽的 mousePressed
                                     var maxPanY = 0f
                                     val downTime = System.currentTimeMillis()
-                                    
+
+                                    var longPressTriggered = false
+                                    var isPressed = true
                                     do {
-                                        val event = awaitPointerEvent()
-                                        val pointers = event.changes
-                                        
-                                        if (pointers.size >= 2) {
-                                            isTwoFinger = true
-                                            val currentCentroidY = pointers.map { it.position.y }.average().toFloat()
-                                            val previousCentroidY = pointers.map { it.previousPosition.y }.average().toFloat()
-                                            val panY = currentCentroidY - previousCentroidY
-                                            maxPanY += kotlin.math.abs(panY)
-                                            
-                                            if (maxPanY > 15f) {
-                                                isScrolling = true
-                                                if (panY != 0f) {
-                                                    // panY 是手指位移，手指向下滑（panY > 0）代表网页要向上滚，即发送正数 deltaY
-                                                    onRemoteScroll(vMouseRx, vMouseRy, -panY * 2.5f)
-                                                }
-                                            }
-                                            pointers.forEach { if (it.position != it.previousPosition) it.consume() }
-                                        } else if (!isTwoFinger && pointers.size == 1) {
-                                            val pointer = pointers.first()
-                                            val dist = (pointer.position - down.position).getDistance()
-                                            if (!isDragging && dist > 18f) isDragging = true
-                                            if (isDragging && pointer.position != pointer.previousPosition) {
-                                                if (isVirtualCursor) {
-                                                    val pan = pointer.position - pointer.previousPosition
-                                                    if (imageLayoutSize.width > 0 && bitmapW > 0f) {
-                                                        val viewW = imageLayoutSize.width.toFloat()
-                                                        val viewH = imageLayoutSize.height.toFloat()
-                                                        val scaleW = viewW / bitmapW
-                                                        val scaleH = viewH / bitmapH
-                                                        val drawScale = if (focusMode != 1) viewH / bitmapH else if (scaleW < scaleH) scaleW else scaleH
-                                                        val drawW = bitmapW * drawScale
-                                                        val drawH = bitmapH * drawScale
-                                                        
-                                                        // 加上2.5倍灵敏度，解决手机屏幕不够滑的问题！
-                                                        val speedMultiplier = 2.5f
-                                                        vMouseRx = (vMouseRx + (pan.x * speedMultiplier) / drawW).coerceIn(0f, 1f)
-                                                        vMouseRy = (vMouseRy + (pan.y * speedMultiplier) / drawH).coerceIn(0f, 1f)
-                                                        
-                                                        onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
-                                                    }
-                                                } else {
-                                                    // 触屏模式下拖拽可选择性发送 mouseMoved 或保持原生不发，这里为了体验发送拖拽
-                                                    val ratio = toImageRatio(pointer.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
-                                                    if (ratio != null) {
-                                                        vMouseRx = ratio.first
-                                                        vMouseRy = ratio.second
-                                                        onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
-                                                    }
-                                                }
-                                                pointer.consume()
-                                            }
+                                        val timeElapsed = System.currentTimeMillis() - downTime
+                                        val timeRemaining = 500L - timeElapsed
+
+                                        val event = if (!isDragging && !isTwoFinger && !longPressTriggered && timeRemaining > 0) {
+                                            withTimeoutOrNull(timeRemaining) { awaitPointerEvent() }
+                                        } else {
+                                            awaitPointerEvent()
                                         }
-                                    } while (event.changes.any { it.pressed })
-                                    
-                                    val duration = System.currentTimeMillis() - downTime
-                                    if (isTwoFinger) {
-                                        if (!isScrolling && duration < 500) {
-                                            // 双指轻点 -> 右键点击
+
+                                        if (event == null) {
+                                            // ── 超时：单指长按 → 弹出本地上下文菜单 ──
+                                            // CDP 右键在 Electron 下无法弹出 DOM 可见菜单，
+                                            // 改为在安卓端显示浮层操作菜单
+                                            longPressTriggered = true
                                             if (!isVirtualCursor) {
                                                 val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
                                                 if (ratio != null) {
@@ -320,11 +293,120 @@ fun TvLiveView(
                                                     vMouseRy = ratio.second
                                                 }
                                             }
-                                            onRemoteInput("mousePressed", vMouseRx, vMouseRy, "right")
-                                            onRemoteInput("mouseReleased", vMouseRx, vMouseRy, "right")
+                                            // 触发震动反馈
+                                            view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                            // 先发左键点击定位光标
+                                            onRemoteInput("mousePressed", vMouseRx, vMouseRy, "left")
+                                            onRemoteInput("mouseReleased", vMouseRx, vMouseRy, "left")
+                                            // 计算菜单弹出位置（触摸点附近）
+                                            val density = view.resources.displayMetrics.density
+                                            contextMenuOffset = DpOffset(
+                                                (down.position.x / density).dp,
+                                                (down.position.y / density).dp
+                                            )
+                                            showContextMenu = true
+                                            isPressed = true
+                                        } else {
+                                            val pointers = event.changes
+
+                                            if (pointers.size >= 2) {
+                                                // ── 双指：滚轮 ──
+                                                isTwoFinger = true
+                                                val currentCentroidY = pointers.map { it.position.y }.average().toFloat()
+                                                val previousCentroidY = pointers.map { it.previousPosition.y }.average().toFloat()
+                                                val panY = currentCentroidY - previousCentroidY
+                                                maxPanY += kotlin.math.abs(panY)
+
+                                                if (maxPanY > 15f) {
+                                                    isScrolling = true
+                                                    if (panY != 0f) {
+                                                        onRemoteScroll(vMouseRx, vMouseRy, -panY * 2.5f)
+                                                    }
+                                                }
+                                                pointers.forEach { it.consume() }
+                                            } else if (!isTwoFinger && pointers.size == 1) {
+                                                val pointer = pointers.first()
+                                                val dist = (pointer.position - down.position).getDistance()
+                                                if (!isDragging && dist > 18f) isDragging = true
+
+                                                if (isDragging && pointer.position != pointer.previousPosition) {
+                                                    if (isVirtualCursor) {
+                                                        // ── 虚拟光标模式：相对位移 ──
+                                                        val pan = pointer.position - pointer.previousPosition
+                                                        if (imageLayoutSize.width > 0 && bitmapW > 0f) {
+                                                            val viewW = imageLayoutSize.width.toFloat()
+                                                            val viewH = imageLayoutSize.height.toFloat()
+                                                            val scaleW = viewW / bitmapW
+                                                            val scaleH = viewH / bitmapH
+                                                            val drawScale = if (focusMode != 1) viewH / bitmapH else if (scaleW < scaleH) scaleW else scaleH
+                                                            val drawW = bitmapW * drawScale
+                                                            val drawH = bitmapH * drawScale
+
+                                                            val speedMultiplier = 2.5f
+                                                            vMouseRx = (vMouseRx + (pan.x * speedMultiplier) / drawW).coerceIn(0f, 1f)
+                                                            vMouseRy = (vMouseRy + (pan.y * speedMultiplier) / drawH).coerceIn(0f, 1f)
+
+                                                            // 拖拽开始时先发 mousePressed，之后只发 mouseMoved
+                                                            if (!dragSent) {
+                                                                dragSent = true
+                                                                onRemoteInput("mousePressed", vMouseRx, vMouseRy, "left")
+                                                            }
+                                                            onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
+                                                        }
+                                                    } else {
+                                                        // ── 触屏直接映射模式 ──
+                                                        val ratio = toImageRatio(pointer.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                                        if (ratio != null) {
+                                                            vMouseRx = ratio.first
+                                                            vMouseRy = ratio.second
+                                                            if (!dragSent) {
+                                                                dragSent = true
+                                                                onRemoteInput("mousePressed", vMouseRx, vMouseRy, "left")
+                                                            }
+                                                            onRemoteInput("mouseMoved", vMouseRx, vMouseRy, "left")
+                                                        }
+                                                    }
+                                                    pointer.consume()
+                                                }
+
+                                                // 消费所有单指事件，彻底阻止系统手势
+                                                pointer.consume()
+                                            }
+
+                                            // 兜底：仍未触发长按时的超时检查
+                                            if (!isDragging && !isTwoFinger && !longPressTriggered && (System.currentTimeMillis() - downTime >= 500L)) {
+                                                longPressTriggered = true
+                                                if (!isVirtualCursor) {
+                                                    val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                                    if (ratio != null) {
+                                                        vMouseRx = ratio.first
+                                                        vMouseRy = ratio.second
+                                                    }
+                                                }
+                                                view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                                onRemoteInput("mousePressed", vMouseRx, vMouseRy, "left")
+                                                onRemoteInput("mouseReleased", vMouseRx, vMouseRy, "left")
+                                                val density = view.resources.displayMetrics.density
+                                                contextMenuOffset = DpOffset(
+                                                    (down.position.x / density).dp,
+                                                    (down.position.y / density).dp
+                                                )
+                                                showContextMenu = true
+                                            }
+
+                                            isPressed = event.changes.any { it.pressed }
                                         }
-                                    } else if (!isDragging && duration < 500) {
-                                        // 单指轻点 -> 左键点击
+                                    } while (isPressed)
+
+                                    // ── 手指抬起后的收尾 ──
+                                    if (dragSent) {
+                                        // 拖拽结束：发送 mouseReleased 完成选区
+                                        onRemoteInput("mouseReleased", vMouseRx, vMouseRy, "left")
+                                    }
+
+                                    val duration = System.currentTimeMillis() - downTime
+                                    if (!isDragging && !isTwoFinger && !longPressTriggered && duration < 500) {
+                                        // 单指轻点 → 左键点击
                                         if (!isVirtualCursor) {
                                             val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
                                             if (ratio != null) {
@@ -389,7 +471,7 @@ fun TvLiveView(
         // 操控模式下显示底部提示条
         if (controlMode) {
             Text(
-                text = "🖱️ 操控模式：点击=左键 | 长按=右键 | 双指=滚动",
+                text = "🖱️ 操控模式：点击=左键 | 长按=菜单 | 双指=滚动",
                 fontSize = 10.sp,
                 color = Color(0xFFFF9800),
                 modifier = Modifier
@@ -398,6 +480,35 @@ fun TvLiveView(
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
                     .padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+
+        // ─── 长按浮层上下文菜单 ─────────────────────────
+        // CDP 右键无法在 Electron 中弹出 DOM 可见菜单，
+        // 所以在安卓端本地渲染，通过 CDP 快捷键执行 IDE 操作
+        DropdownMenu(
+            expanded = showContextMenu,
+            onDismissRequest = { showContextMenu = false },
+            offset = contextMenuOffset,
+            modifier = Modifier.background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.97f)
+            )
+        ) {
+            DropdownMenuItem(
+                text = { Text("🔲 全选") },
+                onClick = { showContextMenu = false; onContextMenuAction("selectAll") }
+            )
+            DropdownMenuItem(
+                text = { Text("📋 复制") },
+                onClick = { showContextMenu = false; onContextMenuAction("copy") }
+            )
+            DropdownMenuItem(
+                text = { Text("📥 粘贴") },
+                onClick = { showContextMenu = false; onContextMenuAction("paste") }
+            )
+            DropdownMenuItem(
+                text = { Text("🔄 撤销") },
+                onClick = { showContextMenu = false; onContextMenuAction("undo") }
             )
         }
 

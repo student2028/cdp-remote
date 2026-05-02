@@ -1,7 +1,4 @@
-67. 高清图片发送优化：
-- 新增 ImageCompressor：选图时自动压缩到 1920px/500KB 以内
-- 新增 Relay HTTP 直传通道（/upload + /tmp）：绕开 WebSocket base64 分块
-- pasteImageViaRelay：1 次 CDP evaluate + fetch() 替代 100+ 次分块调用
-- 全局 CORS OPTIONS 预检支持
-- chunk size 50KB → 200KB（降级通道也更快）
-- 修复 OkHttpClient 连接池泄漏、ChatDraftStore 内存膨胀
+68. 操控模式右键修复：
+- 实现单指长按(≥500ms)触发右键，适配手机小屏操作
+- 修复原来双指轻点右键无法生效的问题
+- 新增 Relay 直传失败自动降级到 base64 分块的容错逻辑
