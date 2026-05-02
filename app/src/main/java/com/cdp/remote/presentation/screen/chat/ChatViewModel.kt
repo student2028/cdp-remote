@@ -7,7 +7,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cdp.remote.data.cdp.*
-import com.google.gson.JsonObject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.sync.Mutex
@@ -1434,14 +1433,7 @@ class ChatViewModel(
      * @param ratioY   触摸点在图片上的垂直比例 [0..1]
      * @param button   鼠标按钮: "left", "right", "middle"
      */
-    // 记录最后一次远程输入的归一化坐标，供 selectWord 等操作复用
-    private var lastRemoteRx: Float = 0.5f
-    private var lastRemoteRy: Float = 0.5f
-
     fun dispatchRemoteInput(type: String, ratioX: Float, ratioY: Float, button: String = "left") {
-        // 记录坐标以供后续上下文菜单操作使用（如双击选词）
-        lastRemoteRx = ratioX.coerceIn(0f, 1f)
-        lastRemoteRy = ratioY.coerceIn(0f, 1f)
         viewModelScope.launch {
             remoteInputMutex.withLock {
                 var pw = uiState.tvPageWidth
@@ -1453,12 +1445,8 @@ class ChatViewModel(
                     ph = uiState.tvPageHeight
                     if (pw <= 0 || ph <= 0) return@withLock
                 }
-                val x = (lastRemoteRx * pw).toDouble()
-                val y = (lastRemoteRy * ph).toDouble()
-                // mousePressed 前必须先 mouseMoved 到目标位置，否则 CDP 不知道鼠标在哪
-                if (type == "mousePressed") {
-                    cdpClient.dispatchMouseEvent("mouseMoved", x, y, "none", 0)
-                }
+                val x = (ratioX.coerceIn(0f, 1f) * pw).toDouble()
+                val y = (ratioY.coerceIn(0f, 1f) * ph).toDouble()
                 val clickCount = if (type == "mousePressed") 1 else 0
                 cdpClient.dispatchMouseEvent(type, x, y, button, clickCount)
             }
@@ -1495,81 +1483,6 @@ class ChatViewModel(
             cdpClient.dispatchKeyEvent(type, key)
         }
     }
-
-    /**
-     * 执行上下文菜单操作 — 通过 CDP 快捷键模拟 IDE 命令。
-     *
-     * 由于 CDP 右键在 Electron 下无法弹出 DOM 可见的原生菜单，
-     * 安卓端改为本地渲染浮层菜单，用户选择后通过此方法发送对应的 IDE 快捷键。
-     *
-     * macOS modifier: Meta(Cmd)=4, Alt=1, Ctrl=2, Shift=8
-     */
-    fun dispatchContextMenuAction(action: String) {
-        viewModelScope.launch {
-            // selectWord 需要双击，走特殊路径
-            if (action == "selectWord") {
-                // 在最后一次点击的位置发送双击事件来选中单词
-                remoteInputMutex.withLock {
-                    val pw = uiState.tvPageWidth
-                    val ph = uiState.tvPageHeight
-                    if (pw <= 0 || ph <= 0) return@launch
-                    // 用上一次 dispatchRemoteInput 记录的 ratio 来还原坐标
-                    val x = (lastRemoteRx * pw).toDouble()
-                    val y = (lastRemoteRy * ph).toDouble()
-                    // 双击选词：clickCount=2
-                    cdpClient.dispatchMouseEvent("mouseMoved", x, y, "none", 0)
-                    cdpClient.dispatchMouseEvent("mousePressed", x, y, "left", 2)
-                    delay(30)
-                    cdpClient.dispatchMouseEvent("mouseReleased", x, y, "left", 2)
-                }
-                return@launch
-            }
-
-            val shortcut = when (action) {
-                "copy"           -> KeyShortcut("c", "KeyC", 67, modifiers = 4)        // Cmd+C
-                "paste"          -> KeyShortcut("v", "KeyV", 86, modifiers = 4)        // Cmd+V
-                "cut"            -> KeyShortcut("x", "KeyX", 88, modifiers = 4)        // Cmd+X
-                "undo"           -> KeyShortcut("z", "KeyZ", 90, modifiers = 4)        // Cmd+Z
-                "selectAll"      -> KeyShortcut("a", "KeyA", 65, modifiers = 4)        // Cmd+A
-                "selectLine"     -> KeyShortcut("l", "KeyL", 76, modifiers = 4)        // Cmd+L
-                "goToDefinition" -> KeyShortcut("F12", "F12", 123)                     // F12
-                "findReferences" -> KeyShortcut("F12", "F12", 123, modifiers = 8)      // Shift+F12
-                "rename"         -> KeyShortcut("F2", "F2", 113)                       // F2
-                "quickFix"       -> KeyShortcut(".", "Period", 190, modifiers = 4)     // Cmd+.
-                "formatDocument" -> KeyShortcut("F", "KeyF", 70, modifiers = 4 or 8 or 1) // Shift+Alt+Cmd+F → macOS: Shift+Option+F
-                "commentLine"    -> KeyShortcut("/", "Slash", 191, modifiers = 4)      // Cmd+/
-                else -> null
-            }
-            if (shortcut == null) return@launch
-
-            // keyDown
-            cdpClient.call("Input.dispatchKeyEvent", JsonObject().apply {
-                addProperty("type", "keyDown")
-                addProperty("key", shortcut.key)
-                addProperty("code", shortcut.code)
-                addProperty("windowsVirtualKeyCode", shortcut.vkCode)
-                addProperty("nativeVirtualKeyCode", shortcut.vkCode)
-                if (shortcut.modifiers > 0) addProperty("modifiers", shortcut.modifiers)
-            })
-            delay(50)
-            // keyUp
-            cdpClient.call("Input.dispatchKeyEvent", JsonObject().apply {
-                addProperty("type", "keyUp")
-                addProperty("key", shortcut.key)
-                addProperty("code", shortcut.code)
-                addProperty("windowsVirtualKeyCode", shortcut.vkCode)
-                addProperty("nativeVirtualKeyCode", shortcut.vkCode)
-                if (shortcut.modifiers > 0) addProperty("modifiers", shortcut.modifiers)
-            })
-        }
-    }
-
-    private data class KeyShortcut(
-        val key: String,
-        val code: String,
-        val vkCode: Int,
-        val modifiers: Int = 0
-    )
 
     // ─── Utility ────────────────────────────────────────────────────
 

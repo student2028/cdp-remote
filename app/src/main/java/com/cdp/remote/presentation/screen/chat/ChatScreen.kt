@@ -209,8 +209,7 @@ fun ChatScreen(
             onRemoteInput = { type, rx, ry, btn -> viewModel.dispatchRemoteInput(type, rx, ry, btn) },
             onRemoteScroll = { rx, ry, dy -> viewModel.dispatchRemoteScroll(rx, ry, dy) },
             onRemoteText = { text -> viewModel.dispatchRemoteText(text) },
-            onRemoteKey = { type, key -> viewModel.dispatchRemoteKey(type, key) },
-            onContextMenuAction = { action -> viewModel.dispatchContextMenuAction(action) }
+            onRemoteKey = { type, key -> viewModel.dispatchRemoteKey(type, key) }
         )
         return
     }
@@ -361,8 +360,7 @@ fun ChatScreen(
                         onRemoteInput = { type, rx, ry, btn -> viewModel.dispatchRemoteInput(type, rx, ry, btn) },
                         onRemoteScroll = { rx, ry, dy -> viewModel.dispatchRemoteScroll(rx, ry, dy) },
                         onRemoteText = { text -> viewModel.dispatchRemoteText(text) },
-                        onRemoteKey = { type, key -> viewModel.dispatchRemoteKey(type, key) },
-                        onContextMenuAction = { action -> viewModel.dispatchContextMenuAction(action) }
+                        onRemoteKey = { type, key -> viewModel.dispatchRemoteKey(type, key) }
                     )
                     // Drag handle to resize TV panel
                     Box(
