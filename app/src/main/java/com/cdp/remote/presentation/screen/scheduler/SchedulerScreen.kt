@@ -127,6 +127,7 @@ fun SchedulerScreen(
                 items(state.tasks, key = { it.id }) { task ->
                     TaskCard(
                         task = task,
+                        onEdit = { viewModel.editTask(task) },
                         onPauseResume = {
                             if (task.paused) viewModel.resumeTask(task.id)
                             else viewModel.pauseTask(task.id)
@@ -244,9 +245,11 @@ private fun EmptyHint() {
 
 // ─── 任务卡片 ────────────────────────────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TaskCard(
     task: ScheduledTaskUi,
+    onEdit: () -> Unit,
     onPauseResume: () -> Unit,
     onTrigger: () -> Unit,
     onDelete: () -> Unit
@@ -257,7 +260,8 @@ private fun TaskCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        onClick = onEdit
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // 顶部彩色指示条（暂停时变灰）
@@ -469,14 +473,15 @@ private fun TaskCreateSheet(
                 .padding(bottom = 32.dp)
         ) {
             // ── 标题 ──
+            val isEditing = draft.id.isNotBlank()
             Text(
-                "新建调度任务",
+                if (isEditing) "编辑调度任务" else "新建调度任务",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "选择目标 IDE，设置触发规则和要发送的提示词",
+                if (isEditing) "修改目标 IDE、触发规则或提示词" else "选择目标 IDE，设置触发规则和要发送的提示词",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -644,7 +649,7 @@ private fun TaskCreateSheet(
                     shape = RoundedCornerShape(14.dp),
                     enabled = draft.targetIde.isNotBlank() && draft.prompt.isNotBlank(),
                     colors = ButtonDefaults.buttonColors(containerColor = purpleAccent)
-                ) { Text("启动任务", color = Color.White) }
+                ) { Text(if (draft.id.isNotBlank()) "保存" else "启动任务", color = Color.White) }
             }
         }
     }

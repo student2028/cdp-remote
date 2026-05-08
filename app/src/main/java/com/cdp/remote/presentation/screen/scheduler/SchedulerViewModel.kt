@@ -84,6 +84,19 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
         uiState = uiState.copy(editing = TaskDraft())
     }
 
+    fun editTask(task: ScheduledTaskUi) {
+        uiState = uiState.copy(editing = TaskDraft(
+            id = task.id,
+            targetIde = task.targetIde,
+            targetPort = task.targetPort,
+            prompt = task.prompt,
+            scheduleType = task.scheduleType,
+            intervalMinutes = task.intervalMinutes,
+            fixedSessionTitle = task.fixedSessionTitle,
+            cronExpression = task.cronExpression
+        ))
+    }
+
     fun closeDialog() {
         uiState = uiState.copy(editing = null)
     }
@@ -98,11 +111,12 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
             uiState = uiState.copy(toastMessage = "请填写目标 IDE 和提示词")
             return
         }
+        val isEditing = draft.id.isNotBlank()
 
         viewModelScope.launch {
             try {
                 val body = JSONObject().apply {
-                    if (draft.id.isNotBlank()) put("id", draft.id)
+                    if (isEditing) put("id", draft.id)
                     put("targetIde", draft.targetIde)
                     put("targetPort", draft.targetPort)
                     put("prompt", draft.prompt)
@@ -114,14 +128,17 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val result = postJson("$relayBase/scheduler", body.toString())
                 if (result.has("success") && result.get("success").asBoolean) {
-                    uiState = uiState.copy(editing = null, toastMessage = "任务已启动 ✅")
+                    uiState = uiState.copy(
+                        editing = null,
+                        toastMessage = if (isEditing) "任务已更新 ✅" else "任务已启动 ✅"
+                    )
                     refreshTasks()
                 } else {
                     val err = result.get("error")?.asString ?: "未知错误"
-                    uiState = uiState.copy(toastMessage = "创建失败: $err")
+                    uiState = uiState.copy(toastMessage = "${if (isEditing) "更新" else "创建"}失败: $err")
                 }
             } catch (e: Exception) {
-                uiState = uiState.copy(toastMessage = "创建失败: ${e.message}")
+                uiState = uiState.copy(toastMessage = "${if (isEditing) "更新" else "创建"}失败: ${e.message}")
             }
         }
     }
