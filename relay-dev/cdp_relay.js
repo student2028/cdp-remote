@@ -3609,16 +3609,34 @@ async function schedulerExecuteTask(task) {
 
     try {
         // 找目标 IDE 的 CDP 端口
+        // 策略：
+        //   1) targetPort > 0（用户明确选了端口）→ 精确匹配，找不到就跳过，绝不静默降级到别的实例
+        //   2) targetPort == 0（旧任务 / 未指定端口）→ 按 IDE 名字匹配第一个在线实例
         let cdpPort = null;
-        for (const [port, t] of activeCdpTargets) {
-            if (t.appName.toLowerCase() === task.targetIde.toLowerCase()) {
-                cdpPort = port;
-                break;
+        if (task.targetPort && task.targetPort > 0) {
+            // 精确匹配模式
+            if (activeCdpTargets.has(task.targetPort)) {
+                const t = activeCdpTargets.get(task.targetPort);
+                if (t.appName.toLowerCase() === task.targetIde.toLowerCase()) {
+                    cdpPort = task.targetPort;
+                }
             }
-        }
-        if (!cdpPort) {
-            log(`⚠️ [${task.id}] IDE ${task.targetIde} 不在线，跳过`);
-            return;
+            if (!cdpPort) {
+                log(`⚠️ [${task.id}] IDE ${task.targetIde}:${task.targetPort} 不在线，跳过（不会降级到其他实例）`);
+                return;
+            }
+        } else {
+            // 兼容模式：按名字匹配
+            for (const [port, t] of activeCdpTargets) {
+                if (t.appName.toLowerCase() === task.targetIde.toLowerCase()) {
+                    cdpPort = port;
+                    break;
+                }
+            }
+            if (!cdpPort) {
+                log(`⚠️ [${task.id}] IDE ${task.targetIde} 不在线，跳过`);
+                return;
+            }
         }
 
         await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle);

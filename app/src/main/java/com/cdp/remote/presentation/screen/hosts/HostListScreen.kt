@@ -309,6 +309,10 @@ fun HostListScreen(
 
     // Launch IDE Dialog
     if (state.showLaunchDialog) {
+        // 收集所有已发现应用占用的 CDP 端口
+        val occupiedPorts = remember(state.discoveredApps) {
+            state.discoveredApps.values.flatten().mapNotNull { it.cdpPort }.toSet()
+        }
         LaunchIdeDialog(
             launchStep = state.launchStep,
             launchStatus = state.launchStatus,
@@ -324,7 +328,8 @@ fun HostListScreen(
                 )
             },
             cwdHistory = state.cwdHistory,
-            onHistoryDelete = { path -> viewModel.removeCwdHistoryItem(path) }
+            onHistoryDelete = { path -> viewModel.removeCwdHistoryItem(path) },
+            occupiedPorts = occupiedPorts
         )
     }
 
@@ -930,6 +935,18 @@ private fun IdeAppCard(
     }
 }
 
+/**
+ * 从 defaultPort 开始，找到第一个未被占用的端口。
+ * 依次检查 defaultPort, defaultPort+1, defaultPort+2 …
+ */
+private fun findNextAvailablePort(defaultPort: Int, occupiedPorts: Set<Int>): Int {
+    var port = defaultPort
+    while (port in occupiedPorts) {
+        port++
+    }
+    return port
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LaunchIdeDialog(
@@ -941,7 +958,8 @@ fun LaunchIdeDialog(
     onLaunch: (appName: String, cdpPort: Int, cwd: String) -> Unit,
     onBrowseFolder: () -> Unit,
     cwdHistory: List<CwdHistoryItem> = emptyList(),
-    onHistoryDelete: (String) -> Unit = {}
+    onHistoryDelete: (String) -> Unit = {},
+    occupiedPorts: Set<Int> = emptySet()
 ) {
     val purpleAccent = Color(0xFF6C5CE7)
     val appOptions = remember {
@@ -953,7 +971,10 @@ fun LaunchIdeDialog(
         )
     }
     var selectedIndex by remember { mutableStateOf(0) }
-    var cdpPort by remember { mutableStateOf("9333") }
+    // 根据当前选中 IDE 的默认端口 + 已占用端口，自动计算可用端口
+    var cdpPort by remember(selectedIndex, occupiedPorts) {
+        mutableStateOf(findNextAvailablePort(appOptions[selectedIndex].defaultPort, occupiedPorts).toString())
+    }
     
     // 记录最近一次启动时的状态，若用户切换选项则自动重置成功状态
     var launchedIndex by remember { mutableStateOf(-1) }
@@ -987,7 +1008,7 @@ fun LaunchIdeDialog(
                 appOptions.take(2).forEachIndexed { i, app ->
                     IdeAppCard(
                         app = app, isSelected = selectedIndex == i,
-                        onClick = { selectedIndex = i; cdpPort = app.defaultPort.toString() },
+                        onClick = { selectedIndex = i; cdpPort = findNextAvailablePort(app.defaultPort, occupiedPorts).toString() },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1001,7 +1022,7 @@ fun LaunchIdeDialog(
                     val idx = i + 2
                     IdeAppCard(
                         app = app, isSelected = selectedIndex == idx,
-                        onClick = { selectedIndex = idx; cdpPort = app.defaultPort.toString() },
+                        onClick = { selectedIndex = idx; cdpPort = findNextAvailablePort(app.defaultPort, occupiedPorts).toString() },
                         modifier = Modifier.weight(1f)
                     )
                 }
