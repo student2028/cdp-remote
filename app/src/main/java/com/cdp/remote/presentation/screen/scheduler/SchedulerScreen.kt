@@ -510,7 +510,7 @@ private fun TaskCreateSheet(
                     ) {
                         row.forEach { ide ->
                             val style = ideStyles[ide.name] ?: defaultStyle
-                            val isSelected = draft.targetIde == ide.name
+                            val isSelected = draft.targetIde == ide.name && draft.targetPort == ide.port
                             Card(
                                 modifier = Modifier
                                     .weight(1f)
