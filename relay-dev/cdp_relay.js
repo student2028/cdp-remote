@@ -3508,7 +3508,7 @@ function schedulerUpsertTask(task) {
     schedulerStartTimer(savedTask);
     taskExecCounts.set(task.id, 0);
 
-    log(`📅 调度任务已创建: ${task.id} → ${task.targetIde} (${task.scheduleType === 'CRON' ? 'cron: ' + task.cronExpression : '每 ' + task.intervalMinutes + ' 分钟'})`);
+    log(`📅 调度任务已创建: ${task.id} → ${task.targetIde}:${task.targetPort || '?'} (${task.scheduleType === 'CRON' ? 'cron: ' + task.cronExpression : '每 ' + task.intervalMinutes + ' 分钟'})`);
     return { success: true, task: { ...savedTask, isRunning: true, executionCount: 0 } };
 }
 
@@ -3605,7 +3605,7 @@ function schedulerStartCronTimer(task) {
 async function schedulerExecuteTask(task) {
     const count = (taskExecCounts.get(task.id) || 0) + 1;
     taskExecCounts.set(task.id, count);
-    log(`📅 [${task.id}] 执行第 ${count} 次 → ${task.targetIde}: ${task.prompt.substring(0, 50)}...`);
+    log(`📅 [${task.id}] 执行第 ${count} 次 → ${task.targetIde}:${task.targetPort || '?'}: ${task.prompt.substring(0, 50)}...`);
 
     try {
         // 找目标 IDE 的 CDP 端口
@@ -3711,12 +3711,12 @@ function schedulerRestoreAll() {
     for (const task of tasks) {
         taskExecCounts.set(task.id, 0);
         if (task.paused) {
-            log(`   ⏸️ ${task.targetIde} — 已暂停 — "${task.prompt.substring(0, 40)}..."`);
+            log(`   ⏸️ ${task.targetIde}:${task.targetPort || '?'} — 已暂停 — "${task.prompt.substring(0, 40)}..."`);
             continue;
         }
         schedulerStartTimer(task);
         const label = task.scheduleType === 'CRON' ? `cron: ${task.cronExpression}` : `每 ${task.intervalMinutes} 分钟`;
-        log(`   📅 ${task.targetIde} — ${label} — "${task.prompt.substring(0, 40)}..."`);
+        log(`   📅 ${task.targetIde}:${task.targetPort || '?'} — ${label} — "${task.prompt.substring(0, 40)}..."`);
     }
 }
 

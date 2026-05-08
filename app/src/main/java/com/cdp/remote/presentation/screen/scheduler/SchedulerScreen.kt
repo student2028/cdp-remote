@@ -311,7 +311,7 @@ private fun TaskCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            task.targetIde,
+                            if (task.targetPort > 0) "${task.targetIde}:${task.targetPort}" else task.targetIde,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = if (isPaused) Color(0xFFB2BEC3) else Color.Unspecified
