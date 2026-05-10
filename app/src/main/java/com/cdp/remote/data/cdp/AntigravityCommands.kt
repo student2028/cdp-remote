@@ -23,12 +23,12 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
         @Volatile
         private var cdpHelpersScriptCache: String? = null
 
-        /** 复用的 HTTP 客户端（图片上传到 relay），避免每次创建新连接池 */
+        /** 复用的 HTTP 客户端（图片/视频上传到 relay），避免每次创建新连接池 */
         private val uploadHttpClient by lazy {
             okhttp3.OkHttpClient.Builder()
-                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
         }
     }
@@ -436,14 +436,14 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     }
 
     /**
-     * 通过 Relay HTTP 直传图片（绕开 WebSocket 分块）
+     * 通过 Relay HTTP 直传媒体文件（图片/视频，绕开 WebSocket 分块）
      *
      * 流程：
-     * 1. Android 将原始图片二进制 POST 到 relay `/upload`
+     * 1. Android 将原始二进制 POST 到 relay `/upload`
      * 2. Relay 暂存文件并返回可下载 URL
      * 3. 一次 CDP evaluate: IDE 端 `fetch(url)` 下载 → 构造 File → 派发 paste 事件
      *
-     * 优势：无论图片多大，只需 **1 次** CDP evaluate 调用，不会超时。
+     * 优势：无论文件多大，只需 **1 次** CDP evaluate 调用，不会超时。
      */
     open suspend fun pasteImageViaRelay(
         imageBytes: ByteArray,
@@ -461,6 +461,11 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
             mimeType.contains("png") -> ".png"
             mimeType.contains("gif") -> ".gif"
             mimeType.contains("webp") -> ".webp"
+            mimeType.contains("mp4") -> ".mp4"
+            mimeType.contains("quicktime") || mimeType.contains("mov") -> ".mov"
+            mimeType.contains("webm") -> ".webm"
+            mimeType.contains("avi") || mimeType.contains("x-msvideo") -> ".avi"
+            mimeType.contains("mkv") || mimeType.contains("matroska") -> ".mkv"
             else -> ".bin"
         }
         val uploadFileName = fileName.let {
@@ -482,7 +487,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
             if (!response.isSuccessful) return CdpResult.Error("Relay 上传失败: HTTP ${response.code} $body")
             val json = JsonParser.parseString(body).asJsonObject
             uploadUrl = json.get("url")?.asString ?: return CdpResult.Error("Relay 返回无 URL")
-            Log.d(TAG, "图片已上传到 Relay: $uploadUrl (${imageBytes.size} bytes)")
+            Log.d(TAG, "文件已上传到 Relay: $uploadUrl (${imageBytes.size} bytes, $mimeType)")
         } catch (e: Exception) {
             Log.e(TAG, "Relay 上传异常", e)
             return CdpResult.Error("Relay 上传异常: ${e.message}")

@@ -123,7 +123,7 @@ private val SAFE_NAME_REGEX = Regex("""[^a-zA-Z0-9.\-_]""")
 fun sanitizeFileName(name: String): String = name.replace(SAFE_NAME_REGEX, "_")
 
 enum class AttachmentType {
-    IMAGE, FILE
+    IMAGE, FILE, VIDEO
 }
 
 /**

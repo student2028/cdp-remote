@@ -103,9 +103,11 @@ object IdeTargetsParser {
     /** 判断是否是主编辑器窗口 */
     private fun isWorkbenchPage(url: String, title: String, appName: String): Boolean {
         if (isLaunchpadPage(url, title)) return false
+        val type = ElectronAppType.fromAppName(appName)
         return url.contains("workbench", ignoreCase = true) ||
             url.startsWith("app://") ||
-            ElectronAppType.fromAppName(appName) == ElectronAppType.CLAUDE_CODE
+            type == ElectronAppType.CLAUDE_CODE ||
+            type == ElectronAppType.DSME
     }
 
     private fun isLaunchpadPage(url: String, title: String): Boolean =

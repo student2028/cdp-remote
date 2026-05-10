@@ -60,6 +60,154 @@ function addCwdHistory(cwdPath, appName) {
     log(`📁 记录目录历史: ${cwdPath} (${appName})`);
 }
 
+// ─── Codex workspace roots 持久化 ───
+// Codex Desktop 的项目列表不来自启动参数，而来自全局状态文件。
+// 传 cwd 给 open/launch 只能命中已经存在的项目；新项目必须先写入 workspace roots。
+const CODEX_GLOBAL_STATE_FILE = path.join(os.homedir(), '.codex', '.codex-global-state.json');
+
+function normalizeWorkspacePath(cwdPath) {
+    const raw = String(cwdPath || '').trim();
+    if (!raw) return '';
+    const expanded = raw === '~' ? os.homedir() : raw.replace(/^~\//, `${os.homedir()}/`);
+    const resolved = path.resolve(expanded);
+    try {
+        return fs.realpathSync(resolved);
+    } catch (_) {
+        return resolved;
+    }
+}
+
+function readCodexGlobalState() {
+    try {
+        if (fs.existsSync(CODEX_GLOBAL_STATE_FILE)) {
+            return JSON.parse(fs.readFileSync(CODEX_GLOBAL_STATE_FILE, 'utf8'));
+        }
+    } catch (e) {
+        throw new Error(`读取 Codex 全局状态失败: ${e.message}`);
+    }
+    return {};
+}
+
+function writeCodexGlobalState(state) {
+    fs.mkdirSync(path.dirname(CODEX_GLOBAL_STATE_FILE), { recursive: true });
+    const tmp = `${CODEX_GLOBAL_STATE_FILE}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, CODEX_GLOBAL_STATE_FILE);
+}
+
+function ensureArray(value) {
+    return Array.isArray(value) ? value.filter(v => typeof v === 'string' && v.trim()) : [];
+}
+
+function ensureCodexWorkspaceRoot(cwdPath, { activate = true } = {}) {
+    const workspaceRoot = normalizeWorkspacePath(cwdPath);
+    if (!workspaceRoot) throw new Error('缺少 Codex 工作目录');
+    if (!fs.existsSync(workspaceRoot) || !fs.statSync(workspaceRoot).isDirectory()) {
+        throw new Error(`Codex 工作目录不存在或不是目录: ${workspaceRoot}`);
+    }
+
+    const state = readCodexGlobalState();
+    const savedRoots = ensureArray(state['electron-saved-workspace-roots']);
+    const projectOrder = ensureArray(state['project-order']);
+
+    const nextSavedRoots = [workspaceRoot, ...savedRoots.filter(p => p !== workspaceRoot)];
+    const nextProjectOrder = [workspaceRoot, ...projectOrder.filter(p => p !== workspaceRoot)];
+
+    let changed = JSON.stringify(savedRoots) !== JSON.stringify(nextSavedRoots)
+        || JSON.stringify(projectOrder) !== JSON.stringify(nextProjectOrder);
+
+    state['electron-saved-workspace-roots'] = nextSavedRoots;
+    state['project-order'] = nextProjectOrder;
+
+    if (activate) {
+        const activeRoots = ensureArray(state['active-workspace-roots']);
+        const nextActiveRoots = [workspaceRoot, ...activeRoots.filter(p => p !== workspaceRoot)];
+        if (JSON.stringify(activeRoots) !== JSON.stringify(nextActiveRoots)) changed = true;
+        state['active-workspace-roots'] = nextActiveRoots;
+    }
+
+    if (changed) {
+        writeCodexGlobalState(state);
+        log(`📦 Codex workspace 已${activate ? '添加并激活' : '添加'}: ${workspaceRoot}`);
+    } else {
+        log(`📦 Codex workspace 已存在: ${workspaceRoot}`);
+    }
+
+    return { workspaceRoot, changed, stateFile: CODEX_GLOBAL_STATE_FILE };
+}
+
+async function evaluateOnCdpPage(cdpPort, expression, { timeoutMs = 8000, pageMatcher = null } = {}) {
+    const pages = await getJson(`http://${CDP_HOST}:${cdpPort}/json`, 3000);
+    const page = pages.find(p =>
+        p.type === 'page'
+        && p.webSocketDebuggerUrl
+        && (!pageMatcher || pageMatcher(p))
+    );
+    if (!page) throw new Error(`CDP :${cdpPort} 未找到可执行页面`);
+
+    return await new Promise((resolve, reject) => {
+        const ws = new WebSocket(page.webSocketDebuggerUrl);
+        const timer = setTimeout(() => {
+            try { ws.close(); } catch (_) {}
+            reject(new Error('Runtime.evaluate timeout'));
+        }, timeoutMs);
+
+        ws.on('open', () => {
+            ws.send(JSON.stringify({
+                id: 1,
+                method: 'Runtime.evaluate',
+                params: { expression, awaitPromise: true, returnByValue: true }
+            }));
+        });
+        ws.on('message', (buf) => {
+            try {
+                const msg = JSON.parse(buf.toString());
+                if (msg.id !== 1) return;
+                clearTimeout(timer);
+                try { ws.close(); } catch (_) {}
+                if (msg.error) reject(new Error(msg.error.message || 'Runtime.evaluate failed'));
+                else resolve(msg.result?.result?.value);
+            } catch (e) {
+                clearTimeout(timer);
+                try { ws.close(); } catch (_) {}
+                reject(e);
+            }
+        });
+        ws.on('error', (e) => {
+            clearTimeout(timer);
+            reject(e);
+        });
+    });
+}
+
+async function addCodexWorkspaceRootToRunningApp(cdpPort, workspaceRoot) {
+    const rootLiteral = JSON.stringify(workspaceRoot);
+    const expression = `
+        (async function() {
+            var rootPath = ${rootLiteral};
+            try {
+                if (!window.electronBridge || typeof window.electronBridge.sendMessageFromView !== 'function') {
+                    return 'missing-electronBridge';
+                }
+                await window.electronBridge.sendMessageFromView({
+                    type: 'electron-add-new-workspace-root-option',
+                    root: rootPath
+                });
+                return 'ok';
+            } catch (e) {
+                return 'error:' + (e && e.message ? e.message : String(e));
+            }
+        })()
+    `;
+    return evaluateOnCdpPage(cdpPort, expression, {
+        pageMatcher: isCodexMainPage
+    });
+}
+
+function isCodexMainPage(p) {
+    return p.url?.startsWith('app://') || p.url?.includes('index.html');
+}
+
 // ─── 用户环境变量加载（解决 LaunchAgent 缺少代理等环境变量问题）───
 let _cachedUserEnv = null;
 let _envCacheTime = 0;
@@ -1311,6 +1459,8 @@ function detectAppType(pages) {
             return { name: 'VS Code', emoji: '💻' };
         if (p.title?.includes('Simple Code GUI') || p.title?.includes('simple-code-gui'))
             return { name: 'Claude Code', emoji: '🤖' };
+        if (p.title?.includes('DSME') || p.title?.includes('DeepSeek'))
+            return { name: 'DSME', emoji: '🐋' };
     }
     return { name: 'Unknown', emoji: '❓' };
 }
@@ -1343,6 +1493,14 @@ function openCwdInRunningIde(port, appName, cwd) {
     if (!appInfo) return;
 
     addCwdHistory(cwd, resolvedAppName);
+    if (resolvedAppName.toLowerCase() === 'codex') {
+        try {
+            ensureCodexWorkspaceRoot(cwd, { activate: true });
+        } catch (e) {
+            log(`⚠️ Codex workspace 写入失败: ${e.message}`);
+            throw e;
+        }
+    }
     let extractedUserDataDir = null;
     try {
         const pgrepOut = execSync(`pgrep -f -- "--remote-debugging-port=${port}" 2>/dev/null || true`).toString().trim();
@@ -1367,6 +1525,47 @@ function openCwdInRunningIde(port, appName, cwd) {
     spawn('/usr/bin/open',
         ['-n', '-a', appInfo.appPath, '--args', ...openArgs],
         { detached: true, stdio: 'ignore', env: { ...process.env, ...userEnv } }).unref();
+}
+
+async function reloadCdpPage(port, { pageMatcher = null } = {}) {
+    try {
+        const pages = await getJson(`http://${CDP_HOST}:${port}/json`, 3000);
+        const page = pages.find(p =>
+            p.type === 'page' &&
+            p.webSocketDebuggerUrl &&
+            (!pageMatcher || pageMatcher(p))
+        );
+        if (!page) return { reloaded: false, error: 'page target not found' };
+
+        return await new Promise((resolve) => {
+            const ws = new WebSocket(page.webSocketDebuggerUrl);
+            const timer = setTimeout(() => {
+                try { ws.close(); } catch (_) {}
+                resolve({ reloaded: false, error: 'Page.reload timeout' });
+            }, 5000);
+
+            ws.on('open', () => {
+                ws.send(JSON.stringify({ id: 1, method: 'Page.reload', params: { ignoreCache: true } }));
+            });
+            ws.on('message', (buf) => {
+                try {
+                    const msg = JSON.parse(buf.toString());
+                    if (msg.id === 1) {
+                        clearTimeout(timer);
+                        try { ws.close(); } catch (_) {}
+                        if (msg.error) resolve({ reloaded: false, error: msg.error.message || 'Page.reload failed' });
+                        else resolve({ reloaded: true });
+                    }
+                } catch (_) {}
+            });
+            ws.on('error', (e) => {
+                clearTimeout(timer);
+                resolve({ reloaded: false, error: e.message });
+            });
+        });
+    } catch (e) {
+        return { reloaded: false, error: e.message };
+    }
 }
 
 function defaultWorkflowPortForIde(ideName) {
@@ -1519,6 +1718,9 @@ async function checkCdpHealthSingle(port) {
  * @param {string} opts.appName - 指定应用名（可选，如 'Antigravity'）
  */
 async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '', cwd = '' } = {}) {
+    const isCodexLaunch = String(appName || '').toLowerCase() === 'codex' || port === 9666;
+    if (isCodexLaunch && cwd) ensureCodexWorkspaceRoot(cwd, { activate: true });
+
     const preCheck = await checkCdpHealthSingle(port);
     if (preCheck.available) {
         log(`✅ autoLaunch: CDP :${port} 已可用 (${preCheck.pages} 个页面)，跳过启动`);
@@ -1922,48 +2124,68 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ── /upload — 图片直传通道：Android 上传原始二进制，IDE 端通过 fetch() 下载 ──
+    // ── /upload — 附件直传通道：Android 上传原始二进制，IDE 端通过 fetch() 下载 ──
     // POST /upload?filename=image.png&mime=image/png  body: raw binary
     // 返回: { url: "http://relay:19336/tmp/xxx_image.png" }
-    // 文件 60 秒后自动清理
+    // 文件自动清理：图片 60 秒，其他附件 10 分钟
     if (req.url.startsWith('/upload') && req.method === 'POST') {
         const parsed = urlModule.parse(req.url, true);
         const filename = (parsed.query.filename || 'image.bin').replace(/[^a-zA-Z0-9._\-]/g, '_');
-        const UPLOAD_MAX = 20 * 1024 * 1024; // 20MB 上限
-        const chunks = [];
+        const mime = String(parsed.query.mime || 'application/octet-stream').replace(/[\r\n"]/g, '') || 'application/octet-stream';
+        const UPLOAD_MAX = 100 * 1024 * 1024; // 100MB 上限（支持视频文件）
+        const tmpDir = path.join(os.tmpdir(), 'cdp-relay-uploads');
+        fs.mkdirSync(tmpDir, { recursive: true });
+        const safeName = `${Date.now()}_${filename}`;
+        const filePath = path.join(tmpDir, safeName);
+        const metaPath = `${filePath}.json`;
+        const out = fs.createWriteStream(filePath);
         let totalLen = 0;
         let tooLarge = false;
+        let finished = false;
+
+        const failUpload = (status, message) => {
+            if (finished) return;
+            finished = true;
+            try { out.destroy(); } catch (_) {}
+            try { fs.unlinkSync(filePath); } catch (_) {}
+            try { fs.unlinkSync(metaPath); } catch (_) {}
+            res.writeHead(status, { 'Content-Type': 'application/json', ...cors });
+            res.end(JSON.stringify({ error: message }));
+        };
+
         req.on('data', chunk => {
             if (tooLarge) return;
             totalLen += chunk.length;
-            if (totalLen > UPLOAD_MAX) { tooLarge = true; chunks.length = 0; return; }
-            chunks.push(chunk);
-        });
-        req.on('end', () => {
-            if (tooLarge) {
-                res.writeHead(413, { 'Content-Type': 'application/json', ...cors });
-                res.end(JSON.stringify({ error: '文件超过 20MB 上限' }));
+            if (totalLen > UPLOAD_MAX) {
+                tooLarge = true;
+                failUpload(413, '文件超过 100MB 上限');
                 return;
             }
+            out.write(chunk);
+        });
+        req.on('error', e => failUpload(500, e.message));
+        out.on('error', e => failUpload(500, e.message));
+        req.on('end', () => {
+            if (finished || tooLarge) return;
             try {
-                const tmpDir = path.join(os.tmpdir(), 'cdp-relay-uploads');
-                fs.mkdirSync(tmpDir, { recursive: true });
-                const safeName = `${Date.now()}_${filename}`;
-                const filePath = path.join(tmpDir, safeName);
-                fs.writeFileSync(filePath, Buffer.concat(chunks));
-                const relayHost = req.headers.host || `${BIND_ADDR}:${RELAY_PORT}`;
-                const url = `http://${relayHost}/tmp/${safeName}`;
-                log(`📤 /upload: ${filePath} (${totalLen} bytes) → ${url}`);
-                // 60 秒后自动清理临时文件
-                setTimeout(() => {
-                    try { fs.unlinkSync(filePath); log(`🗑️ 已清理临时文件: ${safeName}`); } catch (_) {}
-                }, 60_000);
-                res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
-                res.end(JSON.stringify({ ok: true, url, size: totalLen }));
+                out.end(() => {
+                    if (finished) return;
+                    finished = true;
+                    fs.writeFileSync(metaPath, JSON.stringify({ mime, filename }));
+                    const relayHost = req.headers.host || `${BIND_ADDR}:${RELAY_PORT}`;
+                    const url = `http://${relayHost}/tmp/${safeName}`;
+                    log(`📤 /upload: ${filePath} (${totalLen} bytes, ${mime}) → ${url}`);
+                    const cleanupMs = mime.startsWith('image/') ? 60_000 : 600_000;
+                    setTimeout(() => {
+                        try { fs.unlinkSync(filePath); log(`🗑️ 已清理临时文件: ${safeName}`); } catch (_) {}
+                        try { fs.unlinkSync(metaPath); } catch (_) {}
+                    }, cleanupMs);
+                    res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+                    res.end(JSON.stringify({ ok: true, url, size: totalLen, mime }));
+                });
             } catch (e) {
                 log(`❌ /upload 异常: ${e.message}`);
-                res.writeHead(500, { 'Content-Type': 'application/json', ...cors });
-                res.end(JSON.stringify({ error: e.message }));
+                failUpload(500, e.message);
             }
         });
         return;
@@ -1984,13 +2206,25 @@ const server = http.createServer(async (req, res) => {
             res.end(JSON.stringify({ error: '文件不存在或已过期' }));
             return;
         }
-        const data = fs.readFileSync(filePath);
-        // 从文件名推断 MIME
-        const ext = path.extname(safeName).toLowerCase();
-        const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
-        const mime = mimeMap[ext] || 'application/octet-stream';
-        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': data.length, ...cors });
-        res.end(data);
+        let mime = 'application/octet-stream';
+        try {
+            const meta = JSON.parse(fs.readFileSync(`${filePath}.json`, 'utf8'));
+            if (meta.mime) mime = String(meta.mime);
+        } catch (_) {
+            const ext = path.extname(safeName).toLowerCase();
+            const mimeMap = {
+                '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                '.gif': 'image/gif', '.webp': 'image/webp',
+                '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+                '.avi': 'video/x-msvideo', '.mkv': 'video/x-matroska',
+                '.pdf': 'application/pdf', '.txt': 'text/plain', '.json': 'application/json',
+                '.zip': 'application/zip'
+            };
+            mime = mimeMap[ext] || mime;
+        }
+        const stat = fs.statSync(filePath);
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size, ...cors });
+        fs.createReadStream(filePath).pipe(res);
         return;
     }
 
@@ -2041,24 +2275,142 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ── Codex 项目管理：显式添加/激活 workspace root ──
+    if (req.url.startsWith('/codex/workspace/add')) {
+        const parsed = urlModule.parse(req.url, true);
+        const reqPort = parsed.query.port ? parseInt(parsed.query.port) : 9666;
+        const reqCwd = String(parsed.query.cwd || '').trim();
+        const activate = !/^(0|false|no)$/i.test(String(parsed.query.activate || 'true'));
+        const shouldReload = !/^(0|false|no)$/i.test(String(parsed.query.reload || 'true'));
+        res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+        try {
+            const codexWorkspace = ensureCodexWorkspaceRoot(reqCwd, { activate });
+            await scanAllCdpPorts();
+            let runtimeAddResult = null;
+            if (activeCdpTargets.has(reqPort)) {
+                try {
+                    runtimeAddResult = await addCodexWorkspaceRootToRunningApp(reqPort, codexWorkspace.workspaceRoot);
+                    log(`📦 Codex workspace runtime add :${reqPort} → ${runtimeAddResult}`);
+                } catch (e) {
+                    runtimeAddResult = `error:${e.message}`;
+                    log(`⚠️ Codex workspace runtime add 失败 :${reqPort}: ${e.message}`);
+                }
+                if (runtimeAddResult !== 'ok') {
+                    res.end(JSON.stringify({
+                        success: false,
+                        port: reqPort,
+                        appName: 'Codex',
+                        codexWorkspace,
+                        runtimeAdd: runtimeAddResult,
+                        error: `Codex runtime add failed: ${runtimeAddResult || 'unknown'}`
+                    }));
+                    return;
+                }
+            }
+            let reloadResult = null;
+            if (shouldReload && activeCdpTargets.has(reqPort)) {
+                reloadResult = await reloadCdpPage(reqPort, { pageMatcher: isCodexMainPage });
+                if (!reloadResult?.reloaded) {
+                    res.end(JSON.stringify({
+                        success: false,
+                        port: reqPort,
+                        appName: 'Codex',
+                        codexWorkspace,
+                        runtimeAdd: runtimeAddResult,
+                        reload: reloadResult,
+                        error: `Codex reload failed: ${reloadResult?.error || 'unknown'}`
+                    }));
+                    return;
+                }
+            }
+            res.end(JSON.stringify({
+                success: true,
+                port: reqPort,
+                appName: 'Codex',
+                codexWorkspace,
+                runtimeAdd: runtimeAddResult,
+                reload: reloadResult
+            }));
+        } catch (e) {
+            res.end(JSON.stringify({ success: false, port: reqPort, appName: 'Codex', error: e.message }));
+        }
+        return;
+    }
+
     // ── /launch 支持 ?port=9444&app=Antigravity&cwd=/path/to/project ──
     if (req.url.startsWith('/launch')) {
         const parsed = urlModule.parse(req.url, true);
         const reqPort = parsed.query.port ? parseInt(parsed.query.port) : CDP_PORT;
-        const reqApp = parsed.query.app || '';
-        const reqCwd = (parsed.query.cwd || '').replace(/[^a-zA-Z0-9/._\-~ ]/g, ''); // 白名单过滤：仅允许合法路径字符
+        const reqApp = String(parsed.query.app || '');
+        const reqCwd = String(parsed.query.cwd || '').trim();
+        const isCodexLaunch = reqApp.toLowerCase() === 'codex' || reqPort === 9666;
+        let codexWorkspace = null;
         res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+
+        if (isCodexLaunch && reqCwd) {
+            try {
+                codexWorkspace = ensureCodexWorkspaceRoot(reqCwd, { activate: true });
+            } catch (e) {
+                res.end(JSON.stringify({ launched: false, port: reqPort, appName: 'Codex', error: e.message }));
+                return;
+            }
+        }
 
         // 如果指定了端口且该端口已有实例
         if (activeCdpTargets.has(reqPort)) {
             const t = activeCdpTargets.get(reqPort);
-            if (reqCwd) {
+            let reloadResult = null;
+            let runtimeAddResult = null;
+            if (isCodexLaunch && reqCwd) {
+                try {
+                    runtimeAddResult = await addCodexWorkspaceRootToRunningApp(reqPort, codexWorkspace.workspaceRoot);
+                    log(`📦 /launch: Codex runtime add :${reqPort} → ${runtimeAddResult}`);
+                } catch (e) {
+                    runtimeAddResult = `error:${e.message}`;
+                    log(`⚠️ /launch: Codex runtime add 失败 :${reqPort}: ${e.message}`);
+                }
+                if (runtimeAddResult !== 'ok') {
+                    res.end(JSON.stringify({
+                        launched: false,
+                        already_running: true,
+                        port: reqPort,
+                        appName: t.appName,
+                        codexWorkspace,
+                        runtimeAdd: runtimeAddResult,
+                        error: `Codex runtime add failed: ${runtimeAddResult || 'unknown'}`
+                    }));
+                    return;
+                }
+                log(`✅ /launch: Codex CDP :${reqPort} 已运行，刷新以激活 workspace: ${codexWorkspace.workspaceRoot}`);
+                reloadResult = await reloadCdpPage(reqPort, { pageMatcher: isCodexMainPage });
+                if (!reloadResult?.reloaded) {
+                    res.end(JSON.stringify({
+                        launched: false,
+                        already_running: true,
+                        port: reqPort,
+                        appName: t.appName,
+                        codexWorkspace,
+                        runtimeAdd: runtimeAddResult,
+                        reload: reloadResult,
+                        error: `Codex reload failed: ${reloadResult?.error || 'unknown'}`
+                    }));
+                    return;
+                }
+            } else if (reqCwd) {
                 log(`✅ /launch: CDP :${reqPort} 已运行，尝试打开新窗口目录: ${reqCwd}`);
                 openCwdInRunningIde(reqPort, reqApp || t.appName, reqCwd);
             } else {
                 log(`✅ /launch: CDP :${reqPort} 已运行 (${t.appName})`);
             }
-            res.end(JSON.stringify({ launched: true, already_running: true, port: reqPort, appName: t.appName }));
+            res.end(JSON.stringify({
+                launched: true,
+                already_running: true,
+                port: reqPort,
+                appName: t.appName,
+                codexWorkspace,
+                runtimeAdd: runtimeAddResult,
+                reload: reloadResult
+            }));
             return;
         }
 
@@ -2073,7 +2425,7 @@ const server = http.createServer(async (req, res) => {
         if (reqCwd) addCwdHistory(reqCwd, reqApp);
         const ok = await autoLaunchWithCdp({ force: true, port: reqPort, appName: reqApp, cwd: reqCwd });
         if (ok) await scanAllCdpPorts();
-        res.end(JSON.stringify({ launched: ok, port: reqPort }));
+        res.end(JSON.stringify({ launched: ok, port: reqPort, codexWorkspace }));
         return;
     }
 
@@ -2141,10 +2493,76 @@ const server = http.createServer(async (req, res) => {
     }
 
     // POST /workflow/upload_attachment — 保存附件到 .orchestra/attachments/
-    // body: { cwd: "/path/to/repo", filename: "screenshot.png", base64: "..." }
-    // 限制：单文件 ≤ 10MB（base64 字符串约 14MB）
-    if (req.url === '/workflow/upload_attachment' && req.method === 'POST') {
-        const MAX_BODY_LEN = 14 * 1024 * 1024 + 4096; // ~10MB decoded + JSON wrapper
+    // 新版：query: cwd, filename, mime; body 为原始文件流。旧版 JSON base64 仍保留兼容。
+    if (req.url.startsWith('/workflow/upload_attachment') && req.method === 'POST') {
+        const uploadUrl = urlModule.parse(req.url, true);
+        const queryCwd = String(uploadUrl.query.cwd || '').trim();
+        const queryFilename = String(uploadUrl.query.filename || '').trim();
+        const queryMime = String(uploadUrl.query.mime || '').trim();
+        if (queryCwd && queryFilename) {
+            const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+            const safeName = queryFilename.replace(/[^a-zA-Z0-9._\-]/g, '_') || `attachment_${Date.now()}`;
+            const attDir = path.join(queryCwd, '.orchestra', 'attachments');
+            const filePath = path.join(attDir, safeName);
+            let totalLen = 0;
+            let settled = false;
+            let out = null;
+
+            const finish = (status, payload) => {
+                if (settled) return;
+                settled = true;
+                try { out?.destroy(); } catch (_) {}
+                if (status >= 400) {
+                    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (_) {}
+                }
+                res.writeHead(status, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify(payload));
+            };
+
+            try {
+                if (!fs.existsSync(attDir)) fs.mkdirSync(attDir, { recursive: true });
+                out = fs.createWriteStream(filePath);
+                out.on('error', e => {
+                    log(`❌ /workflow/upload_attachment 写入失败: ${e.message}`);
+                    finish(500, { error: e.message });
+                });
+                out.on('drain', () => {
+                    if (!settled) req.resume();
+                });
+                req.on('data', chunk => {
+                    if (settled) return;
+                    totalLen += chunk.length;
+                    if (totalLen > MAX_UPLOAD_BYTES) {
+                        log(`⚠️ /workflow/upload_attachment 附件超过 100MB 上限: ${queryFilename}`);
+                        finish(413, { error: `附件 ${queryFilename} 超过 100MB 上限` });
+                        try { req.resume(); } catch (_) {}
+                        return;
+                    }
+                    if (!out.write(chunk)) req.pause();
+                });
+                req.on('end', () => {
+                    if (settled) return;
+                    out.end(() => {
+                        if (settled) return;
+                        settled = true;
+                        log(`📎 附件已保存: ${filePath} (${totalLen} bytes, ${queryMime || 'application/octet-stream'})`);
+                        res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+                        res.end(JSON.stringify({ ok: true, path: filePath, safeName, size: totalLen, mime: queryMime }));
+                    });
+                });
+                req.on('error', e => {
+                    if (settled && e.code === 'ECONNRESET') return;
+                    log(`❌ /workflow/upload_attachment 请求异常: ${e.message}`);
+                    finish(500, { error: e.message });
+                });
+            } catch (e) {
+                log(`❌ /workflow/upload_attachment 初始化失败: ${e.message}`);
+                finish(500, { error: e.message });
+            }
+            return;
+        }
+
+        const MAX_BODY_LEN = 140 * 1024 * 1024 + 4096; // ~100MB decoded + JSON wrapper
         let body = '';
         let tooLarge = false;
         req.on('data', chunk => {
@@ -2157,9 +2575,9 @@ const server = http.createServer(async (req, res) => {
         });
         req.on('end', () => {
             if (tooLarge) {
-                log('⚠️ /workflow/upload_attachment 请求体超过 10MB 上限');
+                log('⚠️ /workflow/upload_attachment 请求体超过 100MB 上限');
                 res.writeHead(413, { 'Content-Type': 'application/json', ...cors });
-                res.end(JSON.stringify({ error: '附件超过 10MB 上限' }));
+                res.end(JSON.stringify({ error: '附件超过 100MB 上限' }));
                 return;
             }
             try {
@@ -2171,9 +2589,9 @@ const server = http.createServer(async (req, res) => {
                 }
                 // 二次校验解码后大小
                 const decoded = Buffer.from(base64, 'base64');
-                if (decoded.length > 10 * 1024 * 1024) {
+                if (decoded.length > 100 * 1024 * 1024) {
                     res.writeHead(413, { 'Content-Type': 'application/json', ...cors });
-                    res.end(JSON.stringify({ error: `附件 ${filename} 超过 10MB 上限 (${(decoded.length / 1024 / 1024).toFixed(1)}MB)` }));
+                    res.end(JSON.stringify({ error: `附件 ${filename} 超过 100MB 上限 (${(decoded.length / 1024 / 1024).toFixed(1)}MB)` }));
                     return;
                 }
                 const attDir = path.join(cwd, '.orchestra', 'attachments');
@@ -2897,6 +3315,33 @@ const server = http.createServer(async (req, res) => {
 // ─── WebSocket 代理（支持路径路由） ───
 
 const wss = new WebSocketServer({ server });
+let startupDone = false;
+let listenRetryTimer = null;
+let listenRetryCount = 0;
+
+function retryRelayListen(reason) {
+    if (listenRetryTimer) return;
+    const delayMs = Math.min(1000 + listenRetryCount * 500, 5000);
+    listenRetryCount++;
+    log(`⚠️ Relay 监听失败: ${reason}，${delayMs}ms 后重试`);
+    listenRetryTimer = setTimeout(() => {
+        listenRetryTimer = null;
+        try {
+            server.listen(RELAY_PORT, BIND_ADDR);
+        } catch (e) {
+            retryRelayListen(e.message);
+        }
+    }, delayMs);
+    if (typeof listenRetryTimer.unref === 'function') listenRetryTimer.unref();
+}
+
+wss.on('error', e => {
+    if (e.code === 'EADDRINUSE') {
+        retryRelayListen(`端口 ${RELAY_PORT} 被占用`);
+    } else {
+        log(`❌ WebSocket 服务器错误: ${e.message}`);
+    }
+});
 
 wss.on('connection', (clientWs, req) => {
     const id = ++connectionCount;
@@ -3003,7 +3448,10 @@ function log(msg) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-server.listen(RELAY_PORT, BIND_ADDR, async () => {
+server.on('listening', async () => {
+    if (startupDone) return;
+    startupDone = true;
+    listenRetryCount = 0;
     log('╔═══════════════════════════════════════════╗');
     log('║   CDP Relay Server (多实例版 v2.0)        ║');
     log('╚═══════════════════════════════════════════╝');
@@ -3031,22 +3479,15 @@ server.listen(RELAY_PORT, BIND_ADDR, async () => {
 
 server.on('error', e => {
     if (e.code === 'EADDRINUSE') {
-        log(`⚠️ 端口 ${RELAY_PORT} 已被占用，可能有另一个relay实例正在运行`);
-        // 检查是否有其他relay进程在运行
-        const existingPid = findExistingRelayProcess();
-        if (existingPid) {
-            log(`ℹ️ 发现现有relay进程正在运行: PID ${existingPid}`);
-            // 不要退出进程，继续运行并尝试处理
-        } else {
-            log(`❌ 端口被未知进程占用，无法继续`);
-            process.exit(1);
-        }
+        retryRelayListen(`端口 ${RELAY_PORT} 被占用`);
     } else {
         log(`❌ 服务器错误: ${e.message}`);
         // 对于其他严重错误，仍然退出
         process.exit(1);
     }
 });
+
+server.listen(RELAY_PORT, BIND_ADDR);
 
 // 辅助函数：查找现有的relay进程
 function findExistingRelayProcess() {

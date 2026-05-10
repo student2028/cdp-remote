@@ -8,6 +8,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.*
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -347,6 +350,48 @@ class ChatViewModelTest {
             listOf("mousePressed", "mouseReleased"),
             orderedCdp.mouseEventTypes
         )
+    }
+
+    @Test
+    fun `addCodexProject opens a chat in the newly added project after it appears`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(MockResponse()
+            .setResponseCode(200)
+            .setBody("""{"success":true,"codexWorkspace":{"workspaceRoot":"/tmp/newproj"}}"""))
+        server.start()
+        try {
+            setPrivateField("isCodex", true)
+            setPrivateField("codexCommands", CodexCommands(fakeCdp))
+            setPrivateField("connectHost", HostInfo("127.0.0.1", server.port))
+            setPrivateField("connectWsUrl", "ws://127.0.0.1:9666/devtools/page/codex")
+
+            fakeCdp.evaluateHandler = { expr ->
+                when {
+                    expr.contains("return JSON.stringify({projects: projects") ->
+                        CdpResult.Success("""{"projects":["newproj"],"current":"","expanded":{"newproj":false}}""")
+                    expr.contains("var projectName = \"newproj\"") && expr.contains("Start new chat in") ->
+                        CdpResult.Success("new-chat")
+                    else -> CdpResult.Success("ok")
+                }
+            }
+
+            vm.addCodexProject("/tmp/newproj")
+            runCurrent()
+            assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+            Thread.sleep(100)
+            runCurrent()
+            advanceTimeBy(6000)
+            advanceUntilIdle()
+
+            assertTrue(
+                "新增项目出现在列表后，应主动切入/新建聊天，而不是只刷新列表。calls=${fakeCdp.evaluateCalls}",
+                fakeCdp.evaluateCalls.any {
+                    it.contains("var projectName = \"newproj\"") && it.contains("Start new chat in")
+                }
+            )
+        } finally {
+            server.shutdown()
+        }
     }
 
     private class DelayedDimensionCdpClient : ICdpClient {

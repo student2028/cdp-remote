@@ -420,6 +420,33 @@ class CodexCommandsIntegrationTest {
     }
 
     @Test
+    fun `getCurrentModel scans plain Codex model buttons`() = runBlocking {
+        mockServer.onRequest { req ->
+            if (req.get("method")?.asString == "Runtime.evaluate") {
+                JsonObject().apply {
+                    add("result", JsonObject().apply {
+                        addProperty("type", "string")
+                        addProperty("value", "5.5 Extra High")
+                    })
+                }
+            } else null
+        }
+
+        val result = codex.getCurrentModel()
+
+        assertTrue(result.isSuccess)
+        val expression = mockServer.receivedExpressions.last()
+        assertTrue(
+            "Codex model picker is now a plain button, so selector must scan all buttons",
+            expression.contains("querySelectorAll('button')")
+        )
+        assertFalse(
+            "model picker lookup must not require aria-haspopup=menu",
+            expression.contains("""button[aria-haspopup="menu"]""")
+        )
+    }
+
+    @Test
     fun `switchModel escapes model name before embedding in JavaScript`() = runBlocking {
         var evaluateCount = 0
         mockServer.onRequest { req ->
@@ -454,6 +481,46 @@ class CodexCommandsIntegrationTest {
         assertTrue(
             "escaped model name should be represented as a JS string literal",
             targetExpression.contains("""var input = "gpt'5\\test";""")
+        )
+    }
+
+    @Test
+    fun `switchModel supports Codex bare version labels for GPT presets`() = runBlocking {
+        var evaluateCount = 0
+        mockServer.onRequest { req ->
+            when (req.get("method")?.asString) {
+                "Runtime.evaluate" -> {
+                    evaluateCount += 1
+                    val value = when (evaluateCount) {
+                        1 -> "10,20"
+                        2 -> "30,40"
+                        else -> """{"err":"子菜单中无匹配","avail":["5.5","5.4"]}"""
+                    }
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("value", value)
+                        })
+                    }
+                }
+                "Input.dispatchMouseEvent",
+                "Input.dispatchKeyEvent" -> JsonObject()
+                else -> null
+            }
+        }
+
+        codex.switchModel("GPT-5.5")
+
+        val hoverExpression = mockServer.receivedExpressions[1]
+        assertTrue(
+            "Codex model menu may show bare versions like 5.5, so hover lookup must not require GPT- prefix",
+            hoverExpression.contains("""t.match(/^\d+\.\d+/""")
+        )
+
+        val targetExpression = mockServer.receivedExpressions.last { it.contains("子菜单中无匹配") }
+        assertTrue(
+            "Selecting GPT-5.5 must match submenu item text 5.5",
+            targetExpression.contains("normalizedInput")
         )
     }
 }

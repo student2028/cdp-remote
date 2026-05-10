@@ -257,29 +257,54 @@ fun InputBar(
                 ) {
                     pendingImages.forEach { img ->
                         Box(modifier = Modifier.size(56.dp)) {
-                            // Thumbnail
-                            val bitmap = remember(img.id) {
-                                try {
-                                    val bytes = android.util.Base64.decode(img.base64, android.util.Base64.DEFAULT)
-                                    // Decode with downsampling for thumbnail
-                                    val opts = android.graphics.BitmapFactory.Options().apply {
-                                        inJustDecodeBounds = true
-                                    }
-                                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                                    opts.inSampleSize = maxOf(1, minOf(opts.outWidth, opts.outHeight) / 56)
-                                    opts.inJustDecodeBounds = false
-                                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                                } catch (e: Exception) { null }
-                            }
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = "待发送图片",
+                            val isVideo = img.mimeType.startsWith("video/")
+                            val isImage = img.mimeType.startsWith("image/")
+                            if (isVideo) {
+                                // 视频：显示占位图标
+                                Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .clip(RoundedCornerShape(8.dp)),
-                                    contentScale = ContentScale.Crop
-                                )
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = "视频", modifier = Modifier.size(28.dp),
+                                        tint = MaterialTheme.colorScheme.primary)
+                                }
+                            } else if (isImage) {
+                                // 图片：缩略图
+                                val bitmap = remember(img.id) {
+                                    try {
+                                        val bytes = android.util.Base64.decode(img.base64, android.util.Base64.DEFAULT)
+                                        val opts = android.graphics.BitmapFactory.Options().apply {
+                                            inJustDecodeBounds = true
+                                        }
+                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                                        opts.inSampleSize = maxOf(1, minOf(opts.outWidth, opts.outHeight) / 56)
+                                        opts.inJustDecodeBounds = false
+                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                                    } catch (e: Exception) { null }
+                                }
+                                if (bitmap != null) {
+                                    Image(
+                                        bitmap = bitmap.asImageBitmap(),
+                                        contentDescription = "待发送图片",
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(24.dp))
+                                    }
+                                }
                             } else {
                                 Box(
                                     modifier = Modifier
@@ -288,7 +313,8 @@ fun InputBar(
                                         .background(MaterialTheme.colorScheme.surfaceVariant),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(24.dp))
+                                    Icon(Icons.Default.AttachFile, contentDescription = "文件", modifier = Modifier.size(26.dp),
+                                        tint = MaterialTheme.colorScheme.primary)
                                 }
                             }
                             // Delete button
@@ -304,7 +330,7 @@ fun InputBar(
                             ) {
                                 Icon(
                                     Icons.Default.Close,
-                                    contentDescription = "删除图片",
+                                    contentDescription = "删除",
                                     modifier = Modifier.size(12.dp),
                                     tint = Color.White
                                 )
@@ -332,8 +358,8 @@ fun InputBar(
                     enabled = isConnected
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Landscape,
-                        contentDescription = "添加图片",
+                        imageVector = Icons.Default.AttachFile,
+                        contentDescription = "添加附件",
                         modifier = Modifier.size(20.dp),
                         tint = if (pendingImages.isNotEmpty()) Secondary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -356,7 +382,16 @@ fun InputBar(
                         Box(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {
                             if (text.isEmpty()) {
                                 Text(
-                                    text = if (pendingImages.isNotEmpty()) "📷 ${pendingImages.size}张图片已选择" else "输入消息...",
+                                    text = if (pendingImages.isNotEmpty()) {
+                                        val imageCount = pendingImages.count { it.mimeType.startsWith("image/") }
+                                        val videoCount = pendingImages.count { it.mimeType.startsWith("video/") }
+                                        val fileCount = pendingImages.size - imageCount - videoCount
+                                        val parts = mutableListOf<String>()
+                                        if (imageCount > 0) parts.add("📷 ${imageCount}张图片")
+                                        if (videoCount > 0) parts.add("🎥 ${videoCount}个视频")
+                                        if (fileCount > 0) parts.add("📎 ${fileCount}个文件")
+                                        parts.joinToString(" ") + "已选择"
+                                    } else "输入消息...",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                     fontSize = 14.sp
                                 )

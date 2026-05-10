@@ -2,7 +2,6 @@ package com.cdp.remote.presentation.screen.workflow
 
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Base64
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,6 +54,7 @@ import com.cdp.remote.presentation.screen.hosts.RemoteFolderBrowserDialog
 import com.cdp.remote.presentation.screen.scheduler.IdeInfo
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
@@ -123,16 +123,9 @@ fun WorkflowScreen(
         scope.launch {
             for (uri in uris) {
                 try {
-                    // P0#2: 用 use{} 保护 InputStream 防止泄漏
-                    val bytes = context.contentResolver.openInputStream(uri)?.use {
-                        it.readBytes()
-                    } ?: continue
-                    if (bytes.size > 10 * 1024 * 1024) {
-                        viewModel.showToast("文件超过 10MB 上限，已跳过")
-                        continue
-                    }
                     val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
                     val isImage = mimeType.startsWith("image/")
+                    val isVideo = mimeType.startsWith("video/")
 
                     // P2#18: 用 DISPLAY_NAME 取真实文件名，而非 content URI 的 lastPathSegment
                     var displayName: String? = null
@@ -143,20 +136,33 @@ fun WorkflowScreen(
                     }
                     val name = displayName
                         ?: uri.lastPathSegment?.substringAfterLast('/')
-                        ?: if (isImage) "image_${System.currentTimeMillis()}.png" else "file_${System.currentTimeMillis()}"
+                        ?: if (isImage) "image_${System.currentTimeMillis()}.png" else if (isVideo) "video_${System.currentTimeMillis()}.mp4" else "file_${System.currentTimeMillis()}"
 
-                    // P0#1: base64 写入 cacheDir，不在 UiState 内存中持有
-                    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
                     val cacheFile = File(context.cacheDir, "att_${System.nanoTime()}")
-                    cacheFile.writeText(base64)
+                    var totalBytes = 0L
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        cacheFile.outputStream().use { output ->
+                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                totalBytes += read
+                                if (totalBytes > MAX_ATTACHMENT_BYTES) {
+                                    cacheFile.delete()
+                                    throw IOException("文件超过 100MB 上限")
+                                }
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    } ?: continue
 
                     viewModel.addAttachment(
                         TaskAttachment(
-                            type = if (isImage) AttachmentType.IMAGE else AttachmentType.FILE,
+                            type = if (isImage) AttachmentType.IMAGE else if (isVideo) AttachmentType.VIDEO else AttachmentType.FILE,
                             name = name,
                             mimeType = mimeType,
                             cachePath = cacheFile.absolutePath,
-                            sizeBytes = bytes.size.toLong(),
+                            sizeBytes = totalBytes,
                         )
                     )
                 } catch (e: Exception) {
@@ -315,6 +321,8 @@ fun WorkflowScreen(
         )
     }
 }
+
+private const val MAX_ATTACHMENT_BYTES = 100L * 1024L * 1024L
 
 // ─── 状态卡片 ─────────────────────────────────────────────────
 
@@ -1274,6 +1282,7 @@ private fun InitialTaskSection(
 private fun AttachmentChip(attachment: TaskAttachment, onRemove: () -> Unit) {
     val (icon, color) = when (attachment.type) {
         AttachmentType.IMAGE -> Pair(Icons.Default.Image, purpleAccent)
+        AttachmentType.VIDEO -> Pair(Icons.Default.PlayArrow, emeraldAccent)
         AttachmentType.FILE -> Pair(Icons.Default.Description, emeraldAccent)
     }
     val sizeLabel = when {

@@ -1032,14 +1032,47 @@ class CodexCommands(private val cdp: ICdpClient) {
     private suspend fun getModelBtnCenter(): Pair<Double, Double>? {
         val r = cdp.evaluate("""
             (function(){
-                var btns = document.querySelectorAll('button[aria-haspopup="menu"]');
+                function norm(el) {
+                    return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                }
+                function visible(el) {
+                    var r = el.getBoundingClientRect();
+                    var s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 &&
+                        r.bottom > 0 && r.right > 0 &&
+                        r.top < window.innerHeight && r.left < window.innerWidth &&
+                        s.visibility !== 'hidden' && s.display !== 'none';
+                }
+                function scoreButton(btn) {
+                    if (!visible(btn)) return -1;
+                    var t = norm(btn).toLowerCase();
+                    var r = btn.getBoundingClientRect();
+                    var bad = /(automation|project|search|new chat|work locally|branch|copy|chat action|settings?)/.test(t);
+                    if (bad) return -1;
+                    var hasModel = /\b(\d+\.\d+|gpt-\d|codex|o\d)\b/.test(t);
+                    var hasLevel = /\b(extra high|high|medium|low)\b/.test(t);
+                    if (!hasModel && !hasLevel) return -1;
+                    var score = 0;
+                    if (r.y > window.innerHeight * 0.55) score += 10;
+                    if (hasModel) score += 5;
+                    if (hasLevel) score += 3;
+                    if (btn.getAttribute('aria-haspopup') === 'menu') score += 2;
+                    if (r.width >= 40 && r.width <= 240) score += 1;
+                    return score;
+                }
+                var best = null;
+                var bestScore = 7;
+                var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
-                    if (!btns[i].offsetParent) continue;
-                    var t = (btns[i].textContent || '').toLowerCase();
-                    if (t.indexOf('5.') >= 0 || t.indexOf('gpt') >= 0 || t.indexOf('high') >= 0 || t.indexOf('low') >= 0 || t.indexOf('medium') >= 0) {
-                        var r = btns[i].getBoundingClientRect();
-                        return r.x + r.width/2 + ',' + (r.y + r.height/2);
+                    var score = scoreButton(btns[i]);
+                    if (score > bestScore) {
+                        best = btns[i];
+                        bestScore = score;
                     }
+                }
+                if (best) {
+                    var r = best.getBoundingClientRect();
+                    return r.x + r.width/2 + ',' + (r.y + r.height/2);
                 }
                 return '';
             })()
@@ -1055,14 +1088,45 @@ class CodexCommands(private val cdp: ICdpClient) {
     suspend fun getCurrentModel(): CdpResult<String> {
         val result = cdp.evaluate("""
             (function() {
-                var btns = document.querySelectorAll('button[aria-haspopup="menu"]');
+                function norm(el) {
+                    return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                }
+                function visible(el) {
+                    var r = el.getBoundingClientRect();
+                    var s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 &&
+                        r.bottom > 0 && r.right > 0 &&
+                        r.top < window.innerHeight && r.left < window.innerWidth &&
+                        s.visibility !== 'hidden' && s.display !== 'none';
+                }
+                function scoreButton(btn) {
+                    if (!visible(btn)) return -1;
+                    var t = norm(btn).toLowerCase();
+                    var r = btn.getBoundingClientRect();
+                    var bad = /(automation|project|search|new chat|work locally|branch|copy|chat action|settings?)/.test(t);
+                    if (bad) return -1;
+                    var hasModel = /\b(\d+\.\d+|gpt-\d|codex|o\d)\b/.test(t);
+                    var hasLevel = /\b(extra high|high|medium|low)\b/.test(t);
+                    if (!hasModel && !hasLevel) return -1;
+                    var score = 0;
+                    if (r.y > window.innerHeight * 0.55) score += 10;
+                    if (hasModel) score += 5;
+                    if (hasLevel) score += 3;
+                    if (btn.getAttribute('aria-haspopup') === 'menu') score += 2;
+                    if (r.width >= 40 && r.width <= 240) score += 1;
+                    return score;
+                }
+                var best = null;
+                var bestScore = 7;
+                var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
-                    if (!btns[i].offsetParent) continue;
-                    var t = (btns[i].textContent || '').toLowerCase();
-                    if (t.indexOf('5.') >= 0 || t.indexOf('gpt') >= 0 || t.indexOf('high') >= 0 || t.indexOf('low') >= 0 || t.indexOf('medium') >= 0) {
-                        return btns[i].textContent.replace(/\s+/g, ' ').trim();
+                    var score = scoreButton(btns[i]);
+                    if (score > bestScore) {
+                        best = btns[i];
+                        bestScore = score;
                     }
                 }
+                if (best) return norm(best);
                 return '';
             })()
         """.trimIndent())
@@ -1088,7 +1152,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                     var spans = menus[i].querySelectorAll('span');
                     for (var j = 0; j < spans.length; j++) {
                         var t = (spans[j].textContent||'').trim();
-                        if (t.match(/^GPT-\d/) || t.match(/^gpt-\d/i) || t.match(/^o\d-/i) || t.match(/^codex/i)) {
+                        if (t.match(/^\d+\.\d+/) || t.match(/^GPT-\d/) || t.match(/^gpt-\d/i) || t.match(/^o\d-/i) || t.match(/^codex/i)) {
                             var r = spans[j].getBoundingClientRect();
                             return (r.x+r.width/2)+','+(r.y+r.height/2);
                         }
@@ -1201,7 +1265,7 @@ class CodexCommands(private val cdp: ICdpClient) {
             """
             for (var j = 0; j < spans.length; j++) {
                 var t = (spans[j].textContent||'').trim();
-                if (t.match(/^GPT-\d/) || t.match(/^gpt-\d/i) || t.match(/^o\d-/i) || t.match(/^codex/i)) {
+                if (t.match(/^\d+\.\d+/) || t.match(/^GPT-\d/) || t.match(/^gpt-\d/i) || t.match(/^o\d-/i) || t.match(/^codex/i)) {
                     var r = spans[j].getBoundingClientRect();
                     return (r.x+r.width/2)+','+(r.y+r.height/2);
                 }
@@ -1232,13 +1296,22 @@ class CodexCommands(private val cdp: ICdpClient) {
         val targetPos = cdp.evaluate("""
             (function(){
                 var input = $inputLiteral;
+                var normalizedInput = input
+                    .replace(/^gpt[-\s]*/i, '')
+                    .replace(/^openai[-\s]*/i, '')
+                    .trim();
                 var menus = document.querySelectorAll('[role=menu]');
                 if (menus.length < 2) return JSON.stringify({err:'子菜单未展开',count:menus.length});
                 var sub = menus[menus.length-1];
                 var spans = sub.querySelectorAll('span');
                 for (var i = 0; i < spans.length; i++) {
                     var t = (spans[i].textContent||'').trim().toLowerCase();
-                    if (t.indexOf(input) >= 0 && t !== 'change model' && t !== 'other models') {
+                    var normalizedText = t
+                        .replace(/^gpt[-\s]*/i, '')
+                        .replace(/^openai[-\s]*/i, '')
+                        .trim();
+                    if ((t.indexOf(input) >= 0 || normalizedText.indexOf(normalizedInput) >= 0) &&
+                        t !== 'change model' && t !== 'other models') {
                         var r = spans[i].getBoundingClientRect();
                         return JSON.stringify({ok:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
                     }

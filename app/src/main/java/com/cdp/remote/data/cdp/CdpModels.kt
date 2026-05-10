@@ -22,6 +22,7 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
     CODEX("Codex", "📦"),
     CLAUDE_CODE("Claude Code", "🤖"),
     VSCODE_LIKE("VS Code", "💻"),
+    DSME("DSME", "🐋"),
     UNKNOWN("Unknown", "❓");
 
     companion object {
@@ -50,6 +51,7 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
                 nl.contains("windsurf") -> WINDSURF
                 nl.contains("antigravity") -> ANTIGRAVITY
                 nl.contains("claude") -> CLAUDE_CODE
+                nl.contains("dsme") || nl.contains("deepseek") -> DSME
                 else -> UNKNOWN
             }
         }
@@ -117,6 +119,7 @@ data class CdpPage(
             "workbench.html" in url
             || url.startsWith("app://")  // Codex 用 app://-/index.html
             || appType == ElectronAppType.CLAUDE_CODE  // Simple Code GUI (localhost:5173)
+            || appType == ElectronAppType.DSME // DSME (localhost:5173)
         )
 
     val cdpPort: Int?

@@ -3,6 +3,7 @@ package com.cdp.remote.presentation.screen.chat
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.provider.OpenableColumns
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,9 +48,11 @@ import com.cdp.remote.presentation.screen.chat.components.ActionToolbar
 import com.cdp.remote.presentation.screen.chat.components.InputBar
 import com.cdp.remote.presentation.screen.chat.components.MessageBubble
 import com.cdp.remote.presentation.screen.chat.components.TvLiveView
+import com.cdp.remote.presentation.screen.hosts.RemoteFolderBrowserDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Cursor 桌面端「模型选择器」预置列表。
@@ -162,30 +165,63 @@ fun ChatScreen(
         }
     }
 
-    // Image picker (multi-select)
+    // Attachment picker (multi-select)
     val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
         scope.launch {
             for (uri in uris) {
+                var selectedCacheFile: File? = null
                 try {
-                    val inputStream = context.contentResolver.openInputStream(uri) ?: continue
-                    val rawBytes = inputStream.readBytes()
-                    inputStream.close()
+                    val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+                    val displayName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { cursor ->
+                            if (cursor.moveToFirst()) cursor.getString(0) else null
+                        }
+                        ?: uri.lastPathSegment?.substringAfterLast('/')
+                        ?: "attachment_${System.currentTimeMillis()}"
+                    val safeName = displayName.replace(Regex("""[^a-zA-Z0-9.\-_]"""), "_")
+                    val cacheFile = File(context.cacheDir, "chat_${System.currentTimeMillis()}_$safeName")
+                    selectedCacheFile = cacheFile
+                    var totalBytes = 0L
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        cacheFile.outputStream().use { output ->
+                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                totalBytes += read
+                                if (totalBytes > 100L * 1024L * 1024L) {
+                                    cacheFile.delete()
+                                    throw IllegalArgumentException("文件超过 100MB 上限")
+                                }
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    } ?: continue
 
-                    // 压缩图片：缩放到 1920px 以内，JPEG 质量自适应，目标 ≤ 500 KB
-                    // 避免高清原图（3~8 MB）经 Base64 膨胀后 CDP 分块传输 100+ 次导致超时
-                    val compressed = withContext(Dispatchers.Default) {
-                        ImageCompressor.compressForUpload(rawBytes)
+                    if (mimeType.startsWith("image/")) {
+                        // 图片：压缩到 1920px 以内，JPEG 质量自适应，目标 ≤ 500 KB
+                        val rawBytes = cacheFile.readBytes()
+                        val compressed = withContext(Dispatchers.Default) {
+                            ImageCompressor.compressForUpload(rawBytes)
+                        }
+                        Log.d("ChatScreen", "图片压缩: ${rawBytes.size / 1024}KB → ${compressed.size / 1024}KB")
+                        val base64 = Base64.encodeToString(compressed, Base64.NO_WRAP)
+                        val imgMime = if (compressed !== rawBytes) "image/jpeg"
+                            else (context.contentResolver.getType(uri) ?: "image/png")
+                        viewModel.attachImage(base64, imgMime, compressed)
+                        cacheFile.delete()
+                    } else {
+                        Log.d("ChatScreen", "文件附件: ${totalBytes / 1024}KB, mimeType=$mimeType, name=$safeName")
+                        viewModel.attachFile(
+                            fileName = safeName,
+                            mimeType = mimeType,
+                            cachePath = cacheFile.absolutePath,
+                            sizeBytes = totalBytes
+                        )
                     }
-                    Log.d("ChatScreen", "图片压缩: ${rawBytes.size / 1024}KB → ${compressed.size / 1024}KB")
-
-                    val base64 = Base64.encodeToString(compressed, Base64.NO_WRAP)
-                    // 压缩后统一使用 JPEG（ImageCompressor 输出 JPEG 格式）
-                    val mimeType = if (compressed !== rawBytes) "image/jpeg"
-                        else (context.contentResolver.getType(uri) ?: "image/png")
-                    // 传压缩后字节给 relay 直传（IDE 不需要原始分辨率）
-                    viewModel.attachImage(base64, mimeType, compressed)
                 } catch (e: Exception) {
-                    viewModel.addSystemMessage("图片读取失败: ${e.message}")
+                    selectedCacheFile?.delete()
+                    viewModel.addSystemMessage("文件读取失败: ${e.message}")
                 }
             }
         }
@@ -324,7 +360,7 @@ fun ChatScreen(
                     text = state.inputText,
                     onTextChange = { viewModel.updateInputText(it) },
                     onSend = { viewModel.sendMessage() },
-                    onAttachImage = { imagePickerLauncher.launch("image/*") },
+                    onAttachImage = { imagePickerLauncher.launch("*/*") },
                     isConnected = state.connectionState == ConnectionState.CONNECTED,
                     isSendingMessage = state.isSendingMessage,
                     pendingImages = state.pendingImages,
@@ -548,9 +584,25 @@ fun ChatScreen(
                 showProjectDialog = false
                 viewModel.startNewChatInProject(name)
             },
+            isAddingProject = state.codexProjectAdding,
             onAddProject = {
-                showProjectDialog = false
-                viewModel.addCodexProject()
+                viewModel.openCodexProjectFolderBrowser()
+            }
+        )
+    }
+
+    if (state.codexWorkspaceBrowserState.isOpen) {
+        RemoteFolderBrowserDialog(
+            state = state.codexWorkspaceBrowserState,
+            onDismiss = { viewModel.closeCodexProjectFolderBrowser() },
+            onPathSelected = { path -> viewModel.addCodexProject(path) },
+            onNavigate = { hostUrl, path -> viewModel.loadCodexWorkspaceDirectory(hostUrl, path) },
+            onCreateFolder = { folderName ->
+                viewModel.createCodexWorkspaceDirectory(
+                    state.codexWorkspaceBrowserState.hostUrl,
+                    state.codexWorkspaceBrowserState.currentPath,
+                    folderName
+                )
             }
         )
     }
@@ -809,6 +861,7 @@ fun CodexProjectDialog(
     onDismiss: () -> Unit,
     onSwitchProject: (String) -> Unit,
     onNewChatInProject: (String) -> Unit,
+    isAddingProject: Boolean = false,
     onAddProject: () -> Unit
 ) {
     AlertDialog(
@@ -820,8 +873,12 @@ fun CodexProjectDialog(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("📦 Codex 项目")
-                IconButton(onClick = onAddProject) {
-                    Icon(Icons.Default.Add, contentDescription = "添加项目")
+                IconButton(onClick = onAddProject, enabled = !isAddingProject) {
+                    if (isAddingProject) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Add, contentDescription = "添加项目")
+                    }
                 }
             }
         },

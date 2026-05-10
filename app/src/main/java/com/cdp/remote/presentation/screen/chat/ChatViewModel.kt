@@ -7,10 +7,14 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cdp.remote.data.cdp.*
+import com.cdp.remote.presentation.screen.hosts.DirItem
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.asRequestBody
+import java.io.File
 
 private data class ChatDraft(
     val text: String = "",
@@ -25,7 +29,7 @@ private object ChatDraftStore {
         if (key.isBlank()) return
         if (text.isBlank() && images.isEmpty()) drafts.remove(key)
         else {
-            // 去掉 rawBytes 避免 static Map 内存膨胀（恢复时降级走 base64 分块发送）
+            // 去掉 rawBytes 避免 static Map 内存膨胀；文件附件保留 cachePath。
             val lightweight = images.map { it.copy(rawBytes = null) }
             drafts[key] = ChatDraft(text, lightweight)
         }
@@ -74,7 +78,7 @@ class ChatViewModel(
 
     private val httpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
     fun fetchAvailableApps(hostIp: String, hostPort: Int) {
@@ -250,8 +254,15 @@ class ChatViewModel(
         saveDraft(text = text, images = images)
         val sendDraftKey = draftKey
 
-        val imgLabel = if (images.isNotEmpty()) "📷 [${images.size}张图片] " else ""
-        val displayText = "$imgLabel$text".trim()
+        val imageCount = images.count { it.mimeType.startsWith("image/") }
+        val videoCount = images.count { it.mimeType.startsWith("video/") }
+        val fileCount = images.size - imageCount - videoCount
+        val labelParts = mutableListOf<String>()
+        if (imageCount > 0) labelParts.add("📷 ${imageCount}张图片")
+        if (videoCount > 0) labelParts.add("🎥 ${videoCount}个视频")
+        if (fileCount > 0) labelParts.add("📎 ${fileCount}个文件")
+        val mediaLabel = if (labelParts.isNotEmpty()) "[${labelParts.joinToString("+")}] " else ""
+        val displayText = "$mediaLabel$text".trim()
         val userMsg = ChatMessage(role = MessageRole.USER, content = displayText)
         val msgs = uiState.messages + userMsg
         uiState = uiState.copy(
@@ -277,22 +288,103 @@ class ChatViewModel(
 
         viewModelScope.launch {
             var sendSucceeded = true
-            // 构建 relay 基础 URL（用于 HTTP 直传图片）
+            // 构建 relay 基础 URL（用于 HTTP 直传媒体文件）
             val relayBase = connectHost?.let { "http://${it.ip}:${it.port}" }
 
-            // 图片+文字组合发送：先粘贴所有图片（不发送），再输入文字后一起发送
-            if (imagesToSend.isNotEmpty() && text.isNotEmpty()) {
-                // Step 1: Paste images only (no Enter)
-                for ((index, img) in imagesToSend.withIndex()) {
+            // 分离图片和普通文件。图片保留 IDE 粘贴能力；其他文件上传后以 URL 形式发送。
+            val imageItems = imagesToSend.filter { it.mimeType.startsWith("image/") }
+            val fileItems = imagesToSend.filter { !it.mimeType.startsWith("image/") }
+
+            // ── Step A: 上传非图片附件到 Relay 并收集 URL ──
+            val uploadedFiles = mutableListOf<Pair<PendingImage, String>>()
+            for ((index, attachment) in fileItems.withIndex()) {
+                if (relayBase == null || attachment.cachePath == null) {
+                    addSystemMessage("第${index + 1}个附件无法上传: 无 Relay 连接或缓存文件 ❌")
+                    sendSucceeded = false
+                    break
+                }
+                try {
+                    val file = File(attachment.cachePath)
+                    if (!file.exists()) {
+                        addSystemMessage("第${index + 1}个附件缓存不存在: ${attachment.fileName} ❌")
+                        sendSucceeded = false
+                        break
+                    }
+                    if (file.length() > 100L * 1024L * 1024L) {
+                        addSystemMessage("第${index + 1}个附件超过 100MB 上限: ${attachment.fileName} ❌")
+                        sendSucceeded = false
+                        break
+                    }
+                    val uploadFileName = attachment.fileName.ifBlank { "attachment_${System.currentTimeMillis()}" }
+                    val url = "$relayBase/upload?filename=${java.net.URLEncoder.encode(uploadFileName, "UTF-8")}&mime=${java.net.URLEncoder.encode(attachment.mimeType, "UTF-8")}"
+                    val requestBody = file.asRequestBody(attachment.mimeType.toMediaTypeOrNull())
+                    val request = okhttp3.Request.Builder().url(url).post(requestBody).build()
+                    val uploadClient = okhttp3.OkHttpClient.Builder()
+                        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                        .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+                    val response = withContext(Dispatchers.IO) { uploadClient.newCall(request).execute() }
+                    val body = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        addSystemMessage("第${index + 1}个附件上传失败: HTTP ${response.code} ❌")
+                        sendSucceeded = false
+                        break
+                    }
+                    val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+                    val fileUrl = json.get("url")?.asString
+                    if (fileUrl != null) {
+                        // 转为 IDE 本地可访问的 127.0.0.1 地址
+                        val localUrl = fileUrl.replace(Regex("http://[^:/]+"), "http://127.0.0.1")
+                        uploadedFiles.add(attachment to localUrl)
+                        Log.d(TAG, "附件已上传到 Relay: $localUrl (${file.length()} bytes, ${attachment.mimeType})")
+                        addSystemMessage("附件${index + 1}已上传 ✅ (${file.length() / 1024}KB)")
+                    } else {
+                        addSystemMessage("第${index + 1}个附件上传返回无 URL ❌")
+                        sendSucceeded = false
+                        break
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "附件上传异常", e)
+                    addSystemMessage("第${index + 1}个附件上传异常: ${e.message} ❌")
+                    sendSucceeded = false
+                    break
+                }
+            }
+
+            if (!sendSucceeded) {
+                val userStartedNextDraft = uiState.inputText.isNotBlank() || uiState.pendingImages.isNotEmpty()
+                if (!userStartedNextDraft) restoreDraftForKey(sendDraftKey, text, imagesToSend)
+                else saveCurrentDraft()
+                uiState = uiState.copy(isSendingMessage = false, isGenerating = false)
+                return@launch
+            }
+
+            // ── Step B: 构建增强文本（附件 URL 嵌入） ──
+            val enhancedText = buildString {
+                if (text.isNotEmpty()) append(text)
+                if (uploadedFiles.isNotEmpty()) {
+                    if (isNotEmpty()) append("\n\n")
+                    append("[附件文件，请根据需要读取或分析以下文件]\n")
+                    uploadedFiles.forEachIndexed { i, (attachment, url) ->
+                        val name = attachment.fileName.ifBlank { "attachment_${i + 1}" }
+                        val sizeKb = (attachment.sizeBytes.takeIf { it > 0 } ?: File(attachment.cachePath ?: "").length()) / 1024
+                        append("${i + 1}. $name (${attachment.mimeType}, ${sizeKb}KB): $url\n")
+                    }
+                }
+            }.trim()
+
+            // ── Step C: 粘贴图片 + 发送 ──
+            if (imageItems.isNotEmpty() && enhancedText.isNotEmpty()) {
+                // 先粘贴所有图片（不发送）
+                for ((index, img) in imageItems.withIndex()) {
                     var pasteResult: CdpResult<Boolean> = when {
                         isClaudeCode -> claudeCodeCommands!!.pasteImage(img.base64, img.mimeType)
                         isCodex -> codexCommands!!.pasteImage(img.base64, img.mimeType)
-                        // 优先 relay HTTP 直传（有 rawBytes 时）；否则降级 base64 分块
                         img.rawBytes != null && relayBase != null ->
                             commands!!.pasteImageViaRelay(img.rawBytes, img.mimeType, relayBaseUrl = relayBase)
                         else -> commands!!.pasteImage(img.base64, img.mimeType)
                     }
-                    // relay 直传失败时自动降级到 base64 分块
                     if (pasteResult is CdpResult.Error && img.rawBytes != null && relayBase != null
                         && !isClaudeCode && !isCodex) {
                         Log.w("ChatVM", "Relay 直传失败，降级到 base64 分块: ${pasteResult.message}")
@@ -303,15 +395,14 @@ class ChatViewModel(
                         addSystemMessage("第${index + 1}张图片粘贴失败: ${pasteResult.message} ❌")
                         break
                     }
-                    delay(500) // 等待 UI 渲染图片预览
+                    delay(500)
                 }
-
-                // Step 2: Send text (types text + presses Enter, sending image+text together)
+                // 输入文字并发送
                 if (sendSucceeded) {
                     val result = when {
-                        isClaudeCode -> claudeCodeCommands!!.sendMessage(text)
-                        isCodex -> codexCommands!!.sendMessage(text)
-                        else -> commands!!.sendMessage(text)
+                        isClaudeCode -> claudeCodeCommands!!.sendMessage(enhancedText)
+                        isCodex -> codexCommands!!.sendMessage(enhancedText)
+                        else -> commands!!.sendMessage(enhancedText)
                     }
                     if (result is CdpResult.Error) {
                         sendSucceeded = false
@@ -319,13 +410,12 @@ class ChatViewModel(
                         addSystemMessage("发送失败: ${result.message} ❌")
                     }
                 }
-            } else if (imagesToSend.isNotEmpty()) {
-                // 只有图片没有文字：用 sendImage（粘贴 + 发送）
-                for ((index, img) in imagesToSend.withIndex()) {
+            } else if (imageItems.isNotEmpty()) {
+                // 只有图片没有文字
+                for ((index, img) in imageItems.withIndex()) {
                     val imgResult = when {
                         isClaudeCode -> claudeCodeCommands!!.sendImage(img.base64, img.mimeType)
                         isCodex -> codexCommands!!.sendImage(img.base64, img.mimeType)
-                        // 优先 relay HTTP 直传
                         img.rawBytes != null && relayBase != null ->
                             commands!!.sendImage(img.base64, img.mimeType, relayBaseUrl = relayBase, rawBytes = img.rawBytes)
                         else -> commands!!.sendImage(img.base64, img.mimeType)
@@ -336,12 +426,12 @@ class ChatViewModel(
                         break
                     }
                 }
-            } else if (text.isNotEmpty()) {
-                // 只有文字没有图片
+            } else if (enhancedText.isNotEmpty()) {
+                // 只有文字（可能包含附件 URL）
                 val result = when {
-                    isClaudeCode -> claudeCodeCommands!!.sendMessage(text)
-                    isCodex -> codexCommands!!.sendMessage(text)
-                    else -> commands!!.sendMessage(text)
+                    isClaudeCode -> claudeCodeCommands!!.sendMessage(enhancedText)
+                    isCodex -> codexCommands!!.sendMessage(enhancedText)
+                    else -> commands!!.sendMessage(enhancedText)
                 }
                 if (result is CdpResult.Error) {
                     sendSucceeded = false
@@ -351,6 +441,9 @@ class ChatViewModel(
             }
 
             if (sendSucceeded) {
+                imagesToSend.mapNotNull { it.cachePath }.forEach { path ->
+                    runCatching { File(path).delete() }
+                }
                 val currentDraft = ChatDraftStore.load(sendDraftKey)
                 val stillSameDraft = currentDraft.text.trim() == text &&
                     currentDraft.images.map { it.id } == imagesToSend.map { it.id }
@@ -565,10 +658,16 @@ class ChatViewModel(
 
     // ─── Image Attachment ───────────────────────────────────────────
 
-    fun attachImage(base64Data: String, mimeType: String, rawBytes: ByteArray? = null) {
+    fun attachImage(base64Data: String, mimeType: String) {
+        attachImage(base64Data, mimeType, null)
+    }
+
+    fun attachImage(base64Data: String, mimeType: String, rawBytes: ByteArray?) {
         val img = PendingImage(
             base64 = base64Data,
             mimeType = mimeType,
+            fileName = "image_${System.currentTimeMillis()}.jpg",
+            sizeBytes = rawBytes?.size?.toLong() ?: 0L,
             rawBytes = rawBytes
         )
         uiState = uiState.copy(
@@ -580,7 +679,25 @@ class ChatViewModel(
         saveDraft()
     }
 
+    fun attachFile(fileName: String, mimeType: String, cachePath: String, sizeBytes: Long) {
+        val attachment = PendingImage(
+            mimeType = mimeType,
+            fileName = fileName,
+            cachePath = cachePath,
+            sizeBytes = sizeBytes
+        )
+        uiState = uiState.copy(
+            pendingImages = uiState.pendingImages + attachment,
+            pendingImageBase64 = uiState.pendingImageBase64,
+            pendingImageMimeType = uiState.pendingImageMimeType
+        )
+        saveDraft()
+    }
+
     fun removeImage(imageId: Long) {
+        uiState.pendingImages.firstOrNull { it.id == imageId }?.cachePath?.let { path ->
+            runCatching { File(path).delete() }
+        }
         val updated = uiState.pendingImages.filter { it.id != imageId }
         uiState = uiState.copy(
             pendingImages = updated,
@@ -591,6 +708,9 @@ class ChatViewModel(
     }
 
     fun clearPendingImage() {
+        uiState.pendingImages.mapNotNull { it.cachePath }.forEach { path ->
+            runCatching { File(path).delete() }
+        }
         uiState = uiState.copy(
             pendingImages = emptyList(),
             pendingImageBase64 = null,
@@ -694,6 +814,115 @@ class ChatViewModel(
 
     // ─── Codex 项目管理 ─────────────────────────────────────────────
 
+    fun openCodexProjectFolderBrowser() {
+        if (!isCodex) return
+        val hostUrl = connectHost?.httpUrl
+        if (hostUrl == null) {
+            addSystemMessage("添加项目失败: 未连接 Relay")
+            return
+        }
+        uiState = uiState.copy(
+            codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(
+                isOpen = true,
+                hostUrl = hostUrl,
+                currentPath = ""
+            )
+        )
+        loadCodexWorkspaceDirectory(hostUrl, "")
+    }
+
+    fun closeCodexProjectFolderBrowser() {
+        uiState = uiState.copy(
+            codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(isOpen = false)
+        )
+    }
+
+    fun loadCodexWorkspaceDirectory(hostUrl: String, path: String) {
+        uiState = uiState.copy(
+            codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(
+                isLoading = true,
+                currentPath = path,
+                error = null
+            )
+        )
+        viewModelScope.launch {
+            try {
+                val (isSuccess, body, code) = withContext(Dispatchers.IO) {
+                    val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/dirs?path=$encodedPath")
+                        .build()
+                    val res = httpClient.newCall(request).execute()
+                    val b = res.body?.string()
+                    val s = res.isSuccessful
+                    val c = res.code
+                    res.close()
+                    Triple(s, b, c)
+                }
+                if (body != null && isSuccess) {
+                    val jsonObj = com.google.gson.JsonParser.parseString(body).asJsonObject
+                    val dirsArray = jsonObj.getAsJsonArray("dirs")
+                    val currentElement = jsonObj.get("current")
+                    val parentElement = jsonObj.get("parent")
+                    val dirs = (dirsArray?.toList() ?: emptyList())
+                        .map { it.asJsonObject }
+                        .map { obj ->
+                            DirItem(
+                                name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                                path = obj.get("path")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                            )
+                        }
+                    uiState = uiState.copy(
+                        codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(
+                            isLoading = false,
+                            currentPath = currentElement?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            parentPath = parentElement?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            dirs = dirs
+                        )
+                    )
+                } else {
+                    uiState = uiState.copy(
+                        codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(
+                            isLoading = false,
+                            error = "加载失败: 服务器响应异常 (Code: $code)"
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Codex workspace directory load failed", e)
+                uiState = uiState.copy(
+                    codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(
+                        isLoading = false,
+                        error = e.message ?: "未知错误"
+                    )
+                )
+            }
+        }
+    }
+
+    fun createCodexWorkspaceDirectory(hostUrl: String, parentPath: String, folderName: String) {
+        viewModelScope.launch {
+            try {
+                val cleanParent = if (parentPath.endsWith("/")) parentPath.dropLast(1) else parentPath
+                val newDirPath = "$cleanParent/$folderName"
+                val encodedPath = java.net.URLEncoder.encode(newDirPath, "UTF-8")
+                withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/mkdir?path=$encodedPath")
+                        .build()
+                    httpClient.newCall(request).execute().close()
+                }
+                loadCodexWorkspaceDirectory(hostUrl, parentPath)
+            } catch (e: Exception) {
+                uiState = uiState.copy(
+                    codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(
+                        error = "创建文件夹失败: ${e.message}"
+                    )
+                )
+            }
+        }
+    }
+
     fun fetchCodexProjects() {
         if (!isCodex || codexCommands == null) return
         uiState = uiState.copy(codexProjectsLoading = true)
@@ -741,15 +970,92 @@ class ChatViewModel(
         }
     }
 
-    fun addCodexProject() {
-        if (!isCodex || codexCommands == null) return
+    fun addCodexProject(path: String) {
+        if (!isCodex) return
+        val hostUrl = connectHost?.httpUrl
+        if (hostUrl == null) {
+            addSystemMessage("添加项目失败: 未连接 Relay")
+            return
+        }
+        val cleanPath = path.trim()
+        if (cleanPath.isBlank()) {
+            addSystemMessage("添加项目失败: 路径不能为空")
+            return
+        }
         viewModelScope.launch {
-            val result = codexCommands!!.addNewProject()
-            when (result) {
-                is CdpResult.Success -> addSystemMessage("已打开添加项目对话框 📂")
-                is CdpResult.Error -> addSystemMessage("添加项目失败: ${result.message}")
+            uiState = uiState.copy(codexProjectAdding = true)
+            try {
+                val cdpPort = currentCdpPort()
+                val encodedPath = java.net.URLEncoder.encode(cleanPath, "UTF-8")
+                val (ok, body, code) = withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/codex/workspace/add?port=$cdpPort&cwd=$encodedPath&activate=true&reload=true")
+                        .build()
+                    val res = httpClient.newCall(request).execute()
+                    val b = res.body?.string()
+                    val success = res.isSuccessful
+                    val c = res.code
+                    res.close()
+                    Triple(success, b, c)
+                }
+                if (!ok || body == null) {
+                    addSystemMessage("添加项目失败: Relay HTTP $code")
+                    return@launch
+                }
+                val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+                val success = json.get("success")?.asBoolean ?: false
+                if (!success) {
+                    val error = json.get("error")?.asString ?: "未知错误"
+                    addSystemMessage("添加项目失败: $error")
+                    return@launch
+                }
+                val expectedNames = listOf(
+                    File(cleanPath).name,
+                    cleanPath
+                ).filter { it.isNotBlank() }.toSet()
+                var found = false
+                var foundProjectName = ""
+                for (attempt in 0 until 6) {
+                    delay(if (attempt == 0) 700 else 900)
+                    val listResult = codexCommands?.listProjects()
+                    if (listResult is CdpResult.Success) {
+                        val current = listResult.data.firstOrNull { it.isCurrent }?.name ?: ""
+                        uiState = uiState.copy(
+                            codexProjects = listResult.data,
+                            codexProjectsLoading = false,
+                            codexCurrentProject = current
+                        )
+                        foundProjectName = listResult.data.firstOrNull { it.name in expectedNames }?.name ?: ""
+                        found = foundProjectName.isNotBlank()
+                        if (found) break
+                    }
+                }
+                if (foundProjectName.isNotBlank()) {
+                    when (val switchResult = codexCommands?.switchProject(foundProjectName)) {
+                        is CdpResult.Success -> uiState = uiState.copy(codexCurrentProject = foundProjectName)
+                        is CdpResult.Error -> addSystemMessage("已添加但切换项目失败: ${switchResult.message}")
+                        null -> addSystemMessage("已添加但切换项目失败: Codex 未连接")
+                    }
+                }
+                addSystemMessage(
+                    if (found) "已添加 Codex 项目: $cleanPath 📁"
+                    else "Codex 已接收项目: $cleanPath；列表刷新可能稍后完成"
+                )
+            } catch (e: Exception) {
+                addSystemMessage("添加项目失败: ${e.message}")
+            } finally {
+                uiState = uiState.copy(
+                    codexProjectAdding = false,
+                    codexWorkspaceBrowserState = uiState.codexWorkspaceBrowserState.copy(isOpen = false)
+                )
             }
         }
+    }
+
+    private fun currentCdpPort(): Int {
+        return Regex("/cdp/(\\d+)").find(connectWsUrl)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Regex(":(\\d+)/devtools").find(connectWsUrl)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: 9666
     }
 
     fun closeProjectDialog() {

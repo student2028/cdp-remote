@@ -26,11 +26,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
@@ -48,8 +51,8 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)   // 上传大 base64 附件需要更多时间
+        .readTimeout(300, TimeUnit.SECONDS)
+        .writeTimeout(300, TimeUnit.SECONDS)   // 上传大附件需要更多时间
         .build()
 
     private var relayBase = ""
@@ -424,6 +427,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
                     val sizeKb = att.sizeBytes / 1024
                     val typeLabel = when (att.type) {
                         AttachmentType.IMAGE -> "🖼️ 图片"
+                        AttachmentType.VIDEO -> "🎥 视频"
                         AttachmentType.FILE -> "📄 文件"
                     }
                     append("${index + 1}. $typeLabel: ${att.safeName} (${sizeKb}KB, ${att.mimeType})\n")
@@ -437,13 +441,13 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
             try {
                 // 先将附件保存到服务端；任一失败即中止启动
                 if (s.attachments.isNotEmpty()) {
-                    // App 端 10MB 预检
-                    val oversize = s.attachments.filter { it.sizeBytes > 10 * 1024 * 1024 }
+                    // App 端 100MB 预检
+                    val oversize = s.attachments.filter { it.sizeBytes > 100 * 1024 * 1024 }
                     if (oversize.isNotEmpty()) {
                         val names = oversize.joinToString { it.name }
                         uiState = uiState.copy(
                             isStarting = false,
-                            toastMessage = "附件超过 10MB 上限: $names"
+                            toastMessage = "附件超过 100MB 上限: $names"
                         )
                         return@launch
                     }
@@ -816,22 +820,23 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
 
     /** 上传单个附件到 Relay。返回错误描述（null = 成功） */
     private suspend fun uploadSingleAttachment(cwd: String, att: TaskAttachment): String? {
-        // 独立超时：上传用 30 秒总超时，防止 Relay 无响应时永久挂住
+        // 独立超时：上传用 300 秒总超时，防止 Relay 无响应时永久挂住
         val uploadClient = httpClient.newBuilder()
-            .callTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(300, TimeUnit.SECONDS)
             .build()
         return withContext(Dispatchers.IO) {
             try {
-                val payload = JSONObject().apply {
-                    put("cwd", cwd)
-                    put("filename", att.name)  // Relay 端会做同样的清洗
-                    // P0#1: 从 cacheDir 读取 base64，不在内存中持有
-                    put("base64", File(att.cachePath).readText())
-                }
-                val body = payload.toString()
-                    .toRequestBody("application/json".toMediaType())
+                val file = File(att.cachePath)
+                val mediaType = att.mimeType
+                    .ifBlank { "application/octet-stream" }
+                    .toMediaTypeOrNull()
+                val body = file.asRequestBody(mediaType)
+                val url = "$relayBase/workflow/upload_attachment" +
+                    "?cwd=${encodeQuery(cwd)}" +
+                    "&filename=${encodeQuery(att.name)}" +
+                    "&mime=${encodeQuery(att.mimeType)}"
                 val request = Request.Builder()
-                    .url("$relayBase/workflow/upload_attachment")
+                    .url(url)
                     .post(body)
                     .build()
                 uploadClient.newCall(request).execute().use { response ->
@@ -852,6 +857,9 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
             }
         }
     }
+
+    private fun encodeQuery(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
 
     /** 流水线状态的网络响应 DTO */
     internal data class WorkflowStatusDto(

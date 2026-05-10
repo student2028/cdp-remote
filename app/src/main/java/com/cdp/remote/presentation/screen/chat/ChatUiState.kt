@@ -2,12 +2,16 @@ package com.cdp.remote.presentation.screen.chat
 
 import com.cdp.remote.data.cdp.ChatMessage
 import com.cdp.remote.data.cdp.ConnectionState
+import com.cdp.remote.presentation.screen.hosts.FolderBrowserState
 import java.util.concurrent.atomic.AtomicLong
 
 data class PendingImage(
     val id: Long = idCounter.getAndIncrement(),
-    val base64: String,
+    val base64: String = "",
     val mimeType: String,
+    val fileName: String = "",
+    val cachePath: String? = null,
+    val sizeBytes: Long = 0L,
     val thumbnailBytes: ByteArray? = null,  // compressed small preview
     val rawBytes: ByteArray? = null  // 原始二进制，用于 Relay HTTP 直传（绕开 base64 分块）
 ) {
@@ -59,5 +63,9 @@ data class ChatUiState(
     /** Codex 项目列表加载中 */
     val codexProjectsLoading: Boolean = false,
     /** 当前 Codex 项目名 */
-    val codexCurrentProject: String = ""
+    val codexCurrentProject: String = "",
+    /** Codex 添加项目时使用的远程目录浏览器 */
+    val codexWorkspaceBrowserState: FolderBrowserState = FolderBrowserState(),
+    /** Codex 添加项目请求进行中 */
+    val codexProjectAdding: Boolean = false
 )

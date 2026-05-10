@@ -261,10 +261,19 @@ class HostListViewModel : ViewModel() {
                 }
                 uiState = uiState.copy(launchStep = LaunchStep.LAUNCHING, launchStatus = "正在启动 $appName :$cdpPort...")
                 val isSuccess = withContext(Dispatchers.IO) {
+                    val encodedApp = java.net.URLEncoder.encode(appName, "UTF-8")
+                    val encodedCwd = java.net.URLEncoder.encode(cwd, "UTF-8")
                     val request = Request.Builder()
-                        .url("${host.httpUrl}/launch?port=$cdpPort&app=$appName&cwd=$cwd")
+                        .url("${host.httpUrl}/launch?port=$cdpPort&app=$encodedApp&cwd=$encodedCwd")
                         .build()
-                    httpClient.newCall(request).execute().use { it.isSuccessful }
+                    httpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) return@use false
+                        val body = response.body?.string().orEmpty()
+                        runCatching {
+                            val json = JsonParser.parseString(body).asJsonObject
+                            json.get("launched")?.asBoolean ?: json.get("success")?.asBoolean ?: true
+                        }.getOrDefault(false)
+                    }
                 }
                 if (isSuccess) {
                     uiState = uiState.copy(launchStep = LaunchStep.SUCCESS, launchStatus = "✅ 启动成功")
