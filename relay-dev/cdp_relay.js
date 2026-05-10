@@ -1461,6 +1461,8 @@ function detectAppType(pages) {
             return { name: 'Claude Code', emoji: '🤖' };
         if (p.title?.includes('DSME') || p.title?.includes('DeepSeek'))
             return { name: 'DSME', emoji: '🐋' };
+        if (p.title?.includes('uitty') || p.url?.includes(':9488'))
+            return { name: 'uitty', emoji: '🐚' };
     }
     return { name: 'Unknown', emoji: '❓' };
 }

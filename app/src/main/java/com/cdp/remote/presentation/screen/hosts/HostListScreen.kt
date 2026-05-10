@@ -638,6 +638,8 @@ fun AppItem(page: CdpPage, onClick: () -> Unit, onCloseClick: () -> Unit, showDr
                     ElectronAppType.ANTIGRAVITY -> Icons.Default.AutoAwesome
                     ElectronAppType.WINDSURF -> Icons.Default.Air
                     ElectronAppType.CURSOR -> Icons.Default.Mouse
+                    ElectronAppType.DSME -> Icons.Default.Terminal
+                    ElectronAppType.UITTY -> Icons.Default.Terminal
                     else -> Icons.Default.Code
                 },
                 contentDescription = null,
@@ -1206,6 +1208,8 @@ fun TvFrameCard(
                             ElectronAppType.ANTIGRAVITY -> Icons.Default.AutoAwesome
                             ElectronAppType.WINDSURF -> Icons.Default.Air
                             ElectronAppType.CURSOR -> Icons.Default.Mouse
+                            ElectronAppType.DSME -> Icons.Default.Terminal
+                            ElectronAppType.UITTY -> Icons.Default.Terminal
                             else -> Icons.Default.Code
                         },
                         contentDescription = null,

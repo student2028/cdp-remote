@@ -38,7 +38,9 @@ private val ideStyles = mapOf(
     "Antigravity" to IdeStyle(Icons.Default.AutoAwesome, Color(0xFF6C5CE7), Color(0xFFF3F0FF), Color(0xFFE8E0FF)),
     "Windsurf" to IdeStyle(Icons.Default.Air, Color(0xFF00B894), Color(0xFFECFDF5), Color(0xFFD0F5E8)),
     "Cursor" to IdeStyle(Icons.Default.Mouse, Color(0xFF00CEC9), Color(0xFFE0F7FA), Color(0xFFB2EBF2)),
-    "Codex" to IdeStyle(Icons.Default.Code, Color(0xFFE17055), Color(0xFFFFF0ED), Color(0xFFFFDDD6))
+    "Codex" to IdeStyle(Icons.Default.Code, Color(0xFFE17055), Color(0xFFFFF0ED), Color(0xFFFFDDD6)),
+    "DSME" to IdeStyle(Icons.Default.Terminal, Color(0xFF636E72), Color(0xFFF1F2F6), Color(0xFFE8EAED)),
+    "uitty" to IdeStyle(Icons.Default.Terminal, Color(0xFF636E72), Color(0xFFF1F2F6), Color(0xFFE8EAED))
 )
 private val defaultStyle = IdeStyle(Icons.Default.Terminal, Color(0xFF636E72), Color(0xFFF1F2F6), Color(0xFFE8EAED))
 private val purpleAccent = Color(0xFF6C5CE7)

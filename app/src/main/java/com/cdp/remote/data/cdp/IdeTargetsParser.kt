@@ -107,7 +107,8 @@ object IdeTargetsParser {
         return url.contains("workbench", ignoreCase = true) ||
             url.startsWith("app://") ||
             type == ElectronAppType.CLAUDE_CODE ||
-            type == ElectronAppType.DSME
+            type == ElectronAppType.DSME ||
+            type == ElectronAppType.UITTY
     }
 
     private fun isLaunchpadPage(url: String, title: String): Boolean =

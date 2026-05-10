@@ -66,6 +66,22 @@ class IdeTargetsParserTest {
     }
 
     @Test
+    fun `parsePages includes standalone uitty file page as workbench`() {
+        val json = """{"targets":[
+            {"cdpPort":9488,"appName":"uitty","appEmoji":"🐚","pages":[
+                {"id":"u1","type":"page","url":"file:///Users/example/code/uitty/index.html","title":"uitty","webSocketDebuggerUrl":"ws://t/uitty","devtoolsFrontendUrl":""}
+            ]}
+        ]}"""
+
+        val pages = IdeTargetsParser.parsePages(json)
+
+        assertEquals(1, pages.size)
+        assertEquals(ElectronAppType.UITTY, pages[0].appType)
+        assertEquals("uitty", pages[0].appType.displayName)
+        assertEquals(true, pages[0].isWorkbench)
+    }
+
+    @Test
     fun `parseInstances filters Launchpad pages when workbench is present`() {
         val json = """{"targets":[
             {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[

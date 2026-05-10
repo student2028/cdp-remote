@@ -110,6 +110,8 @@ class CdpModelsTest {
         assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("Cursor"))
         assertEquals(ElectronAppType.WINDSURF, ElectronAppType.fromAppName("Windsurf"))
         assertEquals(ElectronAppType.CODEX, ElectronAppType.fromAppName("Codex"))
+        assertEquals(ElectronAppType.DSME, ElectronAppType.fromAppName("DSME"))
+        assertEquals(ElectronAppType.UITTY, ElectronAppType.fromAppName("uitty"))
     }
 
     @Test
@@ -117,6 +119,7 @@ class CdpModelsTest {
         assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("cursor"))
         assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("CURSOR"))
         assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("  Cursor  "))
+        assertEquals(ElectronAppType.UITTY, ElectronAppType.fromAppName("  Uitty  "))
     }
 
     @Test
@@ -141,6 +144,20 @@ class CdpModelsTest {
             appType = ElectronAppType.ANTIGRAVITY
         )
         assertEquals(ElectronAppType.ANTIGRAVITY, page.appType)
+    }
+
+    @Test
+    fun `CdpPage isWorkbench accepts uitty file page when relay identifies app type`() {
+        val page = CdpPage(
+            id = "uitty",
+            type = "page",
+            title = "uitty",
+            url = "file:///Users/example/code/uitty/index.html",
+            webSocketDebuggerUrl = "ws://127.0.0.1:9488/devtools/page/uitty",
+            appType = ElectronAppType.UITTY
+        )
+
+        assertTrue(page.isWorkbench)
     }
 
     @Test
