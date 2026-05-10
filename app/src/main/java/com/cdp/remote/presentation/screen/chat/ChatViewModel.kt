@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 
 private data class ChatDraft(
@@ -62,6 +63,7 @@ class ChatViewModel(
     private var isAntigravity: Boolean = false
     private var isClaudeCode: Boolean = false
     private var isWindsurf: Boolean = false
+    private var isUitty: Boolean = false
     private var connectHost: HostInfo? = null
     private var connectWsUrl: String = ""
     private var draftKey: String = ""
@@ -190,6 +192,7 @@ class ChatViewModel(
                 isAntigravity = appType == ElectronAppType.ANTIGRAVITY
                 isClaudeCode = appType == ElectronAppType.CLAUDE_CODE
                 isWindsurf = appType == ElectronAppType.WINDSURF
+                isUitty = appType == ElectronAppType.UITTY
                 if (isClaudeCode) {
                     claudeCodeCommands = ClaudeCodeCommands(cdpClient)
                     commands = null
@@ -291,33 +294,39 @@ class ChatViewModel(
             // 构建 relay 基础 URL（用于 HTTP 直传媒体文件）
             val relayBase = connectHost?.let { "http://${it.ip}:${it.port}" }
 
-            // 分离图片和普通文件。图片保留 IDE 粘贴能力；其他文件上传后以 URL 形式发送。
-            val imageItems = imagesToSend.filter { it.mimeType.startsWith("image/") }
-            val fileItems = imagesToSend.filter { !it.mimeType.startsWith("image/") }
+            // 分离图片和普通文件。终端类 uitty 没有浏览器图片粘贴容器，图片也按附件 URL 发送。
+            val imageItems = if (isUitty) emptyList() else imagesToSend.filter { it.mimeType.startsWith("image/") }
+            val fileItems = if (isUitty) imagesToSend else imagesToSend.filter { !it.mimeType.startsWith("image/") }
 
             // ── Step A: 上传非图片附件到 Relay 并收集 URL ──
             val uploadedFiles = mutableListOf<Pair<PendingImage, String>>()
             for ((index, attachment) in fileItems.withIndex()) {
-                if (relayBase == null || attachment.cachePath == null) {
-                    addSystemMessage("第${index + 1}个附件无法上传: 无 Relay 连接或缓存文件 ❌")
+                if (relayBase == null || (attachment.cachePath == null && attachment.rawBytes == null)) {
+                    addSystemMessage("第${index + 1}个附件无法上传: 无 Relay 连接或缓存数据 ❌")
                     sendSucceeded = false
                     break
                 }
                 try {
-                    val file = File(attachment.cachePath)
-                    if (!file.exists()) {
+                    val file = attachment.cachePath?.let(::File)
+                    val rawBytes = attachment.rawBytes
+                    val attachmentSize = file?.takeIf { it.exists() }?.length() ?: rawBytes?.size?.toLong() ?: 0L
+                    if (file != null && !file.exists()) {
                         addSystemMessage("第${index + 1}个附件缓存不存在: ${attachment.fileName} ❌")
                         sendSucceeded = false
                         break
                     }
-                    if (file.length() > 100L * 1024L * 1024L) {
+                    if (attachmentSize > 100L * 1024L * 1024L) {
                         addSystemMessage("第${index + 1}个附件超过 100MB 上限: ${attachment.fileName} ❌")
                         sendSucceeded = false
                         break
                     }
                     val uploadFileName = attachment.fileName.ifBlank { "attachment_${System.currentTimeMillis()}" }
                     val url = "$relayBase/upload?filename=${java.net.URLEncoder.encode(uploadFileName, "UTF-8")}&mime=${java.net.URLEncoder.encode(attachment.mimeType, "UTF-8")}"
-                    val requestBody = file.asRequestBody(attachment.mimeType.toMediaTypeOrNull())
+                    val requestBody = if (file != null) {
+                        file.asRequestBody(attachment.mimeType.toMediaTypeOrNull())
+                    } else {
+                        rawBytes!!.toRequestBody(attachment.mimeType.toMediaTypeOrNull())
+                    }
                     val request = okhttp3.Request.Builder().url(url).post(requestBody).build()
                     val uploadClient = okhttp3.OkHttpClient.Builder()
                         .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
@@ -337,8 +346,8 @@ class ChatViewModel(
                         // 转为 IDE 本地可访问的 127.0.0.1 地址
                         val localUrl = fileUrl.replace(Regex("http://[^:/]+"), "http://127.0.0.1")
                         uploadedFiles.add(attachment to localUrl)
-                        Log.d(TAG, "附件已上传到 Relay: $localUrl (${file.length()} bytes, ${attachment.mimeType})")
-                        addSystemMessage("附件${index + 1}已上传 ✅ (${file.length() / 1024}KB)")
+                        Log.d(TAG, "附件已上传到 Relay: $localUrl ($attachmentSize bytes, ${attachment.mimeType})")
+                        addSystemMessage("附件${index + 1}已上传 ✅ (${attachmentSize / 1024}KB)")
                     } else {
                         addSystemMessage("第${index + 1}个附件上传返回无 URL ❌")
                         sendSucceeded = false

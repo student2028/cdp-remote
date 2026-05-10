@@ -129,6 +129,35 @@ class ChatViewModelTest {
         assertTrue("应显示 3 张", userMsg.content.contains("3张图片"))
     }
 
+    @Test
+    fun `uitty sends images as relay file attachments instead of clipboard paste`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(MockResponse()
+            .setResponseCode(200)
+            .setBody("""{"url":"http://127.0.0.1:${'$'}{server.port}/tmp/image.jpg"}"""))
+        server.start()
+        try {
+            installUittyCommands(server.port)
+            fakeCdp.evaluateResult = CdpResult.Success("ok")
+
+            vm.attachImage("base64data", "image/jpeg", byteArrayOf(1, 2, 3, 4))
+            vm.updateInputText("这是哪里")
+            vm.sendMessage()
+            advanceUntilIdle()
+
+            val request = server.takeRequest(2, TimeUnit.SECONDS)
+            assertNotNull("uitty 图片应上传到 relay /upload", request)
+            assertTrue(request!!.path!!.startsWith("/upload"))
+            advanceUntilIdle()
+            assertFalse(
+                "uitty 不应走浏览器 ClipboardEvent 图片粘贴",
+                fakeCdp.evaluateCalls.any { it.contains("__pasteImageB64") }
+            )
+        } finally {
+            server.shutdown()
+        }
+    }
+
     // ─── 图片管理 — removeImage 曾经删错图片 ────────────────────────
 
     @Test
@@ -451,5 +480,12 @@ class ChatViewModelTest {
     ) {
         setPrivateField("draftKey", key)
         setPrivateField("commands", AntigravityCommands(fakeCdp, "Antigravity"))
+    }
+
+    private fun installUittyCommands(port: Int) {
+        setPrivateField("draftKey", "127.0.0.1|9488|ws://test|uitty")
+        setPrivateField("connectHost", HostInfo("127.0.0.1", port))
+        setPrivateField("isUitty", true)
+        setPrivateField("commands", AntigravityCommands(fakeCdp, "uitty"))
     }
 }
