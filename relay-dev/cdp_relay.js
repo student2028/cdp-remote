@@ -23,6 +23,7 @@ const ENABLE_WATCHDOG = process.env.ENABLE_WATCHDOG !== 'false';
 const path = require('path');
 const fs = require('fs');
 const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
+const { detectAppType } = require('./cdp_target_detection');
 const otaMeta = require('./ota_meta');
 // 智能检测：如果上层目录有 app/ 和 build/（说明在 git 仓库里），就用上层；否则用当前目录（独立 npm 包）
 const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(__dirname, '..') : __dirname;
@@ -1443,28 +1444,6 @@ if (ENABLE_WATCHDOG) {
         finally { _watchdogRunning = false; }
     }, WATCHDOG_INTERVAL_MS);
     if (typeof _workflowWatchdog.unref === 'function') _workflowWatchdog.unref();
-}
-
-function detectAppType(pages) {
-    for (const p of pages) {
-        if (p.title?.includes('Antigravity') || p.url?.includes('Antigravity.app'))
-            return { name: 'Antigravity', emoji: '🚀' };
-        if (p.title?.includes('Cursor') || p.url?.includes('Cursor.app'))
-            return { name: 'Cursor', emoji: '🖱️' };
-        if (p.title?.includes('Windsurf') || p.url?.includes('Windsurf.app'))
-            return { name: 'Windsurf', emoji: '🏄' };
-        if (p.title?.includes('Codex') || p.url?.includes('Codex.app') || p.url?.startsWith('app://'))
-            return { name: 'Codex', emoji: '📦' };
-        if (p.url?.includes('workbench.html'))
-            return { name: 'VS Code', emoji: '💻' };
-        if (p.title?.includes('Simple Code GUI') || p.title?.includes('simple-code-gui'))
-            return { name: 'Claude Code', emoji: '🤖' };
-        if (p.title?.includes('DSME') || p.title?.includes('DeepSeek'))
-            return { name: 'DSME', emoji: '🐋' };
-        if (p.title?.includes('uitty') || p.url?.includes(':9488'))
-            return { name: 'uitty', emoji: '🐚' };
-    }
-    return { name: 'Unknown', emoji: '❓' };
 }
 
 /** 从进程命令行参数中提取 IDE 的工作目录（最后一个绝对路径参数） */
