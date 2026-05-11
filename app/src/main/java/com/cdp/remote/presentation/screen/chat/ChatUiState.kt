@@ -52,6 +52,8 @@ data class ChatUiState(
     val pendingImageMimeType: String? = null,
     /** 当前是否为 Windsurf IDE，用于显示专属功能（如取消任务按钮） */
     val isWindsurf: Boolean = false,
+    /** 当前是否为 uitty 终端，用于显示终端专属工具栏 */
+    val isUitty: Boolean = false,
     /** TV 模式下是否处于操控模式（true=可点击操控 IDE, false=默认观影模式可缩放平移） */
     val tvControlMode: Boolean = false,
     /** 远端 IDE 页面实际像素宽度（用于触摸坐标映射） */

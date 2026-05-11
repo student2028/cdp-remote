@@ -41,6 +41,8 @@ fun ActionToolbar(
     isWindsurf: Boolean = false,
     /** Codex 专用：隐藏上翻/下翻并显示项目管理按钮 */
     isCodex: Boolean = false,
+    /** uitty 终端专用：显示终端操作按钮 */
+    isUitty: Boolean = false,
     onNewSession: () -> Unit,
     onStopGeneration: () -> Unit,
     onCancelRunningTask: () -> Unit = {},
@@ -75,102 +77,161 @@ fun ActionToolbar(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 历史会话列表（原悬浮按钮，合并到工具栏首位）
-            ToolbarBtn(
-                icon = Icons.Default.List,
-                label = "会话",
-                enabled = isConnected,
-                onClick = onSessionList
-            )
-            // Codex 专属：项目管理（原悬浮按钮，合并到工具栏）
-            if (isCodex) {
+            if (isUitty) {
+                // ── uitty 终端专属工具栏 ──
+                // Tab 列表（映射为会话列表）
                 ToolbarBtn(
-                    icon = Icons.Default.FolderOpen,
-                    label = "项目",
+                    icon = Icons.Default.Tab,
+                    label = "Tab",
                     enabled = isConnected,
-                    iconColor = Primary,
-                    onClick = onProjectManagement
+                    iconColor = Color(0xFF42A5F5),
+                    onClick = onSessionList
                 )
-            }
-            ToolbarBtn(
-                icon = Icons.Default.Add,
-                label = "新建",
-                enabled = isConnected,
-                iconColor = Color(0xFF2196F3),
-                onClick = onNewSession
-            )
-            ToolbarBtn(
-                icon = Icons.Default.Stop,
-                label = "停止",
-                enabled = isConnected,
-                iconColor = Accent,
-                onClick = onStopGeneration
-            )
-            // 上翻/下翻：Codex 不需要（侧边栏已含会话与项目入口，节省横向空间）
-            if (!isCodex) {
+                // 停止 (Ctrl+C)
+                ToolbarBtn(
+                    icon = Icons.Default.Stop,
+                    label = "Ctrl+C",
+                    enabled = isConnected,
+                    iconColor = Accent,
+                    onClick = onStopGeneration
+                )
+                // 接受 (Enter)
+                ToolbarBtn(
+                    icon = Icons.Default.KeyboardReturn,
+                    label = "Enter",
+                    enabled = isConnected,
+                    iconColor = AccentGreen,
+                    onClick = onAcceptAll
+                )
+                // 拒绝 (Esc)
+                ToolbarBtn(
+                    icon = Icons.Default.Close,
+                    label = "Esc",
+                    enabled = isConnected,
+                    iconColor = AccentOrange,
+                    onClick = onRejectAll
+                )
+                // 上翻
                 ToolbarBtn(
                     icon = Icons.Default.KeyboardArrowUp,
-                    label = "上翻",
+                    label = "↑",
                     enabled = isConnected,
                     onClick = onScrollUp
                 )
+                // 下翻
                 ToolbarBtn(
                     icon = Icons.Default.KeyboardArrowDown,
-                    label = "下翻",
+                    label = "↓",
                     enabled = isConnected,
                     onClick = onScrollDown
                 )
-            }
-            ToolbarBtn(
-                icon = Icons.Default.CheckCircle,
-                label = "接受",
-                enabled = isConnected,
-                iconColor = AccentGreen,
-                onClick = onAcceptAll
-            )
-            ToolbarBtn(
-                icon = Icons.Default.Cancel,
-                label = "拒绝",
-                enabled = isConnected,
-                iconColor = AccentOrange,
-                onClick = onRejectAll
-            )
-            ToolbarBtn(
-                icon = Icons.Default.SwapHoriz,
-                label = "切换",
-                enabled = isConnected,
-                iconColor = Primary,
-                onClick = onSwitchModel
-            )
-            // 支持的 IDE：查看用量
-            if (showUsageButton) {
+                // 新建 Tab
                 ToolbarBtn(
-                    icon = Icons.Default.DataUsage,
-                    label = "用量",
+                    icon = Icons.Default.Add,
+                    label = "新Tab",
                     enabled = isConnected,
-                    iconColor = Color(0xFF26A69A),
-                    onClick = onCheckUsage
+                    iconColor = Color(0xFF2196F3),
+                    onClick = onNewSession
                 )
-            }
-            // Windsurf 专属：取消运行中任务按钮（放在"切换"之后，避免误触常用按钮）
-            // 不依赖 isGenerating（任务可能从 IDE 直接发起，手机端状态未同步）
-            if (isWindsurf) {
+            } else {
+                // ── 标准 IDE 工具栏 ──
+                // 历史会话列表（原悬浮按钮，合并到工具栏首位）
                 ToolbarBtn(
-                    icon = Icons.Default.Close,
-                    label = "取消任务",
+                    icon = Icons.Default.List,
+                    label = "会话",
                     enabled = isConnected,
-                    iconColor = Color(0xFFE53935),
-                    onClick = onCancelRunningTask
+                    onClick = onSessionList
                 )
-            }
-            if (showGlobalRuleButton) {
+                // Codex 专属：项目管理（原悬浮按钮，合并到工具栏）
+                if (isCodex) {
+                    ToolbarBtn(
+                        icon = Icons.Default.FolderOpen,
+                        label = "项目",
+                        enabled = isConnected,
+                        iconColor = Primary,
+                        onClick = onProjectManagement
+                    )
+                }
                 ToolbarBtn(
-                    icon = Icons.Default.Tune,
-                    label = "全局",
+                    icon = Icons.Default.Add,
+                    label = "新建",
                     enabled = isConnected,
-                    iconColor = Color(0xFF7E57C2),
-                    onClick = onGlobalRule
+                    iconColor = Color(0xFF2196F3),
+                    onClick = onNewSession
                 )
+                ToolbarBtn(
+                    icon = Icons.Default.Stop,
+                    label = "停止",
+                    enabled = isConnected,
+                    iconColor = Accent,
+                    onClick = onStopGeneration
+                )
+                // 上翻/下翻：Codex 不需要（侧边栏已含会话与项目入口，节省横向空间）
+                if (!isCodex) {
+                    ToolbarBtn(
+                        icon = Icons.Default.KeyboardArrowUp,
+                        label = "上翻",
+                        enabled = isConnected,
+                        onClick = onScrollUp
+                    )
+                    ToolbarBtn(
+                        icon = Icons.Default.KeyboardArrowDown,
+                        label = "下翻",
+                        enabled = isConnected,
+                        onClick = onScrollDown
+                    )
+                }
+                ToolbarBtn(
+                    icon = Icons.Default.CheckCircle,
+                    label = "接受",
+                    enabled = isConnected,
+                    iconColor = AccentGreen,
+                    onClick = onAcceptAll
+                )
+                ToolbarBtn(
+                    icon = Icons.Default.Cancel,
+                    label = "拒绝",
+                    enabled = isConnected,
+                    iconColor = AccentOrange,
+                    onClick = onRejectAll
+                )
+                ToolbarBtn(
+                    icon = Icons.Default.SwapHoriz,
+                    label = "切换",
+                    enabled = isConnected,
+                    iconColor = Primary,
+                    onClick = onSwitchModel
+                )
+                // 支持的 IDE：查看用量
+                if (showUsageButton) {
+                    ToolbarBtn(
+                        icon = Icons.Default.DataUsage,
+                        label = "用量",
+                        enabled = isConnected,
+                        iconColor = Color(0xFF26A69A),
+                        onClick = onCheckUsage
+                    )
+                }
+                // Windsurf 专属：取消运行中任务按钮（放在"切换"之后，避免误触常用按钮）
+                // 不依赖 isGenerating（任务可能从 IDE 直接发起，手机端状态未同步）
+                if (isWindsurf) {
+                    ToolbarBtn(
+                        icon = Icons.Default.Close,
+                        label = "取消任务",
+                        enabled = isConnected,
+                        iconColor = Color(0xFFE53935),
+                        onClick = onCancelRunningTask
+                    )
+                }
+                if (showGlobalRuleButton) {
+                    ToolbarBtn(
+                        icon = Icons.Default.Tune,
+                        label = "全局",
+                        enabled = isConnected,
+                        iconColor = Color(0xFF7E57C2),
+                        onClick = onGlobalRule
+                    )
+                }
             }
         }
     }

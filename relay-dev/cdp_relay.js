@@ -1842,9 +1842,20 @@ function parseCdpPath(url) {
     return { cdpPort: getDefaultCdpPort(), path: url };
 }
 
+// ─── 全局崩溃防护 ───
+// 防止未捕获异常搞垮 HTTP server（async handler 里的 throw 不会被 createServer 捕获）
+process.on('uncaughtException', (err) => {
+    log(`💥 [CRASH GUARD] uncaughtException: ${err.message}\n${err.stack}`);
+    // 不退出进程——让 HTTP server 继续服务
+});
+process.on('unhandledRejection', (reason) => {
+    log(`💥 [CRASH GUARD] unhandledRejection: ${reason}`);
+});
+
 // ─── HTTP 代理 ───
 
 const server = http.createServer(async (req, res) => {
+  try {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', 'Access-Control-Allow-Headers': '*' };
 
     // ── 全局 CORS 预检 ──
@@ -3287,6 +3298,11 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'CDP 连接失败', message: e.message }));
     });
     proxyReq.end();
+  } catch (handlerErr) {
+    // 顶层 try-catch：防止单个请求的异常搞崩整个 HTTP server
+    log(`💥 [HANDLER GUARD] 请求处理异常: ${handlerErr.message}`);
+    try { if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: handlerErr.message })); } } catch (_) {}
+  }
 });
 
 // 注意：上面的 createServer handler 中所有路由最终都走进了
@@ -3491,6 +3507,52 @@ function findExistingRelayProcess() {
 
 process.on('SIGINT', () => { log('🛑 关闭中...'); wss.close(); server.close(); process.exit(0); });
 process.on('SIGTERM', () => { log('🛑 关闭中...'); wss.close(); server.close(); process.exit(0); });
+
+// ─── 自愈 Watchdog：检测 HTTP server 是否真正在监听 ───
+// 根因：node --watch 下子进程崩溃后父进程不退出，launchd 以为服务还活着。
+// 解决：每 30s 自检一次，连续 3 次失败则 process.exit(1) 让 launchd 重启。
+let _selfCheckFails = 0;
+const SELF_CHECK_INTERVAL = 30_000;
+const SELF_CHECK_MAX_FAILS = 3;
+
+setInterval(() => {
+    const checkReq = http.get(`http://127.0.0.1:${RELAY_PORT}/health`, { timeout: 5000 }, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+            try {
+                const j = JSON.parse(body);
+                if (j.status === 'ok') {
+                    _selfCheckFails = 0;
+                    return;
+                }
+            } catch (_) {}
+            _selfCheckFails++;
+            log(`⚠️ [SELF-CHECK] 健康检查响应异常 (${_selfCheckFails}/${SELF_CHECK_MAX_FAILS})`);
+            if (_selfCheckFails >= SELF_CHECK_MAX_FAILS) {
+                log(`💀 [SELF-CHECK] 连续 ${SELF_CHECK_MAX_FAILS} 次健康检查失败，强制退出让 launchd 重启`);
+                process.exit(1);
+            }
+        });
+    });
+    checkReq.on('error', () => {
+        _selfCheckFails++;
+        log(`⚠️ [SELF-CHECK] 无法连接自身 :${RELAY_PORT} (${_selfCheckFails}/${SELF_CHECK_MAX_FAILS})`);
+        if (_selfCheckFails >= SELF_CHECK_MAX_FAILS) {
+            log(`💀 [SELF-CHECK] 连续 ${SELF_CHECK_MAX_FAILS} 次健康检查失败，强制退出让 launchd 重启`);
+            process.exit(1);
+        }
+    });
+    checkReq.on('timeout', () => {
+        checkReq.destroy();
+        _selfCheckFails++;
+        log(`⚠️ [SELF-CHECK] 健康检查超时 (${_selfCheckFails}/${SELF_CHECK_MAX_FAILS})`);
+        if (_selfCheckFails >= SELF_CHECK_MAX_FAILS) {
+            log(`💀 [SELF-CHECK] 连续 ${SELF_CHECK_MAX_FAILS} 次健康检查失败，强制退出让 launchd 重启`);
+            process.exit(1);
+        }
+    });
+}, SELF_CHECK_INTERVAL);
 
 // ═══════════════════════════════════════════════════════════════
 // ── 公共 CDP 消息发送工具 ──────────────────────────────────────

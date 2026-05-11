@@ -486,6 +486,6 @@ class ChatViewModelTest {
         setPrivateField("draftKey", "127.0.0.1|9488|ws://test|uitty")
         setPrivateField("connectHost", HostInfo("127.0.0.1", port))
         setPrivateField("isUitty", true)
-        setPrivateField("commands", AntigravityCommands(fakeCdp, "uitty"))
+        setPrivateField("uittyCommands", UittyCommands(fakeCdp))
     }
 }

@@ -335,6 +335,7 @@ fun ChatScreen(
                     currentModel = state.currentModel,
                     isWindsurf = state.isWindsurf,
                     isCodex = isCodexApp,
+                    isUitty = state.isUitty,
                     onNewSession = { viewModel.startNewSession() },
                     onStopGeneration = { viewModel.stopGeneration() },
                     onCancelRunningTask = { viewModel.cancelRunningTask() },

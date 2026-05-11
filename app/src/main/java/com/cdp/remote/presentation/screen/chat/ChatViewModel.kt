@@ -59,6 +59,7 @@ class ChatViewModel(
     private var commands: AntigravityCommands? = null
     private var codexCommands: CodexCommands? = null
     private var claudeCodeCommands: ClaudeCodeCommands? = null
+    private var uittyCommands: UittyCommands? = null
     private var isCodex: Boolean = false
     private var isAntigravity: Boolean = false
     private var isClaudeCode: Boolean = false
@@ -197,12 +198,20 @@ class ChatViewModel(
                     claudeCodeCommands = ClaudeCodeCommands(cdpClient)
                     commands = null
                     codexCommands = null
+                    uittyCommands = null
                 } else if (isCodex) {
                     codexCommands = CodexCommands(cdpClient)
                     commands = null
                     claudeCodeCommands = null
+                    uittyCommands = null
                 } else if (isWindsurf) {
                     commands = WindsurfCommands(cdpClient)
+                    codexCommands = null
+                    claudeCodeCommands = null
+                    uittyCommands = null
+                } else if (isUitty) {
+                    uittyCommands = UittyCommands(cdpClient)
+                    commands = null
                     codexCommands = null
                     claudeCodeCommands = null
                 } else {
@@ -212,8 +221,9 @@ class ChatViewModel(
                                else AntigravityCommands(cdpClient, appName)
                     codexCommands = null
                     claudeCodeCommands = null
+                    uittyCommands = null
                 }
-                uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null, isWindsurf = isWindsurf)
+                uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null, isWindsurf = isWindsurf, isUitty = isUitty)
                 reconnectAttempts = 0
                 addSystemMessage("已连接到 $appName")
                 fetchAvailableApps(host.ip, host.port)
@@ -411,6 +421,7 @@ class ChatViewModel(
                     val result = when {
                         isClaudeCode -> claudeCodeCommands!!.sendMessage(enhancedText)
                         isCodex -> codexCommands!!.sendMessage(enhancedText)
+                        isUitty -> uittyCommands!!.sendMessage(enhancedText)
                         else -> commands!!.sendMessage(enhancedText)
                     }
                     if (result is CdpResult.Error) {
@@ -440,6 +451,7 @@ class ChatViewModel(
                 val result = when {
                     isClaudeCode -> claudeCodeCommands!!.sendMessage(enhancedText)
                     isCodex -> codexCommands!!.sendMessage(enhancedText)
+                    isUitty -> uittyCommands!!.sendMessage(enhancedText)
                     else -> commands!!.sendMessage(enhancedText)
                 }
                 if (result is CdpResult.Error) {
@@ -566,6 +578,7 @@ class ChatViewModel(
     private fun hasCommands(): Boolean = when {
         isClaudeCode -> claudeCodeCommands != null
         isCodex -> codexCommands != null
+        isUitty -> uittyCommands != null
         else -> commands != null
     }
 
@@ -578,6 +591,7 @@ class ChatViewModel(
                 val result = when {
                     isClaudeCode -> claudeCodeCommands!!.getLastReply()
                     isCodex -> codexCommands!!.getLastReply()
+                    isUitty -> uittyCommands!!.getLastReply()
                     else -> commands!!.getLastReply()
                 }
                 if (result is CdpResult.Success) {
@@ -598,7 +612,7 @@ class ChatViewModel(
                     }
 
                     // Antigravity 独有：每 5 次轮询主动检查服务器错误并自动重试
-                    if (!isCodex && !isWindsurf && !isClaudeCode && pollCount > 0 && pollCount % 5 == 0) {
+                    if (!isCodex && !isWindsurf && !isClaudeCode && !isUitty && pollCount > 0 && pollCount % 5 == 0) {
                         val midRetry = commands!!.checkAndRetryIfBusy()
                         if (midRetry is CdpResult.Success && midRetry.data) {
                             addSystemMessage("检测到错误，已自动重试 🔄")
@@ -611,6 +625,7 @@ class ChatViewModel(
                     val isStillGenerating = when {
                         isClaudeCode -> claudeCodeCommands!!.isGenerating()
                         isCodex -> codexCommands!!.isGenerating()
+                        isUitty -> uittyCommands!!.isGenerating()
                         else -> commands!!.isGenerating()
                     }
 
@@ -619,6 +634,7 @@ class ChatViewModel(
                         val accepted = when {
                             isClaudeCode -> claudeCodeCommands!!.autoAcceptActions()
                             isCodex -> codexCommands!!.autoAcceptActions()
+                            isUitty -> uittyCommands!!.autoAcceptActions()
                             else -> commands!!.autoAcceptActions()
                         }
                         if (accepted) {
@@ -632,7 +648,7 @@ class ChatViewModel(
                     if (!isStillGenerating) {
                         // Antigravity 独有：生成结束后最终错误检查
                         // 多次尝试，因为 Retry 按钮可能还没渲染出来
-                        if (!isCodex && !isWindsurf && !isClaudeCode) {
+                        if (!isCodex && !isWindsurf && !isClaudeCode && !isUitty) {
                             var retried = false
                             for (retryAttempt in 1..3) {
                                 val retryResult = commands!!.checkAndRetryIfBusy()
@@ -736,6 +752,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.startNewSession()
                 isCodex -> codexCommands!!.startNewSession()
+                isUitty -> uittyCommands!!.startNewSession()
                 else -> commands!!.startNewSession()
             }
             when (result) {
@@ -751,6 +768,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.showRecentSessions()
                 isCodex -> codexCommands!!.showRecentSessions()
+                isUitty -> uittyCommands!!.showRecentSessions()
                 else -> commands!!.showRecentSessions()
             }
             when (result) {
@@ -766,6 +784,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.switchSession(isNext)
                 isCodex -> codexCommands!!.switchSession(isNext)
+                isUitty -> uittyCommands!!.switchSession(isNext)
                 else -> commands!!.switchSession(isNext)
             }
             when (result) {
@@ -785,6 +804,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.getRecentSessionsList()
                 isCodex -> codexCommands!!.getRecentSessionsList()
+                isUitty -> uittyCommands!!.getRecentSessionsList()
                 else -> commands!!.getRecentSessionsList()
             }
             when (result) {
@@ -805,6 +825,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.switchSessionByIndex(index)
                 isCodex -> codexCommands!!.switchSessionByIndex(index)
+                isUitty -> uittyCommands!!.switchSessionByIndex(index)
                 else -> commands!!.switchSessionByIndex(index)
             }
             when (result) {
@@ -1370,6 +1391,7 @@ class ChatViewModel(
             when {
                 isClaudeCode -> claudeCodeCommands!!.stopGeneration()
                 isCodex -> codexCommands!!.stopGeneration()
+                isUitty -> uittyCommands!!.stopGeneration()
                 else -> commands!!.stopGeneration()
             }
             addSystemMessage("已停止生成 ⏹")
@@ -1410,6 +1432,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.acceptAll()
                 isCodex -> codexCommands!!.acceptAll()
+                isUitty -> uittyCommands!!.acceptAll()
                 else -> commands!!.acceptAll()
             }
             when (result) {
@@ -1425,6 +1448,7 @@ class ChatViewModel(
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.rejectAll()
                 isCodex -> codexCommands!!.rejectAll()
+                isUitty -> uittyCommands!!.rejectAll()
                 else -> commands!!.rejectAll()
             }
             when (result) {
@@ -1464,6 +1488,7 @@ class ChatViewModel(
                 val result = when {
                     isClaudeCode -> claudeCodeCommands!!.switchModel(modelName)
                     isCodex -> codexCommands!!.switchModel(modelName)
+                    isUitty -> uittyCommands!!.switchModel(modelName)
                     else -> commands!!.switchModel(modelName)
                 }
                 when (result) {
