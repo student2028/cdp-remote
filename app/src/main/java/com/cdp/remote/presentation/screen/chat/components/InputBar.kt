@@ -62,6 +62,8 @@ fun ActionToolbar(
     /** 反重力系：打开「全局规则」弹窗，经 CDP 写入 Customizations → Global */
     showGlobalRuleButton: Boolean = false,
     onGlobalRule: () -> Unit = {},
+    /** uitty：关闭当前页内标签（与底部「新Tab」并列） */
+    onUittyCloseTab: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -87,10 +89,10 @@ fun ActionToolbar(
                     iconColor = Color(0xFF42A5F5),
                     onClick = onSessionList
                 )
-                // 停止 (Ctrl+C)
+                // 中止当前回合（CC / OpenCode：Esc；勿发 Ctrl+C 会退出 CLI）
                 ToolbarBtn(
                     icon = Icons.Default.Stop,
-                    label = "Ctrl+C",
+                    label = "中止",
                     enabled = isConnected,
                     iconColor = Accent,
                     onClick = onStopGeneration
@@ -132,6 +134,13 @@ fun ActionToolbar(
                     enabled = isConnected,
                     iconColor = Color(0xFF2196F3),
                     onClick = onNewSession
+                )
+                ToolbarBtn(
+                    icon = Icons.Default.DeleteOutline,
+                    label = "关Tab",
+                    enabled = isConnected,
+                    iconColor = Color(0xFFE53935),
+                    onClick = onUittyCloseTab
                 )
             } else {
                 // ── 标准 IDE 工具栏 ──

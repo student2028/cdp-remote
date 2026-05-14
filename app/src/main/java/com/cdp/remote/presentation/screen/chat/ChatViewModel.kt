@@ -1,5 +1,6 @@
 package com.cdp.remote.presentation.screen.chat
 
+import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -7,6 +8,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cdp.remote.data.cdp.*
+import com.cdp.remote.data.UittyNewTabHistoryStore
+import com.cdp.remote.data.UittyNewTabRecent
+import com.cdp.remote.presentation.screen.hosts.CwdHistoryItem
 import com.cdp.remote.presentation.screen.hosts.DirItem
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
@@ -15,6 +19,7 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.io.File
 
 private data class ChatDraft(
@@ -421,7 +426,7 @@ class ChatViewModel(
                     val result = when {
                         isClaudeCode -> claudeCodeCommands!!.sendMessage(enhancedText)
                         isCodex -> codexCommands!!.sendMessage(enhancedText)
-                        isUitty -> uittyCommands!!.sendMessage(enhancedText)
+                        isUitty -> uittySendEnhanced(enhancedText, uploadedFiles.isNotEmpty())
                         else -> commands!!.sendMessage(enhancedText)
                     }
                     if (result is CdpResult.Error) {
@@ -451,7 +456,7 @@ class ChatViewModel(
                 val result = when {
                     isClaudeCode -> claudeCodeCommands!!.sendMessage(enhancedText)
                     isCodex -> codexCommands!!.sendMessage(enhancedText)
-                    isUitty -> uittyCommands!!.sendMessage(enhancedText)
+                    isUitty -> uittySendEnhanced(enhancedText, uploadedFiles.isNotEmpty())
                     else -> commands!!.sendMessage(enhancedText)
                 }
                 if (result is CdpResult.Error) {
@@ -746,13 +751,16 @@ class ChatViewModel(
 
     // ─── IDE Actions ────────────────────────────────────────────────
 
-    fun startNewSession() {
+    fun startNewSession(appContext: Context? = null) {
+        if (isUitty) {
+            openUittyNewTabWizard(appContext)
+            return
+        }
         viewModelScope.launch {
             if (!hasCommands()) return@launch
             val result = when {
                 isClaudeCode -> claudeCodeCommands!!.startNewSession()
                 isCodex -> codexCommands!!.startNewSession()
-                isUitty -> uittyCommands!!.startNewSession()
                 else -> commands!!.startNewSession()
             }
             when (result) {
@@ -772,8 +780,26 @@ class ChatViewModel(
                 else -> commands!!.showRecentSessions()
             }
             when (result) {
-                is CdpResult.Success -> addSystemMessage("已打开历史会话 🕰")
+                is CdpResult.Success -> addSystemMessage(
+                    if (isUitty) {
+                        "uitty：远端「会话」即当前浏览器页里的标签页，请点底部「Tab」列出并切换 🗂️"
+                    } else {
+                        "已打开历史会话 🕰"
+                    }
+                )
                 is CdpResult.Error -> addSystemMessage("打开历史失败: ${result.message}")
+            }
+        }
+    }
+
+    fun closeUittyCurrentTab() {
+        if (!isUitty) return
+        viewModelScope.launch {
+            if (!hasCommands()) return@launch
+            val result = uittyCommands!!.closeCurrentTab()
+            when (result) {
+                is CdpResult.Success -> addSystemMessage("已关闭当前 uitty 标签页 🗂️")
+                is CdpResult.Error -> addSystemMessage("关闭 uitty 标签页失败：${result.message}")
             }
         }
     }
@@ -788,8 +814,15 @@ class ChatViewModel(
                 else -> commands!!.switchSession(isNext)
             }
             when (result) {
-                is CdpResult.Success -> addSystemMessage("已切换会话 🔄")
-                is CdpResult.Error -> addSystemMessage("切换会话失败: ${result.message}")
+                is CdpResult.Success -> addSystemMessage(
+                    if (isUitty) "已在 uitty 当前窗口内切换到相邻标签页 🔄"
+                    else "已切换会话 🔄"
+                )
+                is CdpResult.Error ->
+                    addSystemMessage(
+                        if (isUitty) "切换 uitty 标签页失败：${result.message}"
+                        else "切换会话失败: ${result.message}"
+                    )
             }
         }
     }
@@ -813,7 +846,10 @@ class ChatViewModel(
                 }
                 is CdpResult.Error -> {
                     uiState = uiState.copy(isSessionsLoading = false)
-                    addSystemMessage("获取会话列表失败: ${result.message}")
+                    addSystemMessage(
+                        if (isUitty) "获取 uitty 标签页列表失败：${result.message}"
+                        else "获取会话列表失败: ${result.message}"
+                    )
                 }
             }
         }
@@ -830,16 +866,359 @@ class ChatViewModel(
             }
             when (result) {
                 is CdpResult.Success -> {
-                    addSystemMessage("已切换到指定会话 🔄")
+                    addSystemMessage(
+                        if (isUitty) "已切换到所选 uitty 标签页 🔄"
+                        else "已切换到指定会话 🔄"
+                    )
                     uiState = uiState.copy(recentSessions = emptyList()) // Close dialog
                 }
-                is CdpResult.Error -> addSystemMessage("切换会话失败: ${result.message}")
+                is CdpResult.Error ->
+                    addSystemMessage(
+                        if (isUitty) "切换 uitty 标签页失败：${result.message}"
+                        else "切换会话失败: ${result.message}"
+                    )
             }
         }
     }
 
     fun closeSessionDialog() {
         uiState = uiState.copy(recentSessions = emptyList(), isSessionsLoading = false)
+    }
+
+    // ─── uitty：手机端 Relay 目录 + CLI（与 Codex `/dirs`、`RemoteFolderBrowserDialog` 同源）───
+
+    private fun uittyBasename(path: String): String =
+        path.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\').ifBlank { "/" }
+
+    fun openUittyNewTabWizard(appContext: Context? = null) {
+        if (!isUitty) return
+        val hostUrl = connectHost?.httpUrl ?: run {
+            addSystemMessage("新建 uitty Tab：请先连接 Relay")
+            return
+        }
+        val recents = appContext?.let { UittyNewTabHistoryStore.list(it) } ?: emptyList()
+        uiState = uiState.copy(
+            uittyCliPickerVisible = false,
+            uittyCliPickerWorkingDir = "",
+            uittyLaunchRecents = recents,
+            uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(
+                isOpen = true,
+                hostUrl = hostUrl,
+                currentPath = "",
+                error = null,
+                dirs = emptyList(),
+                parentPath = ""
+            )
+        )
+        loadUittyWorkspaceDirectory(hostUrl, "")
+        fetchUittyRelayCwdHistory()
+    }
+
+    fun closeUittyWorkspaceBrowser() {
+        uiState = uiState.copy(
+            uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(isOpen = false)
+        )
+    }
+
+    fun loadUittyWorkspaceDirectory(hostUrl: String, path: String) {
+        uiState = uiState.copy(
+            uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(
+                isLoading = true,
+                currentPath = path,
+                error = null
+            )
+        )
+        viewModelScope.launch {
+            try {
+                val (isSuccess, body, code) = withContext(Dispatchers.IO) {
+                    val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/dirs?path=$encodedPath")
+                        .build()
+                    val res = httpClient.newCall(request).execute()
+                    val b = res.body?.string()
+                    val s = res.isSuccessful
+                    val c = res.code
+                    res.close()
+                    Triple(s, b, c)
+                }
+                if (body != null && isSuccess) {
+                    val jsonObj = com.google.gson.JsonParser.parseString(body).asJsonObject
+                    val dirsArray = jsonObj.getAsJsonArray("dirs")
+                    val currentElement = jsonObj.get("current")
+                    val parentElement = jsonObj.get("parent")
+                    val dirs = (dirsArray?.toList() ?: emptyList())
+                        .map { it.asJsonObject }
+                        .map { obj ->
+                            DirItem(
+                                name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                                path = obj.get("path")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                            )
+                        }
+                    uiState = uiState.copy(
+                        uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(
+                            isLoading = false,
+                            currentPath = currentElement?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            parentPath = parentElement?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            dirs = dirs
+                        )
+                    )
+                } else {
+                    uiState = uiState.copy(
+                        uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(
+                            isLoading = false,
+                            error = "加载失败: 服务器响应异常 (Code: $code)"
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "uitty workspace directory load failed", e)
+                uiState = uiState.copy(
+                    uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(
+                        isLoading = false,
+                        error = e.message ?: "未知错误"
+                    )
+                )
+            }
+        }
+    }
+
+    fun createUittyWorkspaceDirectory(hostUrl: String, parentPath: String, folderName: String) {
+        viewModelScope.launch {
+            try {
+                val cleanParent = if (parentPath.endsWith("/")) parentPath.dropLast(1) else parentPath
+                val newDirPath = "$cleanParent/$folderName"
+                val encodedPath = java.net.URLEncoder.encode(newDirPath, "UTF-8")
+                withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/mkdir?path=$encodedPath")
+                        .build()
+                    httpClient.newCall(request).execute().close()
+                }
+                loadUittyWorkspaceDirectory(hostUrl, parentPath)
+            } catch (e: Exception) {
+                uiState = uiState.copy(
+                    uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(
+                        error = "创建文件夹失败: ${e.message}"
+                    )
+                )
+            }
+        }
+    }
+
+    /** 目录浏览器里选定路径后弹出 CLI 选项 */
+    fun onUittyWorkspacePathChosen(path: String, appContext: Context? = null) {
+        val recents = appContext?.let { UittyNewTabHistoryStore.list(it) }
+            ?: uiState.uittyLaunchRecents
+        uiState = uiState.copy(
+            uittyWorkspaceBrowserState = uiState.uittyWorkspaceBrowserState.copy(isOpen = false),
+            uittyCliPickerVisible = true,
+            uittyCliPickerWorkingDir = path.trim(),
+            uittyLaunchRecents = recents
+        )
+    }
+
+    fun dismissUittyCliPicker() {
+        uiState = uiState.copy(uittyCliPickerVisible = false, uittyCliPickerWorkingDir = "")
+    }
+
+    fun confirmUittyCliPreset(preset: UittyCliLaunchPreset, appContext: Context? = null) {
+        if (!hasCommands() || uittyCommands == null) return
+        val dir = uiState.uittyCliPickerWorkingDir.trim()
+        if (dir.isEmpty()) {
+            addSystemMessage("工作目录为空")
+            return
+        }
+        dismissUittyCliPicker()
+        viewModelScope.launch {
+            val result = uittyRunPresetLaunch(dir, preset)
+            when (result) {
+                is CdpResult.Success -> {
+                    val shortName = uittyBasename(dir)
+                    val tabTitle = "${preset.displayLabel} · $shortName"
+                    addSystemMessage("已在 uitty 新建 Tab：$tabTitle ")
+                    appContext?.let {
+                        UittyNewTabHistoryStore.recordPreset(it, dir, preset)
+                        refreshUittyLaunchRecentsInState(it)
+                    }
+                    postUittyCwdToRelay(dir)
+                }
+                is CdpResult.Error ->
+                    addSystemMessage("新建 uitty Tab 失败：${result.message}")
+            }
+        }
+    }
+
+    /** @param cliLine `cd` 之后的一整段命令（脚本、带参数均可） */
+    fun confirmUittyCliCustom(cliLine: String, appContext: Context? = null) {
+        if (!hasCommands() || uittyCommands == null) return
+        val dir = uiState.uittyCliPickerWorkingDir.trim()
+        val line = cliLine.trim()
+        if (dir.isEmpty() || line.isEmpty()) {
+            addSystemMessage("请填写自定义命令（不含 cd）")
+            return
+        }
+        dismissUittyCliPicker()
+        viewModelScope.launch {
+            val result = uittyRunCustomLaunch(dir, line)
+            when (result) {
+                is CdpResult.Success -> {
+                    addSystemMessage("已在 uitty 新建 Tab（自定义）")
+                    appContext?.let {
+                        UittyNewTabHistoryStore.recordCustom(it, dir, line)
+                        refreshUittyLaunchRecentsInState(it)
+                    }
+                    postUittyCwdToRelay(dir)
+                }
+                is CdpResult.Error ->
+                    addSystemMessage("新建 uitty Tab 失败：${result.message}")
+            }
+        }
+    }
+
+    private fun refreshUittyLaunchRecentsInState(appContext: Context) {
+        uiState = uiState.copy(uittyLaunchRecents = UittyNewTabHistoryStore.list(appContext))
+    }
+
+    /** 一键复用「最近 CLI + 目录」 */
+    fun replayUittyRecent(appContext: Context, recent: UittyNewTabRecent) {
+        if (!hasCommands() || uittyCommands == null) return
+        dismissUittyCliPicker()
+        viewModelScope.launch {
+            val path = recent.path.trim()
+            if (path.isEmpty()) return@launch
+            val preset = recent.preset()
+            val result = when {
+                preset != null -> uittyRunPresetLaunch(path, preset)
+                recent.customCommand.isNotBlank() -> uittyRunCustomLaunch(path, recent.customCommand.trim())
+                else -> return@launch
+            }
+            when (result) {
+                is CdpResult.Success -> {
+                    if (preset != null) {
+                        val tabTitle = "${preset.displayLabel} · ${uittyBasename(path)}"
+                        addSystemMessage("已在 uitty 新建 Tab：$tabTitle ")
+                        UittyNewTabHistoryStore.recordPreset(appContext, path, preset)
+                    } else {
+                        addSystemMessage("已在 uitty 新建 Tab（自定义）")
+                        UittyNewTabHistoryStore.recordCustom(appContext, path, recent.customCommand.trim())
+                    }
+                    refreshUittyLaunchRecentsInState(appContext)
+                    postUittyCwdToRelay(path)
+                }
+                is CdpResult.Error -> addSystemMessage("新建 uitty Tab 失败：${result.message}")
+            }
+        }
+    }
+
+    fun removeUittyLaunchRecent(appContext: Context, recent: UittyNewTabRecent) {
+        UittyNewTabHistoryStore.remove(appContext, recent)
+        refreshUittyLaunchRecentsInState(appContext)
+    }
+
+    private fun fetchUittyRelayCwdHistory() {
+        val hostUrl = connectHost?.httpUrl ?: return
+        viewModelScope.launch {
+            try {
+                val body = withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/cwd_history")
+                        .build()
+                    httpClient.newCall(request).execute().use { res ->
+                        if (!res.isSuccessful) return@use null
+                        res.body?.string()
+                    }
+                } ?: return@launch
+                val root = com.google.gson.JsonParser.parseString(body).asJsonObject
+                val historyArray = root.getAsJsonArray("history") ?: return@launch
+                val items = historyArray.map { elem ->
+                    val obj = elem.asJsonObject
+                    CwdHistoryItem(
+                        path = obj.get("path")?.asString ?: "",
+                        app = obj.get("app")?.asString ?: "",
+                        time = obj.get("time")?.asString ?: ""
+                    )
+                }
+                uiState = uiState.copy(uittyCwdHistory = items)
+            } catch (e: Exception) {
+                Log.d(TAG, "uitty relay cwd history: ${e.message}")
+            }
+        }
+    }
+
+    fun removeUittyRelayCwdHistoryPath(path: String) {
+        val hostUrl = connectHost?.httpUrl ?: return
+        viewModelScope.launch {
+            try {
+                val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+                withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/cwd_history?path=$encodedPath")
+                        .delete()
+                        .build()
+                    httpClient.newCall(request).execute().close()
+                }
+                uiState = uiState.copy(
+                    uittyCwdHistory = uiState.uittyCwdHistory.filter { it.path != path }
+                )
+            } catch (e: Exception) {
+                Log.d(TAG, "uitty relay cwd history delete: ${e.message}")
+            }
+        }
+    }
+
+    private fun postUittyCwdToRelay(dir: String) {
+        val hostUrl = connectHost?.httpUrl ?: return
+        viewModelScope.launch {
+            try {
+                val json = JSONObject().apply {
+                    put("path", dir.trim())
+                    put("app", "uitty")
+                }.toString()
+                withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder()
+                        .url("$hostUrl/cwd_history")
+                        .post(json.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
+                        .build()
+                    httpClient.newCall(request).execute().close()
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * uitty + Claude Code：纯文本 [UittyCommands.sendMessage] 末尾一次 Enter 即可提交。
+     * 图片/视频走 Relay 上传后拼进 [enhancedText] 为多行 + URL，TUI 常需再多一次 Enter 才提交整段
+     * （否则停在输入缓冲，需用户手动点工具栏 Enter）。
+     */
+    private suspend fun uittySendEnhanced(enhancedText: String, relayAttachmentsPresent: Boolean): CdpResult<Unit> {
+        val u = uittyCommands ?: return CdpResult.Error("uitty 未就绪")
+        when (val first = u.sendMessage(enhancedText)) {
+            is CdpResult.Error -> return first
+            is CdpResult.Success -> Unit
+        }
+        if (relayAttachmentsPresent) {
+            delay(120)
+            when (val second = u.acceptAll()) {
+                is CdpResult.Error ->
+                    Log.w(TAG, "uitty 附件消息后追加 Enter 失败: ${second.message}")
+                else -> Unit
+            }
+        }
+        return CdpResult.Success(Unit)
+    }
+
+    private suspend fun uittyRunPresetLaunch(dir: String, preset: UittyCliLaunchPreset): CdpResult<Unit> {
+        val shortName = uittyBasename(dir)
+        val tabTitle = "${preset.displayLabel} · $shortName"
+        return uittyCommands!!.launchCliInWorkspace(dir, preset.shellCommand, tabTitle, preset.emoji)
+    }
+
+    private suspend fun uittyRunCustomLaunch(dir: String, line: String): CdpResult<Unit> {
+        val shortName = uittyBasename(dir)
+        val tabTitle = "⚙ · $shortName"
+        return uittyCommands!!.launchCliInWorkspace(dir, line, tabTitle, "⚙️")
     }
 
     // ─── Codex 项目管理 ─────────────────────────────────────────────

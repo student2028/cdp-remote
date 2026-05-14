@@ -2,6 +2,8 @@ package com.cdp.remote.presentation.screen.chat
 
 import com.cdp.remote.data.cdp.ChatMessage
 import com.cdp.remote.data.cdp.ConnectionState
+import com.cdp.remote.data.UittyNewTabRecent
+import com.cdp.remote.presentation.screen.hosts.CwdHistoryItem
 import com.cdp.remote.presentation.screen.hosts.FolderBrowserState
 import java.util.concurrent.atomic.AtomicLong
 
@@ -69,5 +71,14 @@ data class ChatUiState(
     /** Codex 添加项目时使用的远程目录浏览器 */
     val codexWorkspaceBrowserState: FolderBrowserState = FolderBrowserState(),
     /** Codex 添加项目请求进行中 */
-    val codexProjectAdding: Boolean = false
+    val codexProjectAdding: Boolean = false,
+    /** uitty：Relay `/dirs` 选工作目录（与 IDE Launch / Codex 同源） */
+    val uittyWorkspaceBrowserState: FolderBrowserState = FolderBrowserState(),
+    /** uitty：选目录后在此选择 CLI（手机端向导，不靠 uitty 内嵌弹窗） */
+    val uittyCliPickerVisible: Boolean = false,
+    val uittyCliPickerWorkingDir: String = "",
+    /** Relay `/cwd_history`：与 Launch IDE 同源，新建 Tab 目录浏览器里展示 */
+    val uittyCwdHistory: List<CwdHistoryItem> = emptyList(),
+    /** 本机记住的「目录 + CLI」最近几次 */
+    val uittyLaunchRecents: List<UittyNewTabRecent> = emptyList()
 )

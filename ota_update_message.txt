@@ -1,1 +1,4 @@
-修复 uitty 图片发送失败：终端类 uitty 没有浏览器图片粘贴容器，图片现在会作为 Relay 附件上传并以本地 URL 发给 OpenCode；保留 uitty 首页显示、Codex 新项目和附件流式上传修复。
+1. uitty 新建 Tab：Claude Code 预设带 --permission-mode bypassPermissions（App 与 relay 向导一致）。
+2. uitty 新建 Tab CLI 选择弹窗：预设项左对齐，名称与命令分两行，布局与「最近启动」一致。
+3. uitty TV 观影模式默认「左」视图（原默认为「右」），与终端主区域在左侧的观感一致。
+4. uitty 连接 Claude Code：经 Relay 上传图片/视频后，发送消息会自动追加一次 Enter，无需再手动点工具栏回车。

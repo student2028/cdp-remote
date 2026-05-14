@@ -85,6 +85,7 @@ fun TvLiveView(
     var focusMode by remember(appName) {
         val initial = when {
             appName.contains("Cursor", ignoreCase = true) -> 2
+            appName.contains("uitty", ignoreCase = true) -> 2 // 终端主区在左侧，默认「左」视图
             appName.contains("Codex", ignoreCase = true) -> 3 // 默认"中"，偏右展示主聊天画布
             else -> 0
         }

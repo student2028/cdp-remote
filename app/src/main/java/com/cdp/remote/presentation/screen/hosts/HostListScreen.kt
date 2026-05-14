@@ -718,7 +718,11 @@ fun RemoteFolderBrowserDialog(
     onDismiss: () -> Unit,
     onPathSelected: (path: String) -> Unit,
     onNavigate: (hostUrl: String, path: String) -> Unit,
-    onCreateFolder: (path: String) -> Unit
+    onCreateFolder: (path: String) -> Unit,
+    /** 与 Launch IDE 同源：Relay `/cwd_history` 返回的最近目录 */
+    cwdHistory: List<CwdHistoryItem> = emptyList(),
+    onCwdHistoryPick: (String) -> Unit = {},
+    onCwdHistoryDelete: (String) -> Unit = {}
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
@@ -758,6 +762,67 @@ fun RemoteFolderBrowserDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
                 )
+
+                if (cwdHistory.isNotEmpty()) {
+                    Text(
+                        "最近目录",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 168.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        cwdHistory.forEach { item ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onCwdHistoryPick(item.path) }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Folder,
+                                    contentDescription = null,
+                                    tint = folderIconColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    val parts = item.path.split("/").filter { it.isNotEmpty() }
+                                    val shortPath = if (parts.size > 2) {
+                                        ".../${parts.takeLast(2).joinToString("/")}"
+                                    } else {
+                                        item.path
+                                    }
+                                    Text(shortPath, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onCwdHistoryDelete(item.path) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "删除",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 // ── 新建文件夹输入 ──
                 if (showCreateDialog) {

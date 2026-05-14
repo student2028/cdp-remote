@@ -14,9 +14,11 @@ import android.util.Log
 import com.cdp.remote.util.ImageCompressor
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,18 +32,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cdp.remote.data.AppOrderStore
+import com.cdp.remote.data.UittyNewTabRecent
 import com.cdp.remote.data.cdp.ConnectionState
 import com.cdp.remote.data.cdp.ElectronAppType
+import com.cdp.remote.data.cdp.UittyCliLaunchPreset
 import com.cdp.remote.data.cdp.RELAY_OTA_HTTP_PORT
 import com.cdp.remote.data.ota.OtaUpdateManager
 import com.cdp.remote.presentation.screen.chat.components.ActionToolbar
@@ -336,7 +342,7 @@ fun ChatScreen(
                     isWindsurf = state.isWindsurf,
                     isCodex = isCodexApp,
                     isUitty = state.isUitty,
-                    onNewSession = { viewModel.startNewSession() },
+                    onNewSession = { viewModel.startNewSession(context.applicationContext) },
                     onStopGeneration = { viewModel.stopGeneration() },
                     onCancelRunningTask = { viewModel.cancelRunningTask() },
                     onScrollUp = { viewModel.scrollUp() },
@@ -355,7 +361,8 @@ fun ChatScreen(
                     onCheckUsage = { viewModel.checkRateLimits() },
                     showUsageButton = showUsageButton,
                     showGlobalRuleButton = showAntigravityGlobalRule,
-                    onGlobalRule = { showGlobalRuleDialog = true }
+                    onGlobalRule = { showGlobalRuleDialog = true },
+                    onUittyCloseTab = { viewModel.closeUittyCurrentTab() }
                 )
                 InputBar(
                     text = state.inputText,
@@ -556,6 +563,11 @@ fun ChatScreen(
         SessionListDialog(
             sessions = state.recentSessions,
             isLoading = state.isSessionsLoading,
+            dialogTitle = if (state.isUitty) "uitty · 当前窗口的标签页"
+            else "最近会话",
+            emptyMessage = if (state.isUitty) "暂无可读标签页，请确认已打开 uitty 且页面就绪"
+            else "暂无会话记录或无法读取",
+            splitOnMiddleDot = !state.isUitty,
             onDismiss = {
                 showSessionDialog = false
                 viewModel.closeSessionDialog()
@@ -605,6 +617,37 @@ fun ChatScreen(
                     folderName
                 )
             }
+        )
+    }
+
+    if (state.uittyWorkspaceBrowserState.isOpen) {
+        RemoteFolderBrowserDialog(
+            state = state.uittyWorkspaceBrowserState,
+            onDismiss = { viewModel.closeUittyWorkspaceBrowser() },
+            onPathSelected = { path -> viewModel.onUittyWorkspacePathChosen(path, context.applicationContext) },
+            onNavigate = { hostUrl, path -> viewModel.loadUittyWorkspaceDirectory(hostUrl, path) },
+            onCreateFolder = { folderName ->
+                viewModel.createUittyWorkspaceDirectory(
+                    state.uittyWorkspaceBrowserState.hostUrl,
+                    state.uittyWorkspaceBrowserState.currentPath,
+                    folderName
+                )
+            },
+            cwdHistory = state.uittyCwdHistory,
+            onCwdHistoryPick = { path -> viewModel.onUittyWorkspacePathChosen(path, context.applicationContext) },
+            onCwdHistoryDelete = { path -> viewModel.removeUittyRelayCwdHistoryPath(path) }
+        )
+    }
+
+    if (state.uittyCliPickerVisible && state.isUitty) {
+        UittyCliPickerDialog(
+            workingDirDisplay = state.uittyCliPickerWorkingDir,
+            launchRecents = state.uittyLaunchRecents,
+            onPickRecent = { viewModel.replayUittyRecent(context.applicationContext, it) },
+            onRemoveRecent = { viewModel.removeUittyLaunchRecent(context.applicationContext, it) },
+            onDismiss = { viewModel.dismissUittyCliPicker() },
+            onPreset = { viewModel.confirmUittyCliPreset(it, context.applicationContext) },
+            onCustomConfirm = { viewModel.confirmUittyCliCustom(it, context.applicationContext) }
         )
     }
 
@@ -788,12 +831,16 @@ fun ScreenshotDialog(
 fun SessionListDialog(
     sessions: List<String>,
     isLoading: Boolean,
+    dialogTitle: String = "最近会话",
+    emptyMessage: String = "暂无会话记录或无法读取",
+    // true：会话「标题 · 时间」两行；false：整行一行（uitty Tab 标题含「 · 」）
+    splitOnMiddleDot: Boolean = true,
     onDismiss: () -> Unit,
     onSelect: (Int) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("最近会话") },
+        title = { Text(dialogTitle) },
         text = {
             val scroll = rememberScrollState()
             Column(
@@ -807,7 +854,7 @@ fun SessionListDialog(
                     }
                 } else if (sessions.isEmpty()) {
                     Text(
-                        text = "暂无会话记录或无法读取",
+                        text = emptyMessage,
                         modifier = Modifier.padding(16.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -817,26 +864,35 @@ fun SessionListDialog(
                             onClick = { onSelect(index) },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            val parts = sessionTitle.split(" · ", limit = 2)
-                            val title = parts[0]
-                            val time = if (parts.size > 1) parts[1] else ""
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            if (!splitOnMiddleDot) {
                                 Text(
-                                    text = title,
+                                    text = sessionTitle,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.fillMaxWidth()
                                 )
-                                if (time.isNotEmpty()) {
+                            } else {
+                                val parts = sessionTitle.split(" · ", limit = 2)
+                                val title = parts[0]
+                                val time = if (parts.size > 1) parts[1] else ""
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Text(
-                                        text = time,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                        style = MaterialTheme.typography.labelSmall
+                                        text = title,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    if (time.isNotEmpty()) {
+                                        Text(
+                                            text = time,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -846,6 +902,154 @@ fun SessionListDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+@Composable
+private fun UittyCliPickerDialog(
+    workingDirDisplay: String,
+    launchRecents: List<UittyNewTabRecent> = emptyList(),
+    onPickRecent: (UittyNewTabRecent) -> Unit = {},
+    onRemoveRecent: (UittyNewTabRecent) -> Unit = {},
+    onDismiss: () -> Unit,
+    onPreset: (UittyCliLaunchPreset) -> Unit,
+    onCustomConfirm: (String) -> Unit
+) {
+    var customLine by remember(workingDirDisplay) { mutableStateOf("") }
+    val recentAccent = Color(0xFF6C5CE7)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("在此目录启动 CLI") },
+        text = {
+            val scroll = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(scroll),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (launchRecents.isNotEmpty()) {
+                    Text(
+                        "最近启动",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        launchRecents.forEach { recent ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onPickRecent(recent) }
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.History,
+                                    contentDescription = null,
+                                    tint = recentAccent,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        recent.primaryLabel(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        recent.secondaryLabel(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onRemoveRecent(recent) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "从最近中移除",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                Text(
+                    workingDirDisplay,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text("预设", style = MaterialTheme.typography.labelLarge)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    for (preset in enumValues<UittyCliLaunchPreset>()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onPreset(preset) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.width(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = preset.emoji,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    maxLines = 1
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = preset.displayLabel,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = preset.shellCommand,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = customLine,
+                    onValueChange = { customLine = it },
+                    label = { Text("自定义命令（不含 cd）") },
+                    placeholder = { Text("codex、aider、gocode-cli …") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onCustomConfirm(customLine) }) {
+                Text("启动自定义")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }

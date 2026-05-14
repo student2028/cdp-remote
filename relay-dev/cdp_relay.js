@@ -1867,6 +1867,25 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    const pathname = (urlModule.parse(req.url || '', true).pathname) || '';
+
+    // ── uitty 「新建会话」向导脚本（uitty index 里 <script src="…/uitty_compat/open_new_session_wizard.js">）
+    if (pathname === '/uitty_compat/open_new_session_wizard.js') {
+        const wizPath = path.join(__dirname, 'uitty_compat', 'open_new_session_wizard.js');
+        if (!fs.existsSync(wizPath)) {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...cors });
+            res.end('uitty_compat script missing on relay');
+            return;
+        }
+        res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Cache-Control': 'public, max-age=3600',
+            ...cors
+        });
+        res.end(fs.readFileSync(wizPath, 'utf8'));
+        return;
+    }
+
     // ── /health ──
     if (req.url === '/health') {
         const targets = [];
