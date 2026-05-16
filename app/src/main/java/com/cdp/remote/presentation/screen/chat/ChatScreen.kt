@@ -16,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -46,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cdp.remote.data.AppOrderStore
 import com.cdp.remote.data.UittyNewTabRecent
 import com.cdp.remote.data.cdp.ConnectionState
+import com.cdp.remote.data.cdp.CdpResult
 import com.cdp.remote.data.cdp.ElectronAppType
 import com.cdp.remote.data.cdp.UittyCliLaunchPreset
 import com.cdp.remote.data.cdp.RELAY_OTA_HTTP_PORT
@@ -143,8 +145,10 @@ fun ChatScreen(
     var showProjectDialog by remember { mutableStateOf(false) }
     var showGlobalRuleDialog by remember { mutableStateOf(false) }
     var globalRuleDraft by remember { mutableStateOf("") }
+    var uittyGlobalRuleKind by remember { mutableStateOf("claude") }
     val showAntigravityGlobalRule = appName.contains("Antigravity", ignoreCase = true)
     val isCodexApp = appName.contains("Codex", ignoreCase = true)
+    val showGlobalRuleForUitty = state.isUitty
     val showUsageButton = isCodexApp || state.isWindsurf || showAntigravityGlobalRule
 
     val configuration = LocalConfiguration.current
@@ -162,6 +166,18 @@ fun ChatScreen(
 
     LaunchedEffect(showModelDialog) {
         if (showModelDialog) viewModel.prepareModelSwitchDialog()
+    }
+
+    LaunchedEffect(showGlobalRuleDialog, uittyGlobalRuleKind, state.isUitty) {
+        if (showGlobalRuleDialog && state.isUitty) {
+            when (val r = viewModel.loadUittyGlobalRulesText(uittyGlobalRuleKind)) {
+                is CdpResult.Success -> globalRuleDraft = r.data
+                is CdpResult.Error -> {
+                    viewModel.addSystemMessage("读取全局规则失败: ${r.message} ❌")
+                    globalRuleDraft = ""
+                }
+            }
+        }
     }
 
     // Auto-scroll to bottom
@@ -360,8 +376,11 @@ fun ChatScreen(
                     },
                     onCheckUsage = { viewModel.checkRateLimits() },
                     showUsageButton = showUsageButton,
-                    showGlobalRuleButton = showAntigravityGlobalRule,
-                    onGlobalRule = { showGlobalRuleDialog = true },
+                    showGlobalRuleButton = showAntigravityGlobalRule || showGlobalRuleForUitty,
+                    onGlobalRule = {
+                        if (state.isUitty) uittyGlobalRuleKind = "claude"
+                        showGlobalRuleDialog = true
+                    },
                     onUittyCloseTab = { viewModel.closeUittyCurrentTab() }
                 )
                 InputBar(
@@ -526,12 +545,40 @@ fun ChatScreen(
             title = { Text("全局规则") },
             text = {
                 Column(Modifier.fillMaxWidth()) {
-                    Text(
-                        "将写入对端反重力：侧栏 ⋯ → Customization → Rules → Global，与在电脑上操作等效。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(8.dp))
+                    if (state.isUitty) {
+                        Text(
+                            "通过 uitty 写入对端 Mac：Claude ~/.claude/CLAUDE.md、OpenCode ~/.config/opencode/AGENTS.md。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("规则文件", style = MaterialTheme.typography.labelMedium)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = uittyGlobalRuleKind == "claude",
+                                onClick = { uittyGlobalRuleKind = "claude" },
+                                label = { Text("Claude") }
+                            )
+                            FilterChip(
+                                selected = uittyGlobalRuleKind == "opencode",
+                                onClick = { uittyGlobalRuleKind = "opencode" },
+                                label = { Text("OpenCode") }
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    } else {
+                        Text(
+                            "将写入对端反重力：侧栏 ⋯ → Customization → Rules → Global，与在电脑上操作等效。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
                     OutlinedTextField(
                         value = globalRuleDraft,
                         onValueChange = { globalRuleDraft = it },
@@ -547,8 +594,13 @@ fun ChatScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        showGlobalRuleDialog = false
-                        viewModel.applyGlobalAgentRule(globalRuleDraft)
+                        scope.launch {
+                            val ok = viewModel.saveGlobalAgentRuleFromDialog(
+                                globalRuleDraft,
+                                if (state.isUitty) uittyGlobalRuleKind else null
+                            )
+                            if (ok) showGlobalRuleDialog = false
+                        }
                     }
                 ) { Text("保存") }
             },

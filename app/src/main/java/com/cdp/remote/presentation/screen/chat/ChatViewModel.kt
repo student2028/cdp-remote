@@ -1837,23 +1837,49 @@ class ChatViewModel(
         }
     }
 
+    suspend fun loadUittyGlobalRulesText(kind: String): CdpResult<String> {
+        if (!isUitty || uittyCommands == null) {
+            return CdpResult.Error("当前不是 uitty 或未连接")
+        }
+        return uittyCommands!!.readGlobalRules(kind)
+    }
+
     /**
-     * 将文本写入对端侧栏 **Customizations → Rules → Global**（与在反重力里点开并编辑等效，见 [AntigravityCommands.setGlobalAgentRule]）。
+     * 保存全局规则；**成功返回 true** 后 UI 再关弹窗，避免写入未完成时立刻重开读到空文件。
+     * [uittyRulesKind] 仅 uitty：`claude` | `opencode`。
      */
-    fun applyGlobalAgentRule(text: String) {
-        viewModelScope.launch {
-            if (isCodex) {
-                addSystemMessage("Codex 无侧栏全局规则，已跳过 ❌")
-                return@launch
+    suspend fun saveGlobalAgentRuleFromDialog(text: String, uittyRulesKind: String? = null): Boolean {
+        if (isCodex) {
+            addSystemMessage("Codex 无侧栏全局规则，已跳过 ❌")
+            return false
+        }
+        if (!hasCommands()) {
+            addSystemMessage("未连接 IDE ❌")
+            return false
+        }
+        if (isUitty && uittyCommands != null) {
+            val kind = uittyRulesKind?.trim()?.takeIf { it.isNotEmpty() } ?: "claude"
+            addSystemMessage("正在写入 uitty 全局规则（$kind）…")
+            return when (val result = uittyCommands!!.writeGlobalRules(kind, text)) {
+                is CdpResult.Success -> {
+                    addSystemMessage("全局规则已保存（$kind）✓")
+                    true
+                }
+                is CdpResult.Error -> {
+                    addSystemMessage("全局规则失败: ${result.message} ❌")
+                    false
+                }
             }
-            if (!hasCommands()) {
-                addSystemMessage("未连接 IDE ❌")
-                return@launch
+        }
+        addSystemMessage("正在写入全局规则（远程 CDP）…")
+        return when (val result = commands!!.setGlobalAgentRule(text)) {
+            is CdpResult.Success -> {
+                addSystemMessage("全局规则已保存 ✓")
+                true
             }
-            addSystemMessage("正在写入全局规则（远程 CDP）…")
-            when (val result = commands!!.setGlobalAgentRule(text)) {
-                is CdpResult.Success -> addSystemMessage("全局规则已保存 ✓")
-                is CdpResult.Error -> addSystemMessage("全局规则失败: ${result.message} ❌")
+            is CdpResult.Error -> {
+                addSystemMessage("全局规则失败: ${result.message} ❌")
+                false
             }
         }
     }

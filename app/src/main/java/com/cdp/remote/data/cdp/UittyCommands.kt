@@ -1,5 +1,8 @@
 package com.cdp.remote.data.cdp
 
+import com.google.gson.Gson
+import com.google.gson.JsonParser
+
 /**
  * Uitty Terminal 专用 CDP 命令集
  *
@@ -17,6 +20,7 @@ package com.cdp.remote.data.cdp
  * - uittyAPI.sendEscape() — 中止当前 Claude Code / OpenCode 回合（勿用 Ctrl+C，会退出整个 CLI）
  * - uittyAPI.setAutoApprove(bool) — 自动审批开关
  * - uittyAPI.getTabs() / switchTab() / createTab() — **当前浏览器页内**的标签页（非系统浏览器 Tab）
+ * - uittyAPI.readGlobalRules(kind) / writeGlobalRules(kind, content) — 本机全局规则；若无则回退 window.uitty（preload）
  */
 class UittyCommands(private val cdp: ICdpClient) {
 
@@ -405,10 +409,123 @@ class UittyCommands(private val cdp: ICdpClient) {
         return CdpResult.Success("") // 终端模式无全局模型概念
     }
 
-    // ─────────────────── 全局规则（不适用）───────────────────
+    // ─────────────────── 全局规则（uitty 宿主 IPC：固定路径，见 uitty main.js rules:*）───────────────────
 
-    suspend fun setGlobalAgentRule(text: String): CdpResult<Unit> {
-        return CdpResult.Error("uitty 终端不支持全局规则设置")
+    /**
+     * 读取全局规则文件。
+     * 优先 [window.uittyAPI]（新版 index.html）；否则回退 [window.uitty]（preload 已暴露，旧版仅有此项）。
+     * @param kind `claude`（~/.claude/CLAUDE.md）、`opencode`（AGENTS.md）、`opencode-json`
+     */
+    suspend fun readGlobalRules(kind: String): CdpResult<String> {
+        val apiKind = uittyApiKind(kind)
+        val result = cdp.evaluate(
+            """
+            (async function() {
+                try {
+                    var kind = '$apiKind';
+                    var readFn = null;
+                    if (window.uittyAPI && typeof window.uittyAPI.readGlobalRules === 'function') {
+                        readFn = function(k) { return window.uittyAPI.readGlobalRules(k); };
+                    } else if (window.uitty && typeof window.uitty.readGlobalRules === 'function') {
+                        readFn = function(k) { return window.uitty.readGlobalRules(k); };
+                    }
+                    if (!readFn) {
+                        return JSON.stringify({
+                            ok: false,
+                            error: 'readGlobalRules 不可用：uittyAPI 与 window.uitty 均未暴露（请升级 uitty 含 preload rules:*）'
+                        });
+                    }
+                    var r = await readFn(kind);
+                    return JSON.stringify(r);
+                } catch (e) {
+                    return JSON.stringify({ ok: false, error: String(e.message || e) });
+                }
+            })()
+            """.trimIndent(),
+            awaitPromise = true
+        )
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return parseGlobalRulesRead(result.getOrNull())
+    }
+
+    /**
+     * 写入全局规则文件（创建父目录）。
+     * 回退顺序同 [readGlobalRules]。
+     */
+    suspend fun writeGlobalRules(kind: String, content: String): CdpResult<Unit> {
+        val apiKind = uittyApiKind(kind)
+        val literal = Gson().toJson(content)
+        val result = cdp.evaluate(
+            """
+            (async function() {
+                try {
+                    var kind = '$apiKind';
+                    var text = $literal;
+                    var writeFn = null;
+                    if (window.uittyAPI && typeof window.uittyAPI.writeGlobalRules === 'function') {
+                        writeFn = function(k, c) { return window.uittyAPI.writeGlobalRules(k, c); };
+                    } else if (window.uitty && typeof window.uitty.writeGlobalRules === 'function') {
+                        writeFn = function(k, c) { return window.uitty.writeGlobalRules(k, c); };
+                    }
+                    if (!writeFn) {
+                        return JSON.stringify({
+                            ok: false,
+                            error: 'writeGlobalRules 不可用：uittyAPI 与 window.uitty 均未暴露'
+                        });
+                    }
+                    var r = await writeFn(kind, text);
+                    return JSON.stringify(r);
+                } catch (e) {
+                    return JSON.stringify({ ok: false, error: String(e.message || e) });
+                }
+            })()
+            """.trimIndent(),
+            awaitPromise = true
+        )
+        if (result is CdpResult.Error) return CdpResult.Error(result.message)
+        return parseGlobalRulesWrite(result.getOrNull())
+    }
+
+    suspend fun setGlobalAgentRule(text: String): CdpResult<Unit> =
+        writeGlobalRules("claude", text)
+
+    private fun uittyApiKind(kind: String): String {
+        return when (kind.trim().lowercase().replace('_', '-')) {
+            "opencode", "agents" -> "opencode"
+            "opencode-json", "opencodejson", "config" -> "opencode-json"
+            "claude", "claude-md", "claude_md" -> "claude"
+            else -> "claude"
+        }
+    }
+
+    private fun parseGlobalRulesRead(raw: String?): CdpResult<String> {
+        if (raw.isNullOrBlank()) return CdpResult.Error("readGlobalRules 无返回")
+        return try {
+            val o = JsonParser.parseString(raw).asJsonObject
+            val okEl = o.get("ok")
+            val ok = okEl != null && !okEl.isJsonNull && okEl.asBoolean
+            if (!ok) {
+                return CdpResult.Error(o.get("error")?.asString ?: "readGlobalRules 失败")
+            }
+            CdpResult.Success(o.get("content")?.asString ?: "")
+        } catch (e: Exception) {
+            CdpResult.Error("解析 readGlobalRules 失败: ${e.message}")
+        }
+    }
+
+    private fun parseGlobalRulesWrite(raw: String?): CdpResult<Unit> {
+        if (raw.isNullOrBlank()) return CdpResult.Error("writeGlobalRules 无返回")
+        return try {
+            val o = JsonParser.parseString(raw).asJsonObject
+            val okEl = o.get("ok")
+            val ok = okEl != null && !okEl.isJsonNull && okEl.asBoolean
+            if (!ok) {
+                return CdpResult.Error(o.get("error")?.asString ?: "writeGlobalRules 失败")
+            }
+            CdpResult.Success(Unit)
+        } catch (e: Exception) {
+            CdpResult.Error("解析 writeGlobalRules 失败: ${e.message}")
+        }
     }
 
     // ─────────────────── 错误检测 ───────────────────

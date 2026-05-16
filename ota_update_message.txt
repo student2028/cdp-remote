@@ -1,4 +1,3 @@
-1. uitty 新建 Tab：Claude Code 预设带 --permission-mode bypassPermissions（App 与 relay 向导一致）。
-2. uitty 新建 Tab CLI 选择弹窗：预设项左对齐，名称与命令分两行，布局与「最近启动」一致。
-3. uitty TV 观影模式默认「左」视图（原默认为「右」），与终端主区域在左侧的观感一致。
-4. uitty 连接 Claude Code：经 Relay 上传图片/视频后，发送消息会自动追加一次 Enter，无需再手动点工具栏回车。
+1. uitty 全局规则：读取/写入在 uittyAPI 不可用时自动回退 window.uitty（与 preload rules:* 一致），已加单元测试验证注入脚本。
+2. uitty「全局」弹窗：仅 Claude + OpenCode；保存成功后再关窗；读取失败有系统提示。
+3. uitty 新建 Tab / CLI 左对齐 / TV 左视图 / 附件双 Enter 等行为保持近期版本。

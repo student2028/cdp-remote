@@ -1902,23 +1902,62 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── /targets — 核心：返回所有发现的 CDP 实例 ──
-    if (req.url === '/targets') {
+    if (req.url.startsWith('/targets')) {
+        const parsed = urlModule.parse(req.url, true);
+        const expandUitty = parsed.query.expandUitty === 'true';
         const relayHost = req.headers.host || `${BIND_ADDR}:${RELAY_PORT}`;
-        const targets = [];
-        for (const [port, t] of activeCdpTargets) {
-            const pages = t.pages.map(p => ({
-                ...p,
-                webSocketDebuggerUrl: p.webSocketDebuggerUrl
-                    ? p.webSocketDebuggerUrl
-                        .replace(`ws://127.0.0.1:${port}/`, `ws://${relayHost}/cdp/${port}/`)
-                        .replace(`ws://localhost:${port}/`, `ws://${relayHost}/cdp/${port}/`)
-                    : '',
-                devtoolsFrontendUrl: p.devtoolsFrontendUrl || ''
-            }));
-            targets.push({ cdpPort: port, appName: t.appName, appEmoji: t.appEmoji, workspace: getWorkspaceForPort(port), pages });
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
-        res.end(JSON.stringify({ targets }));
+        
+        // 由于需要 evaluateOnCdpPage 获取终端信息，改为 async
+        (async () => {
+            const targets = [];
+            for (const [port, t] of activeCdpTargets) {
+                if (expandUitty && t.appName.toLowerCase() === 'uitty') {
+                    try {
+                        const panesExpr = `(function(){
+                            if (!window.tabs) return [];
+                            let res = [];
+                            window.tabs.forEach(tab => tab.panes.forEach(p => {
+                                if (p.pid) res.push({ pid: p.pid, title: tab.label || 'zsh', cwd: p.cachedCwd });
+                            }));
+                            return res;
+                        })()`;
+                        const panes = await evaluateOnCdpPage(port, panesExpr, { timeoutMs: 2000 });
+                        if (panes && panes.length > 0) {
+                            for (const pane of panes) {
+                                targets.push({
+                                    cdpPort: port,
+                                    appName: `uitty:${pane.pid}`,
+                                    appEmoji: t.appEmoji,
+                                    workspace: pane.cwd || getWorkspaceForPort(port),
+                                    pages: [{
+                                        id: `uitty-pane-${pane.pid}`,
+                                        type: 'page',
+                                        title: `${pane.title} (PID: ${pane.pid})`,
+                                        url: 'uitty://pane',
+                                        webSocketDebuggerUrl: '',
+                                        devtoolsFrontendUrl: ''
+                                    }]
+                                });
+                            }
+                            continue;
+                        }
+                    } catch (e) { log(`⚠️ 获取 uitty terminals 失败: ${e.message}`); }
+                }
+
+                const pages = t.pages.map(p => ({
+                    ...p,
+                    webSocketDebuggerUrl: p.webSocketDebuggerUrl
+                        ? p.webSocketDebuggerUrl
+                            .replace(`ws://127.0.0.1:${port}/`, `ws://${relayHost}/cdp/${port}/`)
+                            .replace(`ws://localhost:${port}/`, `ws://${relayHost}/cdp/${port}/`)
+                        : '',
+                    devtoolsFrontendUrl: p.devtoolsFrontendUrl || ''
+                }));
+                targets.push({ cdpPort: port, appName: t.appName, appEmoji: t.appEmoji, workspace: getWorkspaceForPort(port), pages });
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+            res.end(JSON.stringify({ targets }));
+        })();
         return;
     }
 
@@ -2449,10 +2488,10 @@ const server = http.createServer(async (req, res) => {
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
             try {
-                const { message } = JSON.parse(body);
+                const { message, targetPid } = JSON.parse(body);
                 if (!message) throw new Error("缺少 'message' 字段");
                 if (!activeCdpTargets.has(cdpPort)) throw new Error(`CDP 端口 ${cdpPort} 不可用`);
-                await sendMessageToIde(cdpPort, message);
+                await sendMessageToIde(cdpPort, message, null, targetPid);
                 res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
                 res.end(JSON.stringify({ success: true, message: 'Message sent to IDE' }));
             } catch (e) {
@@ -2640,9 +2679,21 @@ const server = http.createServer(async (req, res) => {
             try {
                 const parsed = JSON.parse(body || '{}');
                 const plName = parsed.pipeline || 'pair_programming';
-                const brainIde  = parsed.brain?.ide?.trim();
-                const workerIde = parsed.worker?.ide?.trim();
+                let brainIde  = parsed.brain?.ide?.trim();
+                let workerIde = parsed.worker?.ide?.trim();
                 const initialTask = parsed.initial_task?.trim();
+
+                let brainPid = null;
+                if (brainIde && brainIde.toLowerCase().startsWith('uitty:')) {
+                    brainPid = Number(brainIde.split(':')[1]);
+                    brainIde = 'uitty';
+                }
+
+                let workerPid = null;
+                if (workerIde && workerIde.toLowerCase().startsWith('uitty:')) {
+                    workerPid = Number(workerIde.split(':')[1]);
+                    workerIde = 'uitty';
+                }
                 const cwd = parsed.cwd?.trim();
 
                 const missing = [];
@@ -2759,8 +2810,8 @@ const server = http.createServer(async (req, res) => {
 
                 // orchestra.sh 成功，安全更新 currentPipeline
                 currentPipeline.name   = plName;
-                currentPipeline.brain  = { ide: brainIde, port: brainPort };
-                currentPipeline.worker = { ide: workerIde, port: workerPort };
+                currentPipeline.brain  = { ide: brainIde, port: brainPort, pid: brainPid };
+                currentPipeline.worker = { ide: workerIde, port: workerPort, pid: workerPid };
                 currentPipeline.cwd    = cwd;
                 currentPipeline.warned = false;
                 currentPipeline.lastError = null;
@@ -2799,8 +2850,8 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({
                     ok: true,
                     pipeline: plName,
-                    brain:  { ide: brainIde,  port: brainPort  },
-                    worker: { ide: workerIde, port: workerPort },
+                    brain:  { ide: brainIde,  port: brainPort, pid: brainPid  },
+                    worker: { ide: workerIde, port: workerPort, pid: workerPid },
                     cwd,
                     auto_launch: {
                         brain: brainReady.launched,
@@ -2993,7 +3044,7 @@ const server = http.createServer(async (req, res) => {
                     const sendWithRetry = async (port, prompt, roleName) => {
                         for (let attempt = 1; attempt <= 2; attempt++) {
                             try {
-                                await sendMessageToIde(port, prompt);
+                                await sendMessageToIde(port, prompt, null, isBrainAction ? pl.brain.pid : pl.worker.pid);
                                 // 成功：清除上一次错误
                                 pl.lastError = null;
                                 pl.lastErrorAt = null;
@@ -3214,7 +3265,7 @@ const server = http.createServer(async (req, res) => {
                                     `请直接提交回复，Relay 系统会自动读取你的判定结果并推进状态，绝对不要执行任何 shell 命令。`,
                                 ].join('\n');
                                 try {
-                                    await sendMessageToIde(port, rejectPrompt);
+                                    await sendMessageToIde(port, rejectPrompt, null, isBrainAction ? pl.brain.pid : pl.worker.pid);
                                 } catch (e) {
                                     log(`⚠️ 发送「DONE 被拦」提示失败: ${e.message}`);
                                 }
@@ -3757,7 +3808,7 @@ const WINDSURF_SUBMIT_EXPR = `
  * @param {string} message - 要发送的消息文本
  * @throws {Error} 当目标不可用、无 workbench、或 CDP 操作失败时抛出
  */
-async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null) {
+async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targetPid = null) {
     const targetAppName = activeCdpTargets.get(cdpPort)?.appName || '';
     // 1. 获取 workbench 页面列表
     const pages = await new Promise((resolve, reject) => {
@@ -3800,6 +3851,24 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null) {
 
         ws.on('open', async () => {
             try {
+                if (targetAppName.toLowerCase() === 'uitty' && targetPid) {
+                    const focusExpr = `(function() {
+                        if (!window.tabs) return false;
+                        for (const t of window.tabs) {
+                            for (const p of t.panes) {
+                                if (p.pid === ${targetPid}) {
+                                    window.switchTab(t.id);
+                                    window.focusPane(p.id);
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    })()`;
+                    await cdpCall('Runtime.evaluate', { expression: focusExpr, awaitPromise: true, returnByValue: true });
+                    await new Promise(r => setTimeout(r, 200));
+                }
+
                 if (fixedSessionTitle) {
                     const switchScript = `
                         (async function() {
@@ -4111,6 +4180,13 @@ async function schedulerExecuteTask(task) {
     log(`📅 [${task.id}] 执行第 ${count} 次 → ${task.targetIde}:${task.targetPort || '?'}: ${task.prompt.substring(0, 50)}...`);
 
     try {
+        let targetIdeName = task.targetIde;
+        let targetPid = null;
+        if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
+            targetPid = Number(targetIdeName.split(':')[1]);
+            targetIdeName = 'uitty';
+        }
+
         // 找目标 IDE 的 CDP 端口
         // 策略：
         //   1) targetPort > 0（用户明确选了端口）→ 精确匹配，找不到就跳过，绝不静默降级到别的实例
@@ -4120,7 +4196,7 @@ async function schedulerExecuteTask(task) {
             // 精确匹配模式
             if (activeCdpTargets.has(task.targetPort)) {
                 const t = activeCdpTargets.get(task.targetPort);
-                if (t.appName.toLowerCase() === task.targetIde.toLowerCase()) {
+                if (t.appName.toLowerCase() === targetIdeName.toLowerCase()) {
                     cdpPort = task.targetPort;
                 }
             }
@@ -4131,7 +4207,7 @@ async function schedulerExecuteTask(task) {
         } else {
             // 兼容模式：按名字匹配
             for (const [port, t] of activeCdpTargets) {
-                if (t.appName.toLowerCase() === task.targetIde.toLowerCase()) {
+                if (t.appName.toLowerCase() === targetIdeName.toLowerCase()) {
                     cdpPort = port;
                     break;
                 }
@@ -4142,7 +4218,7 @@ async function schedulerExecuteTask(task) {
             }
         }
 
-        await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle);
+        await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle, targetPid);
         log(`✅ [${task.id}] 执行成功 (第 ${count} 次)`);
     } catch (e) {
         log(`❌ [${task.id}] 执行失败: ${e.message}`);

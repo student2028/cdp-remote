@@ -230,7 +230,7 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private suspend fun fetchIdes(): List<IdeInfo> = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url("$relayBase/targets").build()
+        val request = Request.Builder().url("$relayBase/targets?expandUitty=true").build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string() ?: "{}"
             if (!response.isSuccessful) {

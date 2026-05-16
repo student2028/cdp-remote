@@ -36,6 +36,9 @@ class FakeCdpClient : ICdpClient {
     /** 所有 evaluate 调用的参数记录 */
     val evaluateCalls = mutableListOf<String>()
 
+    /** 与 evaluateCalls 对齐的 awaitPromise 标记 */
+    val evaluateAwaitPromiseFlags = mutableListOf<Boolean>()
+
     /** 所有 call 的方法名记录 */
     val callHistory = mutableListOf<String>()
 
@@ -110,6 +113,7 @@ class FakeCdpClient : ICdpClient {
 
     override suspend fun evaluate(expression: String, awaitPromise: Boolean): CdpResult<String?> {
         evaluateCalls.add(expression)
+        evaluateAwaitPromiseFlags.add(awaitPromise)
         callHistory.add("Runtime.evaluate")
         return evaluateHandler?.invoke(expression) ?: evaluateResult
     }

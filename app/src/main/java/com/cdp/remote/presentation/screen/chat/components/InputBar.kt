@@ -142,6 +142,15 @@ fun ActionToolbar(
                     iconColor = Color(0xFFE53935),
                     onClick = onUittyCloseTab
                 )
+                if (showGlobalRuleButton) {
+                    ToolbarBtn(
+                        icon = Icons.Default.Tune,
+                        label = "全局",
+                        enabled = isConnected,
+                        iconColor = Color(0xFF7E57C2),
+                        onClick = onGlobalRule
+                    )
+                }
             } else {
                 // ── 标准 IDE 工具栏 ──
                 // 历史会话列表（原悬浮按钮，合并到工具栏首位）
