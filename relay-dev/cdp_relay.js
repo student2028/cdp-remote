@@ -3510,9 +3510,7 @@ async function monitorLoop() {
 
 function log(msg) {
     const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-    const line = `[${ts}] ${msg}`;
-    console.log(line);
-    try { require('fs').appendFileSync('/tmp/my_cdp.log', line + '\\n'); } catch (e) {}
+    console.log(`[${ts}] ${msg}`);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -3825,7 +3823,7 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
 
     let wb = pages.find(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
     if (!wb && targetAppName.toLowerCase() === 'uitty') {
-        wb = pages.find(p => p.type === 'page' && p.url && p.url.includes('index.html'));
+        wb = pages.find(p => p.type === 'page' && p.url && (p.title === 'uitty' || p.url.includes('uitty')));
     }
     if (!wb) throw new Error('未找到 workbench 或 uitty 页面');
 
@@ -3873,7 +3871,7 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
                                 if (targetPane) break;
                             }
                         } else {
-                            targetPane = window.tabs.flatMap(t => t.panes).find(p => p.id === window.activePaneId);
+                            targetPane = tabs.flatMap(t => t.panes).find(p => p.id === activePaneId);
                         }
                         if (targetPane && targetPane.ptyId) {
                             window.uitty.write(targetPane.ptyId, ${JSON.stringify(message + '\r')});
