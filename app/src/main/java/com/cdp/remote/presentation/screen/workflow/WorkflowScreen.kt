@@ -259,6 +259,7 @@ fun WorkflowScreen(
                             title = "大脑 · Brain",
                             hint = "派发任务与审查代码",
                             instances = state.availableIdes,
+                            selectedIde = state.brainIde,
                             selectedPort = state.brainSelectedPort,
                             isLoading = state.isLoadingIdes,
                             onSelect = viewModel::updateBrainIde,
@@ -270,6 +271,7 @@ fun WorkflowScreen(
                             title = "工人 · Worker",
                             hint = "接收任务并提交代码",
                             instances = state.availableIdes,
+                            selectedIde = state.workerIde,
                             selectedPort = state.workerSelectedPort,
                             isLoading = state.isLoadingIdes,
                             onSelect = viewModel::updateWorkerIde,
@@ -463,11 +465,11 @@ private fun StatusCard(state: WorkflowUiState) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         state.activeBrainIde?.let { brain ->
-                            val s = ideStyles[brain] ?: defaultIdeStyle
+                            val s = ideStyles[brain.substringBefore(":")] ?: defaultIdeStyle
                             IdeRoleBadge("🧠", brain, s.icon, s.color)
                         }
                         state.activeWorkerIde?.let { worker ->
-                            val s = ideStyles[worker] ?: defaultIdeStyle
+                            val s = ideStyles[worker.substringBefore(":")] ?: defaultIdeStyle
                             IdeRoleBadge("👷", worker, s.icon, s.color)
                         }
                     }
@@ -961,6 +963,7 @@ private fun RoleSelectorSection(
     title: String,
     hint: String,
     instances: List<IdeInfo>,
+    selectedIde: String,
     selectedPort: Int,
     isLoading: Boolean,
     onSelect: (IdeInfo) -> Unit,
@@ -999,7 +1002,7 @@ private fun RoleSelectorSection(
                                 IdeChip(
                                     info = info,
                                     showPort = showPort,
-                                    selected = selectedPort == info.port,
+                                    selected = selectedIde == info.name && selectedPort == info.port,
                                     onClick = { if (enabled) onSelect(info) },
                                     modifier = Modifier.fillMaxWidth(),
                                 )
@@ -1023,7 +1026,7 @@ private fun IdeChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val style = ideStyles[info.name] ?: defaultIdeStyle
+    val style = ideStyles[info.name.substringBefore(":")] ?: defaultIdeStyle
     val label = if (showPort) "${info.name} :${info.port}" else info.name
     val bg = if (selected) style.color.copy(alpha = 0.06f) else MaterialTheme.colorScheme.surface
     val border = if (selected) style.color.copy(alpha = 0.68f) else subtleBorder

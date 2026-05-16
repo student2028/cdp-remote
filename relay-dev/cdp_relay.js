@@ -1914,9 +1914,9 @@ const server = http.createServer(async (req, res) => {
                 if (expandUitty && t.appName.toLowerCase() === 'uitty') {
                     try {
                         const panesExpr = `(function(){
-                            if (!window.tabs) return [];
+                            if (typeof tabs === 'undefined') return [];
                             let res = [];
-                            window.tabs.forEach(tab => tab.panes.forEach(p => {
+                            tabs.forEach(tab => tab.panes.forEach(p => {
                                 if (p.pid) res.push({ pid: p.pid, title: tab.label || 'zsh', cwd: p.cachedCwd });
                             }));
                             return res;
@@ -3510,7 +3510,9 @@ async function monitorLoop() {
 
 function log(msg) {
     const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-    console.log(`[${ts}] ${msg}`);
+    const line = `[${ts}] ${msg}`;
+    console.log(line);
+    try { require('fs').appendFileSync('/tmp/my_cdp.log', line + '\\n'); } catch (e) {}
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -3821,8 +3823,11 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
         }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
     });
 
-    const wb = pages.find(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
-    if (!wb) throw new Error('未找到 workbench 页面');
+    let wb = pages.find(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
+    if (!wb && targetAppName.toLowerCase() === 'uitty') {
+        wb = pages.find(p => p.type === 'page' && p.url && p.url.includes('index.html'));
+    }
+    if (!wb) throw new Error('未找到 workbench 或 uitty 页面');
 
     // 2. 建立 WebSocket 并发送消息
     const wsUrl = wb.webSocketDebuggerUrl;
@@ -3851,22 +3856,39 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
 
         ws.on('open', async () => {
             try {
-                if (targetAppName.toLowerCase() === 'uitty' && targetPid) {
-                    const focusExpr = `(function() {
-                        if (!window.tabs) return false;
-                        for (const t of window.tabs) {
-                            for (const p of t.panes) {
-                                if (p.pid === ${targetPid}) {
-                                    window.switchTab(t.id);
-                                    window.focusPane(p.id);
-                                    return true;
+                if (targetAppName.toLowerCase() === 'uitty') {
+                    const writeExpr = `(function() {
+                        if (typeof tabs === 'undefined') return false;
+                        let targetPane = null;
+                        if (${targetPid ? 'true' : 'false'}) {
+                            for (const t of tabs) {
+                                for (const p of t.panes) {
+                                    if (p.pid === ${targetPid}) {
+                                        switchTab(t.id);
+                                        focusPane(p.id);
+                                        targetPane = p;
+                                        break;
+                                    }
                                 }
+                                if (targetPane) break;
                             }
+                        } else {
+                            targetPane = window.tabs.flatMap(t => t.panes).find(p => p.id === window.activePaneId);
+                        }
+                        if (targetPane && targetPane.ptyId) {
+                            window.uitty.write(targetPane.ptyId, ${JSON.stringify(message + '\r')});
+                            return true;
                         }
                         return false;
                     })()`;
-                    await cdpCall('Runtime.evaluate', { expression: focusExpr, awaitPromise: true, returnByValue: true });
-                    await new Promise(r => setTimeout(r, 200));
+                    const res = await cdpCall('Runtime.evaluate', { expression: writeExpr, awaitPromise: true, returnByValue: true });
+                    if (!res?.result?.value) {
+                        throw new Error('Uitty 注入失败：未找到指定进程的面板');
+                    }
+                    clearTimeout(globalTimer);
+                    ws.close();
+                    resolve();
+                    return;
                 }
 
                 if (fixedSessionTitle) {

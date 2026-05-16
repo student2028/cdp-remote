@@ -192,7 +192,7 @@ private fun IdeStatusSection(ides: List<IdeInfo>, isLoading: Boolean) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ides.forEach { ide ->
-                    val style = ideStyles[ide.name] ?: defaultStyle
+                    val style = ideStyles[ide.name.substringBefore(":")] ?: defaultStyle
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -256,7 +256,7 @@ private fun TaskCard(
     onTrigger: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val style = ideStyles[task.targetIde] ?: defaultStyle
+    val style = ideStyles[task.targetIde.substringBefore(":")] ?: defaultStyle
     val isPaused = task.paused
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -511,7 +511,7 @@ private fun TaskCreateSheet(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         row.forEach { ide ->
-                            val style = ideStyles[ide.name] ?: defaultStyle
+                            val style = ideStyles[ide.name.substringBefore(":")] ?: defaultStyle
                             val isSelected = draft.targetIde == ide.name && draft.targetPort == ide.port
                             Card(
                                 modifier = Modifier
