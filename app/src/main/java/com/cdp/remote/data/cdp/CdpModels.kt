@@ -92,6 +92,12 @@ data class CdpResponse(
     val isSuccess: Boolean get() = error == null
 }
 
+// ─── Utility Functions ──────────────────────────────────────────────
+
+/** URL 指向本地服务（localhost / 127.0.0.1），DSME / Claude Code 的主 UI 通过此判断 */
+fun isLocalHostPage(url: String): Boolean =
+    url.startsWith("http://localhost:") || url.startsWith("http://127.0.0.1:")
+
 // ─── Data Classes ───────────────────────────────────────────────────
 
 data class CdpPage(
@@ -120,8 +126,8 @@ data class CdpPage(
         get() = type == "page" && "jetski" !in url && (
             "workbench.html" in url
             || url.startsWith("app://")  // Codex 用 app://-/index.html
-            || appType == ElectronAppType.CLAUDE_CODE  // Simple Code GUI (localhost:5173)
-            || appType == ElectronAppType.DSME // DSME (localhost:5173)
+            || (appType == ElectronAppType.CLAUDE_CODE && isLocalHostPage(url))  // Claude Code (localhost:5173)
+            || appType == ElectronAppType.DSME // DSME: blanket —— BrowserView 页面需保留给 TV/Live 截图
             || appType == ElectronAppType.UITTY // uitty WASM Terminal
         )
 

@@ -25,7 +25,7 @@
     "url": "https://github.com/student2028/cdp-remote.git"
   },
   "dependencies": {
-    "ws": "^8.20.0"
+    "ws": "^8.20.1"
   },
   "engines": {
     "node": ">=16.0.0"

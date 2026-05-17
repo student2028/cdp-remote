@@ -2047,13 +2047,33 @@ class ChatViewModel(
         tvJob = viewModelScope.launch {
             while (isActive && uiState.tvMode) {
                 try {
-                    val result = cdpClient.captureScreenshot(uiState.tvQuality)
-                    if (result is CdpResult.Success) {
+                    var electronScreenshot: ByteArray? = null
+                    if (uiState.appName.lowercase().contains("dsme")) {
+                        val electronCapture = cdpClient.evaluate("window.electronAPI && window.electronAPI.captureWindow ? window.electronAPI.captureWindow() : null", awaitPromise = true)
+                        if (electronCapture is CdpResult.Success && !electronCapture.data.isNullOrBlank() && electronCapture.data != "null") {
+                            val dataUrl = electronCapture.data.removeSurrounding("\"")
+                            if (dataUrl.startsWith("data:image")) {
+                                val base64 = dataUrl.substringAfter(",")
+                                electronScreenshot = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                            }
+                        }
+                    }
+
+                    if (electronScreenshot != null) {
                         uiState = uiState.copy(
-                            tvFrame = result.data,
-                            tvBytesTotal = uiState.tvBytesTotal + result.data.size,
+                            tvFrame = electronScreenshot,
+                            tvBytesTotal = uiState.tvBytesTotal + electronScreenshot.size,
                             tvFrameCount = uiState.tvFrameCount + 1
                         )
+                    } else {
+                        val result = cdpClient.captureScreenshot(uiState.tvQuality)
+                        if (result is CdpResult.Success) {
+                            uiState = uiState.copy(
+                                tvFrame = result.data,
+                                tvBytesTotal = uiState.tvBytesTotal + result.data.size,
+                                tvFrameCount = uiState.tvFrameCount + 1
+                            )
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "TV 截图失败: ${e.message}")
