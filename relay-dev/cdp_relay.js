@@ -4049,6 +4049,7 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
 const SCHEDULER_FILE = path.join(CWD_HISTORY_DIR, 'scheduler_tasks.json');
 const activeTimers = new Map(); // taskId → { timer, config }
 const taskExecCounts = new Map(); // taskId → count
+const taskCurrentStage = new Map(); // taskId → current stage index (-1 = idle)
 
 /** 加载持久化的任务 */
 function schedulerLoadTasks() {
@@ -4075,7 +4076,9 @@ function schedulerListTasks() {
         ...t,
         isRunning: activeTimers.has(t.id),
         paused: t.paused || false,
-        executionCount: taskExecCounts.get(t.id) || 0
+        executionCount: taskExecCounts.get(t.id) || 0,
+        pipeline: t.pipeline || [],
+        currentStage: taskCurrentStage.get(t.id) ?? -1
     }));
 }
 
@@ -4101,6 +4104,7 @@ function schedulerUpsertTask(task) {
         scheduleType: task.scheduleType,
         intervalMinutes: task.intervalMinutes,
         cronExpression: task.cronExpression || '',
+        pipeline: Array.isArray(task.pipeline) && task.pipeline.length > 0 ? task.pipeline : [],
         paused: false,
         createdAt: task.createdAt || new Date().toISOString()
     };
@@ -4110,8 +4114,10 @@ function schedulerUpsertTask(task) {
     // 启动定时器
     schedulerStartTimer(savedTask);
     taskExecCounts.set(task.id, 0);
+    taskCurrentStage.set(task.id, -1);
 
-    log(`📅 调度任务已创建: ${task.id} → ${task.targetIde}:${task.targetPort || '?'} (${task.scheduleType === 'CRON' ? 'cron: ' + task.cronExpression : '每 ' + task.intervalMinutes + ' 分钟'})`);
+    const pipelineLabel = savedTask.pipeline.length > 0 ? ` (流水线: ${savedTask.pipeline.length} 阶段)` : '';
+    log(`📅 调度任务已创建: ${task.id} → ${task.targetIde}:${task.targetPort || '?'} (${task.scheduleType === 'CRON' ? 'cron: ' + task.cronExpression : '每 ' + task.intervalMinutes + ' 分钟'})${pipelineLabel}`);
     return { success: true, task: { ...savedTask, isRunning: true, executionCount: 0 } };
 }
 
@@ -4208,45 +4214,69 @@ function schedulerStartCronTimer(task) {
 async function schedulerExecuteTask(task) {
     const count = (taskExecCounts.get(task.id) || 0) + 1;
     taskExecCounts.set(task.id, count);
+
+    // 流水线模式
+    if (Array.isArray(task.pipeline) && task.pipeline.length >= 2) {
+        log(`📅 [${task.id}] 流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段) → ${task.targetIde}:${task.targetPort || '?'}`);
+        for (let stageIdx = 0; stageIdx < task.pipeline.length; stageIdx++) {
+            // 检查任务是否已被取消
+            if (!activeTimers.has(task.id)) {
+                log(`⚠️ [${task.id}] 流水线在阶段 ${stageIdx + 1} 前被取消`);
+                taskCurrentStage.set(task.id, -1);
+                return;
+            }
+
+            const stage = task.pipeline[stageIdx];
+            taskCurrentStage.set(task.id, stageIdx);
+
+            // 前置等待
+            if (stage.delayMinutes && stage.delayMinutes > 0) {
+                log(`⏱ [${task.id}] 阶段 ${stageIdx + 1}: 等待 ${stage.delayMinutes} 分钟...`);
+                await new Promise(r => setTimeout(r, stage.delayMinutes * 60 * 1000));
+                // 等待后再次检查是否已取消
+                if (!activeTimers.has(task.id)) {
+                    log(`⚠️ [${task.id}] 流水线在阶段 ${stageIdx + 1} 等待后被取消`);
+                    taskCurrentStage.set(task.id, -1);
+                    return;
+                }
+            }
+
+            log(`📅 [${task.id}] 执行阶段 ${stageIdx + 1}/${task.pipeline.length}${stage.model ? ` (模型: ${stage.model})` : ''}: ${stage.prompt.substring(0, 50)}...`);
+
+            try {
+                // 查找 CDP 端口
+                const cdpPort = schedulerFindCdpPort(task);
+                if (!cdpPort) {
+                    log(`⚠️ [${task.id}] IDE ${task.targetIde}:${task.targetPort || '?'} 不在线，跳过本轮`);
+                    taskCurrentStage.set(task.id, -1);
+                    return;
+                }
+
+                // 发送消息
+                await sendMessageToIde(cdpPort, stage.prompt, task.fixedSessionTitle, null);
+                log(`✅ [${task.id}] 阶段 ${stageIdx + 1} 执行成功`);
+            } catch (e) {
+                log(`❌ [${task.id}] 阶段 ${stageIdx + 1} 执行失败: ${e.message}`);
+                // 流水线中某个阶段失败不中断，继续执行下一阶段
+            }
+        }
+        taskCurrentStage.set(task.id, -1);
+        log(`✅ [${task.id}] 流水线第 ${count} 轮全部完成`);
+        return;
+    }
+
+    // 单任务模式（原逻辑）
     log(`📅 [${task.id}] 执行第 ${count} 次 → ${task.targetIde}:${task.targetPort || '?'}: ${task.prompt.substring(0, 50)}...`);
 
     try {
-        let targetIdeName = task.targetIde;
+        const cdpPort = schedulerFindCdpPort(task);
+        if (!cdpPort) return;
+
         let targetPid = null;
+        let targetIdeName = task.targetIde;
         if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
             targetPid = Number(targetIdeName.split(':')[1]);
             targetIdeName = 'uitty';
-        }
-
-        // 找目标 IDE 的 CDP 端口
-        // 策略：
-        //   1) targetPort > 0（用户明确选了端口）→ 精确匹配，找不到就跳过，绝不静默降级到别的实例
-        //   2) targetPort == 0（旧任务 / 未指定端口）→ 按 IDE 名字匹配第一个在线实例
-        let cdpPort = null;
-        if (task.targetPort && task.targetPort > 0) {
-            // 精确匹配模式
-            if (activeCdpTargets.has(task.targetPort)) {
-                const t = activeCdpTargets.get(task.targetPort);
-                if (t.appName.toLowerCase() === targetIdeName.toLowerCase()) {
-                    cdpPort = task.targetPort;
-                }
-            }
-            if (!cdpPort) {
-                log(`⚠️ [${task.id}] IDE ${task.targetIde}:${task.targetPort} 不在线，跳过（不会降级到其他实例）`);
-                return;
-            }
-        } else {
-            // 兼容模式：按名字匹配
-            for (const [port, t] of activeCdpTargets) {
-                if (t.appName.toLowerCase() === targetIdeName.toLowerCase()) {
-                    cdpPort = port;
-                    break;
-                }
-            }
-            if (!cdpPort) {
-                log(`⚠️ [${task.id}] IDE ${task.targetIde} 不在线，跳过`);
-                return;
-            }
         }
 
         await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle, targetPid);
@@ -4254,6 +4284,42 @@ async function schedulerExecuteTask(task) {
     } catch (e) {
         log(`❌ [${task.id}] 执行失败: ${e.message}`);
     }
+}
+
+/** 查找任务对应的 CDP 端口（抽取公共逻辑） */
+function schedulerFindCdpPort(task) {
+    let targetIdeName = task.targetIde;
+    let targetPid = null;
+    if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
+        targetPid = Number(targetIdeName.split(':')[1]);
+        targetIdeName = 'uitty';
+    }
+
+    let cdpPort = null;
+    if (task.targetPort && task.targetPort > 0) {
+        if (activeCdpTargets.has(task.targetPort)) {
+            const t = activeCdpTargets.get(task.targetPort);
+            if (t.appName.toLowerCase() === targetIdeName.toLowerCase()) {
+                cdpPort = task.targetPort;
+            }
+        }
+        if (!cdpPort) {
+            log(`⚠️ [${task.id}] IDE ${task.targetIde}:${task.targetPort} 不在线，跳过（不会降级到其他实例）`);
+            return null;
+        }
+    } else {
+        for (const [port, t] of activeCdpTargets) {
+            if (t.appName.toLowerCase() === targetIdeName.toLowerCase()) {
+                cdpPort = port;
+                break;
+            }
+        }
+        if (!cdpPort) {
+            log(`⚠️ [${task.id}] IDE ${task.targetIde} 不在线，跳过`);
+            return null;
+        }
+    }
+    return cdpPort;
 }
 
 // ─── Cron 解析器 ───────────────────────────────────────────────

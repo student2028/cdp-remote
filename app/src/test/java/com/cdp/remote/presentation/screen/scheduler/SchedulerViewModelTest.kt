@@ -322,4 +322,104 @@ class SchedulerViewModelTest {
         assertFalse(afterPause[1].paused) // t2 不受影响
         assertTrue(afterPause[1].isRunning)
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 流水线解析
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    fun `parse task with pipeline stages`() {
+        val json = """{
+            "tasks":[{
+                "id":"task-pipe","targetIde":"Antigravity","targetPort":9333,
+                "prompt":"写代码","scheduleType":"INTERVAL","intervalMinutes":30,
+                "isRunning":true,"paused":false,"executionCount":2,
+                "pipeline":[
+                    {"prompt":"请实现用户登录功能","model":"","delayMinutes":0},
+                    {"prompt":"请审查上面的代码变更","model":"claude-4-opus","delayMinutes":5}
+                ],
+                "currentStage":1
+            }]
+        }"""
+        val tasks = SchedulerViewModel.parseTasksJson(json)
+        assertEquals(1, tasks.size)
+        val t = tasks[0]
+        assertEquals("task-pipe", t.id)
+        assertEquals(2, t.pipeline.size)
+        // Stage 1
+        assertEquals("请实现用户登录功能", t.pipeline[0].prompt)
+        assertEquals("", t.pipeline[0].model)
+        assertEquals(0, t.pipeline[0].delayMinutes)
+        // Stage 2
+        assertEquals("请审查上面的代码变更", t.pipeline[1].prompt)
+        assertEquals("claude-4-opus", t.pipeline[1].model)
+        assertEquals(5, t.pipeline[1].delayMinutes)
+        // currentStage
+        assertEquals(1, t.currentStage)
+    }
+
+    @Test
+    fun `parse task without pipeline defaults to empty`() {
+        val json = """{
+            "tasks":[{
+                "id":"task-old","targetIde":"Windsurf","prompt":"hello",
+                "scheduleType":"INTERVAL","intervalMinutes":5,
+                "isRunning":true,"paused":false,"executionCount":0
+            }]
+        }"""
+        val tasks = SchedulerViewModel.parseTasksJson(json)
+        assertEquals(1, tasks.size)
+        assertTrue(tasks[0].pipeline.isEmpty())
+        assertEquals(-1, tasks[0].currentStage)
+    }
+
+    @Test
+    fun `parse task with empty pipeline array`() {
+        val json = """{
+            "tasks":[{
+                "id":"task-empty","targetIde":"Cursor","prompt":"test",
+                "scheduleType":"INTERVAL","intervalMinutes":10,
+                "isRunning":false,"paused":false,"executionCount":0,
+                "pipeline":[]
+            }]
+        }"""
+        val tasks = SchedulerViewModel.parseTasksJson(json)
+        assertTrue(tasks[0].pipeline.isEmpty())
+    }
+
+    @Test
+    fun `parse pipeline stage with missing model defaults to empty`() {
+        val json = """{
+            "tasks":[{
+                "id":"t1","targetIde":"W","prompt":"x",
+                "scheduleType":"INTERVAL","intervalMinutes":5,
+                "isRunning":true,"paused":false,"executionCount":0,
+                "pipeline":[
+                    {"prompt":"do something","delayMinutes":0},
+                    {"prompt":"review","delayMinutes":3}
+                ]
+            }]
+        }"""
+        val tasks = SchedulerViewModel.parseTasksJson(json)
+        assertEquals(2, tasks[0].pipeline.size)
+        assertEquals("", tasks[0].pipeline[0].model)
+        assertEquals("", tasks[0].pipeline[1].model)
+    }
+
+    @Test
+    fun `TaskDraft pipeline default has 2 stages`() {
+        val d = TaskDraft()
+        assertFalse(d.pipelineEnabled)
+        assertEquals(2, d.pipeline.size)
+        assertEquals(0, d.pipeline[0].delayMinutes)
+        assertEquals(5, d.pipeline[1].delayMinutes)
+    }
+
+    @Test
+    fun `PipelineStage default values`() {
+        val s = PipelineStage()
+        assertEquals("", s.prompt)
+        assertEquals("", s.model)
+        assertEquals(0, s.delayMinutes)
+    }
 }

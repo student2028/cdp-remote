@@ -93,7 +93,12 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
             scheduleType = task.scheduleType,
             intervalMinutes = task.intervalMinutes,
             fixedSessionTitle = task.fixedSessionTitle,
-            cronExpression = task.cronExpression
+            cronExpression = task.cronExpression,
+            pipelineEnabled = task.pipeline.isNotEmpty(),
+            pipeline = if (task.pipeline.isNotEmpty()) task.pipeline else listOf(
+                PipelineStage(prompt = "", model = "", delayMinutes = 0),
+                PipelineStage(prompt = "", model = "", delayMinutes = 5)
+            )
         ))
     }
 
@@ -107,10 +112,21 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun saveTask() {
         val draft = uiState.editing ?: return
-        if (draft.targetIde.isBlank() || draft.prompt.isBlank()) {
-            uiState = uiState.copy(toastMessage = "请填写目标 IDE 和提示词")
-            return
+
+        // 流水线模式校验
+        if (draft.pipelineEnabled) {
+            val validStages = draft.pipeline.filter { it.prompt.isNotBlank() }
+            if (draft.targetIde.isBlank() || validStages.size < 2) {
+                uiState = uiState.copy(toastMessage = "请填写目标 IDE 和至少两个阶段的提示词")
+                return
+            }
+        } else {
+            if (draft.targetIde.isBlank() || draft.prompt.isBlank()) {
+                uiState = uiState.copy(toastMessage = "请填写目标 IDE 和提示词")
+                return
+            }
         }
+
         val isEditing = draft.id.isNotBlank()
 
         viewModelScope.launch {
@@ -119,11 +135,29 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     if (isEditing) put("id", draft.id)
                     put("targetIde", draft.targetIde)
                     put("targetPort", draft.targetPort)
-                    put("prompt", draft.prompt)
                     put("scheduleType", draft.scheduleType.name)
                     put("intervalMinutes", draft.intervalMinutes)
                     put("cronExpression", draft.cronExpression)
                     put("fixedSessionTitle", draft.fixedSessionTitle)
+
+                    if (draft.pipelineEnabled) {
+                        // 流水线模式：prompt 用第一个阶段的（向后兼容），pipeline 传完整阶段列表
+                        val validStages = draft.pipeline.filter { it.prompt.isNotBlank() }
+                        put("prompt", validStages.firstOrNull()?.prompt ?: "")
+                        val pipelineArr = org.json.JSONArray()
+                        for (stage in validStages) {
+                            pipelineArr.put(JSONObject().apply {
+                                put("prompt", stage.prompt)
+                                put("model", stage.model)
+                                put("delayMinutes", stage.delayMinutes)
+                            })
+                        }
+                        put("pipeline", pipelineArr)
+                    } else {
+                        put("prompt", draft.prompt)
+                        // 清空 pipeline
+                        put("pipeline", org.json.JSONArray())
+                    }
                 }
 
                 val result = postJson("$relayBase/scheduler", body.toString())
@@ -263,6 +297,20 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                 val intervalMin = obj.get("intervalMinutes")?.asInt ?: 5
                 val cronExpr = obj.get("cronExpression")?.asString ?: ""
                 val ruleLabel = if (schedType == "CRON") "cron: $cronExpr" else "每 $intervalMin 分钟"
+
+                // 解析 pipeline 阶段
+                val pipelineArr = obj.getAsJsonArray("pipeline")
+                val pipeline = pipelineArr?.mapNotNull { stageEl ->
+                    try {
+                        val stageObj = stageEl.asJsonObject
+                        PipelineStage(
+                            prompt = stageObj.get("prompt")?.asString ?: "",
+                            model = stageObj.get("model")?.asString ?: "",
+                            delayMinutes = stageObj.get("delayMinutes")?.asInt ?: 0
+                        )
+                    } catch (_: Exception) { null }
+                } ?: emptyList()
+
                 ScheduledTaskUi(
                     id = obj.get("id")?.asString ?: "",
                     targetIde = obj.get("targetIde")?.asString ?: "",
@@ -275,7 +323,9 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     scheduleType = if (schedType == "CRON") ScheduleType.CRON else ScheduleType.INTERVAL,
                     isRunning = obj.get("isRunning")?.asBoolean ?: false,
                     paused = obj.get("paused")?.asBoolean ?: false,
-                    executionCount = obj.get("executionCount")?.asInt ?: 0
+                    executionCount = obj.get("executionCount")?.asInt ?: 0,
+                    pipeline = pipeline,
+                    currentStage = obj.get("currentStage")?.asInt ?: -1
                 )
             }
         }

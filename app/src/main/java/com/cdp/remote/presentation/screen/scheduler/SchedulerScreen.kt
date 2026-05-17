@@ -348,14 +348,77 @@ private fun TaskCard(
                             fontWeight = FontWeight.Medium
                         )
                     }
+                    // 流水线标签
+                    if (task.pipeline.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "🔄 流水线",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isPaused) Color(0xFFB2BEC3) else Color(0xFF6C5CE7),
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (isPaused) Color(0xFFF1F2F6) else Color(0xFFF3F0FF))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "${task.pipeline.size} 个阶段",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isPaused) Color(0xFFB2BEC3) else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        task.prompt,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isPaused) Color(0xFFB2BEC3) else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (task.pipeline.isNotEmpty()) {
+                        // 显示各阶段摘要
+                        task.pipeline.forEachIndexed { idx, stage ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${idx + 1}.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isPaused) Color(0xFFB2BEC3) else Color(0xFF6C5CE7),
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                if (stage.model.isNotBlank()) {
+                                    Text(
+                                        "[${stage.model}]",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isPaused) Color(0xFFB2BEC3) else Color(0xFF00B894),
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                Text(
+                                    stage.prompt,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isPaused) Color(0xFFB2BEC3) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (stage.delayMinutes > 0) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        "⏱${stage.delayMinutes}m",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isPaused) Color(0xFFB2BEC3) else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (idx < task.pipeline.lastIndex) Spacer(modifier = Modifier.height(2.dp))
+                        }
+                    } else {
+                        Text(
+                            task.prompt,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isPaused) Color(0xFFB2BEC3) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     if (task.executionCount > 0) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
@@ -621,17 +684,112 @@ private fun TaskCreateSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ── 提示词 ──
-            Text("提示词", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = draft.prompt,
-                onValueChange = { onUpdate(draft.copy(prompt = it)) },
-                placeholder = { Text("输入要定时发送给 IDE 的指令...") },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
-                maxLines = 6,
-                shape = RoundedCornerShape(12.dp)
-            )
+            // ── 流水线模式开关 ──
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.AccountTree, null,
+                        tint = purpleAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("流水线模式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                }
+                Switch(
+                    checked = draft.pipelineEnabled,
+                    onCheckedChange = { enabled ->
+                        onUpdate(draft.copy(pipelineEnabled = enabled))
+                    },
+                    colors = SwitchDefaults.colors(checkedTrackColor = purpleAccent)
+                )
+            }
+            if (draft.pipelineEnabled) {
+                Text(
+                    "多阶段依次执行，每个阶段可用不同模型和提示词",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (draft.pipelineEnabled) {
+                // ── 流水线阶段编辑 ──
+                draft.pipeline.forEachIndexed { idx, stage ->
+                    PipelineStageEditor(
+                        index = idx,
+                        stage = stage,
+                        canDelete = draft.pipeline.size > 2,
+                        onChange = { updated ->
+                            val newPipeline = draft.pipeline.toMutableList()
+                            newPipeline[idx] = updated
+                            onUpdate(draft.copy(pipeline = newPipeline))
+                        },
+                        onDelete = {
+                            val newPipeline = draft.pipeline.toMutableList()
+                            newPipeline.removeAt(idx)
+                            onUpdate(draft.copy(pipeline = newPipeline))
+                        }
+                    )
+                    if (idx < draft.pipeline.lastIndex) {
+                        // 阶段间连接指示器
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.width(2.dp).height(16.dp)
+                                    .background(Color(0xFFDFE6E9))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            val nextStage = draft.pipeline.getOrNull(idx + 1)
+                            Text(
+                                if (nextStage != null && nextStage.delayMinutes > 0) "↓ 等待 ${nextStage.delayMinutes} 分钟" else "↓",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                // 添加阶段按钮
+                if (draft.pipeline.size < 5) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            val newPipeline = draft.pipeline + PipelineStage(
+                                prompt = "",
+                                model = "",
+                                delayMinutes = 5
+                            )
+                            onUpdate(draft.copy(pipeline = newPipeline))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFDFE6E9))
+                    ) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("添加阶段")
+                    }
+                }
+            } else {
+                // ── 原有单提示词模式 ──
+                Text("提示词", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = draft.prompt,
+                    onValueChange = { onUpdate(draft.copy(prompt = it)) },
+                    placeholder = { Text("输入要定时发送给 IDE 的指令...") },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+                    maxLines = 6,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -645,14 +803,131 @@ private fun TaskCreateSheet(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp)
                 ) { Text("取消") }
+                val canSave = if (draft.pipelineEnabled) {
+                    draft.targetIde.isNotBlank() && draft.pipeline.count { it.prompt.isNotBlank() } >= 2
+                } else {
+                    draft.targetIde.isNotBlank() && draft.prompt.isNotBlank()
+                }
                 Button(
                     onClick = onSave,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp),
-                    enabled = draft.targetIde.isNotBlank() && draft.prompt.isNotBlank(),
+                    enabled = canSave,
                     colors = ButtonDefaults.buttonColors(containerColor = purpleAccent)
                 ) { Text(if (draft.id.isNotBlank()) "保存" else "启动任务", color = Color.White) }
             }
+        }
+    }
+}
+
+// ─── 流水线阶段编辑器 ─────────────────────────────────────────
+
+@Composable
+private fun PipelineStageEditor(
+    index: Int,
+    stage: PipelineStage,
+    canDelete: Boolean,
+    onChange: (PipelineStage) -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp)
+        ) {
+            // 标题行
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(purpleAccent),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "${index + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "阶段 ${index + 1}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                if (canDelete) {
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close, null,
+                            modifier = Modifier.size(16.dp),
+                            tint = Color(0xFFE74C3C)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 模型 + 延迟 (同行)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = stage.model,
+                    onValueChange = { onChange(stage.copy(model = it)) },
+                    label = { Text("模型") },
+                    placeholder = { Text("默认") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                OutlinedTextField(
+                    value = if (stage.delayMinutes > 0) stage.delayMinutes.toString() else "",
+                    onValueChange = { v ->
+                        val n = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                        onChange(stage.copy(delayMinutes = n.coerceIn(0, 120)))
+                    },
+                    label = { Text("前置等待") },
+                    placeholder = { Text("0") },
+                    suffix = { Text("分钟") },
+                    modifier = Modifier.width(120.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 提示词
+            OutlinedTextField(
+                value = stage.prompt,
+                onValueChange = { onChange(stage.copy(prompt = it)) },
+                label = { Text("提示词") },
+                placeholder = { Text(if (index == 0) "例：请实现..." else "例：请审查上面的代码...") },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp),
+                maxLines = 4,
+                shape = RoundedCornerShape(10.dp),
+                textStyle = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }

@@ -24,7 +24,16 @@ data class ScheduledTaskUi(
     val scheduleType: ScheduleType = ScheduleType.INTERVAL,
     val isRunning: Boolean,
     val paused: Boolean = false,
-    val executionCount: Int = 0
+    val executionCount: Int = 0,
+    val pipeline: List<PipelineStage> = emptyList(),
+    val currentStage: Int = -1     // 当前正在执行的阶段（-1 = 空闲）
+)
+
+/** 流水线阶段 */
+data class PipelineStage(
+    val prompt: String = "",
+    val model: String = "",        // 为空 = 使用 IDE 当前默认模型
+    val delayMinutes: Int = 0      // 该阶段执行前等待分钟数
 )
 
 /** 新建/编辑任务时的草稿 */
@@ -36,7 +45,12 @@ data class TaskDraft(
     val scheduleType: ScheduleType = ScheduleType.INTERVAL,
     val intervalMinutes: Int = 5,
     val fixedSessionTitle: String = "",
-    val cronExpression: String = "*/30 * * * *"
+    val cronExpression: String = "*/30 * * * *",
+    val pipelineEnabled: Boolean = false,
+    val pipeline: List<PipelineStage> = listOf(
+        PipelineStage(prompt = "", model = "", delayMinutes = 0),
+        PipelineStage(prompt = "", model = "", delayMinutes = 5)
+    )
 )
 
 enum class ScheduleType { INTERVAL, CRON }
