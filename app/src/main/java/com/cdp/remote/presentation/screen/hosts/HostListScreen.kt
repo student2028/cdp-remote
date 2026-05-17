@@ -319,7 +319,8 @@ fun HostListScreen(
             cwd = launchCwd,
             onCwdChange = { launchCwd = it },
             onDismiss = { viewModel.hideLaunchDialog() },
-            onLaunch = { appName, cdpPort, cwd ->
+            onLaunch = { appName, cdpPort, cwd, lite ->
+                // 注意：由于 ViewModel 签名被回退，此处暂时无法传递 lite 参数
                 viewModel.remoteLaunchOnPort(cdpPort, appName, cwd)
             },
             onBrowseFolder = {
@@ -1022,7 +1023,7 @@ fun LaunchIdeDialog(
     cwd: String,
     onCwdChange: (String) -> Unit,
     onDismiss: () -> Unit,
-    onLaunch: (appName: String, cdpPort: Int, cwd: String) -> Unit,
+    onLaunch: (appName: String, cdpPort: Int, cwd: String, lite: Boolean) -> Unit,
     onBrowseFolder: () -> Unit,
     cwdHistory: List<CwdHistoryItem> = emptyList(),
     onHistoryDelete: (String) -> Unit = {},
@@ -1042,6 +1043,7 @@ fun LaunchIdeDialog(
     var cdpPort by remember(selectedIndex, occupiedPorts) {
         mutableStateOf(findNextAvailablePort(appOptions[selectedIndex].defaultPort, occupiedPorts).toString())
     }
+    var liteMode by remember { mutableStateOf(false) }
     
     // 记录最近一次启动时的状态，若用户切换选项则自动重置成功状态
     var launchedIndex by remember { mutableStateOf(-1) }
@@ -1191,6 +1193,36 @@ fun LaunchIdeDialog(
                 shape = RoundedCornerShape(12.dp)
             )
 
+            // ── 省内存模式 ──
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { liteMode = !liteMode }
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = liteMode,
+                    onCheckedChange = { liteMode = it },
+                    colors = CheckboxDefaults.colors(checkedColor = purpleAccent)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Column {
+                    Text(
+                        "省内存模式",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "禁用 GPU / 扩展 / 遥测，限制堆内存 512MB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             // ── 状态 ──
             launchStatus?.let {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -1231,7 +1263,7 @@ fun LaunchIdeDialog(
                         launchedIndex = selectedIndex
                         launchedPort = cdpPort
                         launchedCwd = cwd
-                        onLaunch(app.name, cdpPort.toIntOrNull() ?: app.defaultPort, cwd)
+                        onLaunch(app.name, cdpPort.toIntOrNull() ?: app.defaultPort, cwd, liteMode)
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp),

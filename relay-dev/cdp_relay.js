@@ -1697,8 +1697,9 @@ async function checkCdpHealthSingle(port) {
  * @param {boolean} opts.force - 用户主动触发
  * @param {number} opts.port - CDP 端口（默认 CDP_PORT）
  * @param {string} opts.appName - 指定应用名（可选，如 'Antigravity'）
+ * @param {boolean} opts.lite - 省内存模式：禁用 GPU、限制堆内存、禁用扩展和遥测
  */
-async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '', cwd = '' } = {}) {
+async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '', cwd = '', lite = false } = {}) {
     const isCodexLaunch = String(appName || '').toLowerCase() === 'codex' || port === 9666;
     if (isCodexLaunch && cwd) ensureCodexWorkspaceRoot(cwd, { activate: true });
 
@@ -1743,6 +1744,15 @@ async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '',
             const PREPROVISIONED_PORTS = [9333, 9334, 9335, 9336, 9666];
             const isPreprovisioned = PREPROVISIONED_PORTS.includes(port);
             const launchArgs = [`--remote-debugging-port=${port}`];
+
+            // ── 省内存模式：注入轻量化启动参数 ──
+            if (lite) {
+                launchArgs.push('--disable-gpu');
+                launchArgs.push('--js-flags=--max-old-space-size=512');
+                launchArgs.push('--disable-extensions');
+                launchArgs.push('--disable-telemetry');
+                log(`🪶 省内存模式已启用: --disable-gpu --max-old-space-size=512 --disable-extensions --disable-telemetry`);
+            }
 
             if (!running && port === 9666 && app.name === 'Codex') {
                 log(`📋 Codex 首实例 (端口 9666)，使用默认配置`);
@@ -2393,6 +2403,7 @@ const server = http.createServer(async (req, res) => {
         const reqPort = parsed.query.port ? parseInt(parsed.query.port) : CDP_PORT;
         const reqApp = String(parsed.query.app || '');
         const reqCwd = String(parsed.query.cwd || '').trim();
+        const reqLite = parsed.query.lite === '1' || parsed.query.lite === 'true';
         const isCodexLaunch = reqApp.toLowerCase() === 'codex' || reqPort === 9666;
         let codexWorkspace = null;
         res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
@@ -2473,7 +2484,7 @@ const server = http.createServer(async (req, res) => {
 
         log(`🚀 /launch: 启动 ${reqApp || '自动检测'} 在端口 :${reqPort}...`);
         if (reqCwd) addCwdHistory(reqCwd, reqApp);
-        const ok = await autoLaunchWithCdp({ force: true, port: reqPort, appName: reqApp, cwd: reqCwd });
+        const ok = await autoLaunchWithCdp({ force: true, port: reqPort, appName: reqApp, cwd: reqCwd, lite: reqLite });
         if (ok) await scanAllCdpPorts();
         res.end(JSON.stringify({ launched: ok, port: reqPort, codexWorkspace }));
         return;
