@@ -1,3 +1,3 @@
-1. uitty 全局规则：读取/写入在 uittyAPI 不可用时自动回退 window.uitty（与 preload rules:* 一致），已加单元测试验证注入脚本。
-2. uitty「全局」弹窗：仅 Claude + OpenCode；保存成功后再关窗；读取失败有系统提示。
-3. uitty 新建 Tab / CLI 左对齐 / TV 左视图 / 附件双 Enter 等行为保持近期版本。
+1. 修复 Codex 用量面板无法展开的问题（适配 Codex 最新 UI 变更 "Usage remaining"）。
+2. 远程启动支持「省内存模式」：启动 IDE 时可勾选，禁用 GPU、扩展和遥测，限制内存占用 512MB。
+3. 内部优化：中继服务支持 lite=1 参数透传。

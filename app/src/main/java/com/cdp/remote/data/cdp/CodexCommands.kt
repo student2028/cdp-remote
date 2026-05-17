@@ -1368,12 +1368,12 @@ class CodexCommands(private val cdp: ICdpClient) {
                             return JSON.stringify({found:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
                         }
                     }
-                    // 备选: 查找包含 "Rate limit" 文字的可点击元素
+                    // 备选: 查找包含 "Rate limit" 或 "Usage remaining" 文字的可点击元素
                     var all = document.querySelectorAll('button, [role="button"]');
                     for (var j = 0; j < all.length; j++) {
                         if (!all[j].offsetParent) continue;
                         var t2 = (all[j].textContent || '').trim();
-                        if (t2.indexOf('Rate limit') >= 0 || t2.indexOf('rate limit') >= 0) {
+                        if (t2.indexOf('Rate limit') >= 0 || t2.indexOf('rate limit') >= 0 || t2.indexOf('Usage remaining') >= 0 || t2.indexOf('usage remaining') >= 0) {
                             var r2 = all[j].getBoundingClientRect();
                             return JSON.stringify({found:true, x:r2.x+r2.width/2, y:r2.y+r2.height/2, text:t2});
                         }
@@ -1393,7 +1393,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                 // 第一次点击：打开 "Continue in" 弹出菜单
                 cdpMouseClick(x, y)
                 delay(500)
-                // 第二次点击：点击菜单中的 "Rate limits remaining" 展开详细用量
+                // 第二次点击：点击菜单中的 "Rate limits remaining" 或 "Usage remaining" 展开详细用量
                 val detail = cdp.evaluate("""
                     (function() {
                         try {
@@ -1401,7 +1401,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                             for (var i = 0; i < els.length; i++) {
                                 if (!els[i].offsetParent) continue;
                                 var t = (els[i].textContent || '').trim();
-                                if (t.indexOf('Rate limit') >= 0 && t.length < 60) {
+                                if ((t.indexOf('Rate limit') >= 0 || t.indexOf('Usage remaining') >= 0) && t.length < 60) {
                                     var r = els[i].getBoundingClientRect();
                                     if (r.width > 0 && r.height > 0) {
                                         return JSON.stringify({found:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
