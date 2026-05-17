@@ -113,9 +113,11 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
     fun saveTask() {
         val draft = uiState.editing ?: return
 
+        // 流水线有效阶段（提前计算，避免重复 filter）
+        val validStages = if (draft.pipelineEnabled) draft.pipeline.filter { it.prompt.isNotBlank() } else emptyList()
+
         // 流水线模式校验
         if (draft.pipelineEnabled) {
-            val validStages = draft.pipeline.filter { it.prompt.isNotBlank() }
             if (draft.targetIde.isBlank() || validStages.size < 2) {
                 uiState = uiState.copy(toastMessage = "请填写目标 IDE 和至少两个阶段的提示词")
                 return
@@ -142,7 +144,6 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
 
                     if (draft.pipelineEnabled) {
                         // 流水线模式：prompt 用第一个阶段的（向后兼容），pipeline 传完整阶段列表
-                        val validStages = draft.pipeline.filter { it.prompt.isNotBlank() }
                         put("prompt", validStages.firstOrNull()?.prompt ?: "")
                         val pipelineArr = org.json.JSONArray()
                         for (stage in validStages) {

@@ -4167,9 +4167,19 @@ function schedulerStartTimer(task) {
     if (task.scheduleType === 'CRON') {
         schedulerStartCronTimer(task);
     } else {
+        // 使用 setTimeout 链式调用代替 setInterval，确保上一轮执行完毕后再计时
+        // （避免流水线长时间执行时与下一轮并发）
         const ms = (task.intervalMinutes || 5) * 60 * 1000;
-        const timer = setInterval(() => schedulerExecuteTask(task), ms);
-        activeTimers.set(task.id, { timer, config: task, type: 'interval' });
+        function scheduleNext() {
+            if (!activeTimers.has(task.id)) return;
+            const timer = setTimeout(async () => {
+                if (!activeTimers.has(task.id)) return;
+                await schedulerExecuteTask(task);
+                scheduleNext(); // 执行完成后才开始下一轮计时
+            }, ms);
+            activeTimers.set(task.id, { timer, config: task, type: 'interval' });
+        }
+        scheduleNext();
     }
 }
 
@@ -4177,8 +4187,7 @@ function schedulerStartTimer(task) {
 function schedulerStopTimer(taskId) {
     const entry = activeTimers.get(taskId);
     if (entry) {
-        if (entry.type === 'interval') clearInterval(entry.timer);
-        else clearTimeout(entry.timer);
+        clearTimeout(entry.timer); // clearTimeout 兼容 clearInterval
         activeTimers.delete(taskId);
     }
 }
@@ -4218,6 +4227,15 @@ async function schedulerExecuteTask(task) {
     // 流水线模式
     if (Array.isArray(task.pipeline) && task.pipeline.length >= 2) {
         log(`📅 [${task.id}] 流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段) → ${task.targetIde}:${task.targetPort || '?'}`);
+
+        // 解析 uitty:pid
+        let targetIdeName = task.targetIde;
+        let targetPid = null;
+        if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
+            targetPid = Number(targetIdeName.split(':')[1]);
+            targetIdeName = 'uitty';
+        }
+
         for (let stageIdx = 0; stageIdx < task.pipeline.length; stageIdx++) {
             // 检查任务是否已被取消
             if (!activeTimers.has(task.id)) {
@@ -4241,6 +4259,14 @@ async function schedulerExecuteTask(task) {
                 }
             }
 
+            // 构建实际发送的 prompt：如果指定了模型，注入模型名前缀
+            let actualPrompt = stage.prompt;
+            if (stage.model && stage.model.trim()) {
+                // 使用 @model 前缀约定，这是 Cursor/Windsurf/Antigravity 等 IDE 通用的模型选择方式
+                actualPrompt = `@${stage.model.trim()} ${stage.prompt}`;
+                log(`🏚 [${task.id}] 阶段 ${stageIdx + 1}: 模型指定 → ${stage.model.trim()}`);
+            }
+
             log(`📅 [${task.id}] 执行阶段 ${stageIdx + 1}/${task.pipeline.length}${stage.model ? ` (模型: ${stage.model})` : ''}: ${stage.prompt.substring(0, 50)}...`);
 
             try {
@@ -4252,8 +4278,8 @@ async function schedulerExecuteTask(task) {
                     return;
                 }
 
-                // 发送消息
-                await sendMessageToIde(cdpPort, stage.prompt, task.fixedSessionTitle, null);
+                // 发送消息（支持 uitty:pid）
+                await sendMessageToIde(cdpPort, actualPrompt, task.fixedSessionTitle, targetPid);
                 log(`✅ [${task.id}] 阶段 ${stageIdx + 1} 执行成功`);
             } catch (e) {
                 log(`❌ [${task.id}] 阶段 ${stageIdx + 1} 执行失败: ${e.message}`);
