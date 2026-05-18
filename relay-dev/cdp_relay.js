@@ -4170,14 +4170,19 @@ function schedulerStartTimer(task) {
         // 使用 setTimeout 链式调用代替 setInterval，确保上一轮执行完毕后再计时
         // （避免流水线长时间执行时与下一轮并发）
         const ms = (task.intervalMinutes || 5) * 60 * 1000;
+        const entry = { timer: null, config: task, type: 'interval' };
+        activeTimers.set(task.id, entry);
         function scheduleNext() {
-            if (!activeTimers.has(task.id)) return;
+            if (activeTimers.get(task.id) !== entry) return;
             const timer = setTimeout(async () => {
-                if (!activeTimers.has(task.id)) return;
-                await schedulerExecuteTask(task);
-                scheduleNext(); // 执行完成后才开始下一轮计时
+                if (activeTimers.get(task.id) !== entry) return;
+                try {
+                    await schedulerExecuteTask(task);
+                } finally {
+                    scheduleNext(); // 执行完成后才开始下一轮计时
+                }
             }, ms);
-            activeTimers.set(task.id, { timer, config: task, type: 'interval' });
+            entry.timer = timer;
         }
         scheduleNext();
     }
@@ -4206,13 +4211,17 @@ function schedulerStartCronTimer(task) {
         const nextMs = cronNextFireTime(spec, now);
         const delay = Math.max(nextMs - now, 1000);
         log(`📅 Cron ${task.id}: 下次触发在 ${Math.round(delay / 1000)}s 后`);
-        const timer = setTimeout(() => {
+        const timer = setTimeout(async () => {
             // 执行前再次检查任务是否仍然活跃
             if (!activeTimers.has(task.id)) return;
-            schedulerExecuteTask(task);
-            // 60s 后再计算下一次（避免同分钟重复触发），用追踪的 timer 替换
-            const cooldownTimer = setTimeout(() => scheduleNext(), 60000);
-            activeTimers.set(task.id, { timer: cooldownTimer, config: task, type: 'cron' });
+            try {
+                await schedulerExecuteTask(task);
+            } finally {
+                if (!activeTimers.has(task.id)) return;
+                // 60s 后再计算下一次（避免同分钟重复触发），用追踪的 timer 替换
+                const cooldownTimer = setTimeout(() => scheduleNext(), 60000);
+                activeTimers.set(task.id, { timer: cooldownTimer, config: task, type: 'cron' });
+            }
         }, delay);
         activeTimers.set(task.id, { timer, config: task, type: 'cron' });
     }
