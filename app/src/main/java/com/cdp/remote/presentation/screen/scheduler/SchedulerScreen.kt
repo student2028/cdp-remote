@@ -419,10 +419,10 @@ private fun TaskCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    if (task.executionCount > 0) {
+                    if (task.executionCount > 0 || task.maxRuns > 0) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "已执行 ${task.executionCount} 次",
+                            if (task.maxRuns > 0) "已执行 ${task.executionCount}/${task.maxRuns} 轮" else "已执行 ${task.executionCount} 轮",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (isPaused) Color(0xFFB2BEC3) else Color(0xFF00B894),
                             fontWeight = FontWeight.Medium
@@ -684,6 +684,24 @@ private fun TaskCreateSheet(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── 最大轮次（可选） ──
+            OutlinedTextField(
+                value = if (draft.maxRuns > 0) draft.maxRuns.toString() else "",
+                onValueChange = { v ->
+                    val n = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                    onUpdate(draft.copy(maxRuns = n.coerceIn(0, 999)))
+                },
+                label = { Text("最大轮次") },
+                placeholder = { Text("不限制") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                supportingText = { Text("整条流水线跑完算 1 轮；0 或留空表示不限制") }
             )
 
             Spacer(modifier = Modifier.height(16.dp))

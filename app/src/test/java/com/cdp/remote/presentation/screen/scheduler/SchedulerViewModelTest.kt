@@ -42,7 +42,7 @@ class SchedulerViewModelTest {
         val json = """{"tasks":[{
             "id":"task-c","targetIde":"Codex","targetPort":9666,
             "prompt":"run test","scheduleType":"CRON","intervalMinutes":5,
-            "cronExpression":"*/15 * * * *","isRunning":true,"paused":false,"executionCount":3
+            "cronExpression":"*/15 * * * *","isRunning":true,"paused":false,"executionCount":3,"maxRuns":7
         }]}"""
         val tasks = SchedulerViewModel.parseTasksJson(json)
         assertEquals(1, tasks.size)
@@ -51,6 +51,7 @@ class SchedulerViewModelTest {
         assertEquals("cron: */15 * * * *", t.ruleLabel)
         assertEquals("*/15 * * * *", t.cronExpression)
         assertEquals(3, t.executionCount)
+        assertEquals(7, t.maxRuns)
     }
 
     @Test

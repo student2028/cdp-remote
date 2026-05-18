@@ -25,6 +25,7 @@ data class ScheduledTaskUi(
     val isRunning: Boolean,
     val paused: Boolean = false,
     val executionCount: Int = 0,
+    val maxRuns: Int = 0,          // 0 = 不限制
     val pipeline: List<PipelineStage> = emptyList(),
     val currentStage: Int = -1     // 当前正在执行的阶段（-1 = 空闲）
 )
@@ -46,6 +47,7 @@ data class TaskDraft(
     val intervalMinutes: Int = 5,
     val fixedSessionTitle: String = "",
     val cronExpression: String = "*/30 * * * *",
+    val maxRuns: Int = 0,          // 0 = 不限制
     val pipelineEnabled: Boolean = false,
     val pipeline: List<PipelineStage> = listOf(
         PipelineStage(prompt = "", model = "", delayMinutes = 0),

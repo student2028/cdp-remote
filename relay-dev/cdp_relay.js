@@ -25,6 +25,7 @@ const fs = require('fs');
 const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
 const { detectAppType } = require('./cdp_target_detection');
 const { executePipelineStages } = require('./scheduler_pipeline');
+const { getCompletedRuns, getMaxRuns, markRunCompleted, shouldSkipScheduledRun } = require('./scheduler_run_limits');
 const otaMeta = require('./ota_meta');
 // 智能检测：如果上层目录有 app/ 和 build/（说明在 git 仓库里），就用上层；否则用当前目录（独立 npm 包）
 const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(__dirname, '..') : __dirname;
@@ -2155,7 +2156,7 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({ error: '任务不存在' }));
                 return;
             }
-            schedulerExecuteTask(task);
+            schedulerExecuteTask({ ...task, __manualTrigger: true });
             res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
             res.end(JSON.stringify({ success: true, id: taskId, triggered: true }));
             return;
@@ -4656,14 +4657,18 @@ function schedulerSaveTasks(tasks) {
 /** 列出所有任务（含运行时信息） */
 function schedulerListTasks() {
     const saved = schedulerLoadTasks();
-    return saved.map(t => ({
-        ...t,
-        isRunning: activeTimers.has(t.id),
-        paused: t.paused || false,
-        executionCount: taskExecCounts.get(t.id) || 0,
-        pipeline: t.pipeline || [],
-        currentStage: taskCurrentStage.get(t.id) ?? -1
-    }));
+    return saved.map(t => {
+        const executionCount = getCompletedRuns(t, taskExecCounts);
+        return {
+            ...t,
+            isRunning: activeTimers.has(t.id),
+            paused: t.paused || false,
+            executionCount,
+            maxRuns: getMaxRuns(t),
+            pipeline: t.pipeline || [],
+            currentStage: taskCurrentStage.get(t.id) ?? -1
+        };
+    });
 }
 
 /** 创建或更新任务 */
@@ -4678,7 +4683,11 @@ function schedulerUpsertTask(task) {
 
     // 更新持久化
     let tasks = schedulerLoadTasks();
+    const existing = tasks.find(t => t.id === task.id);
     tasks = tasks.filter(t => t.id !== task.id);
+    const executionCount = getCompletedRuns(existing || task, taskExecCounts);
+    const maxRuns = getMaxRuns(task);
+    const reachedMaxRuns = maxRuns > 0 && executionCount >= maxRuns;
     const savedTask = {
         id: task.id,
         targetIde: task.targetIde,
@@ -4688,21 +4697,23 @@ function schedulerUpsertTask(task) {
         scheduleType: task.scheduleType,
         intervalMinutes: task.intervalMinutes,
         cronExpression: task.cronExpression || '',
+        maxRuns,
+        executionCount,
         pipeline: Array.isArray(task.pipeline) && task.pipeline.length > 0 ? task.pipeline : [],
-        paused: false,
-        createdAt: task.createdAt || new Date().toISOString()
+        paused: reachedMaxRuns,
+        createdAt: task.createdAt || existing?.createdAt || new Date().toISOString()
     };
     tasks.push(savedTask);
     schedulerSaveTasks(tasks);
 
-    // 启动定时器
-    schedulerStartTimer(savedTask);
-    taskExecCounts.set(task.id, 0);
+    // 启动定时器；如果编辑后已达到最大轮次，则保留为暂停状态。
+    if (!savedTask.paused) schedulerStartTimer(savedTask);
+    taskExecCounts.set(task.id, executionCount);
     taskCurrentStage.set(task.id, -1);
 
     const pipelineLabel = savedTask.pipeline.length > 0 ? ` (流水线: ${savedTask.pipeline.length} 阶段)` : '';
     log(`📅 调度任务已创建: ${task.id} → ${task.targetIde}:${task.targetPort || '?'} (${task.scheduleType === 'CRON' ? 'cron: ' + task.cronExpression : '每 ' + task.intervalMinutes + ' 分钟'})${pipelineLabel}`);
-    return { success: true, task: { ...savedTask, isRunning: true, executionCount: 0 } };
+    return { success: true, task: { ...savedTask, isRunning: !savedTask.paused, executionCount } };
 }
 
 /** 取消任务（彻底删除） */
@@ -4734,6 +4745,12 @@ function schedulerResumeTask(taskId) {
     let tasks = schedulerLoadTasks();
     const task = tasks.find(t => t.id === taskId);
     if (!task) return false;
+    if (shouldSkipScheduledRun(task, taskExecCounts)) {
+        task.paused = true;
+        schedulerSaveTasks(tasks);
+        log(`⏹️ 调度任务 ${taskId} 已达到最大轮次 ${getMaxRuns(task)}，不能恢复`);
+        return false;
+    }
     if (!task.paused && activeTimers.has(taskId)) {
         log(`ℹ️ 调度任务已在运行，跳过重复恢复: ${taskId}`);
         return true;
@@ -4744,6 +4761,39 @@ function schedulerResumeTask(taskId) {
     schedulerStartTimer(task);
     log(`▶️ 调度任务已恢复: ${taskId}`);
     return true;
+}
+
+function schedulerPersistRunCompletion(task) {
+    const result = markRunCompleted(task, taskExecCounts);
+    let tasks = schedulerLoadTasks();
+    const saved = tasks.find(t => t.id === task.id);
+    if (saved) {
+        saved.executionCount = result.completedRuns;
+        if (result.reachedLimit) {
+            saved.paused = true;
+        }
+        schedulerSaveTasks(tasks);
+    }
+    if (result.reachedLimit) {
+        schedulerStopTimer(task.id);
+        taskCurrentStage.set(task.id, -1);
+        log(`⏹️ [${task.id}] 已完成最大轮次 ${result.completedRuns}/${result.maxRuns}，自动停止调度`);
+    }
+    return result;
+}
+
+function schedulerStopAtMaxRuns(task) {
+    const completedRuns = getCompletedRuns(task, taskExecCounts);
+    let tasks = schedulerLoadTasks();
+    const saved = tasks.find(t => t.id === task.id);
+    if (saved) {
+        saved.executionCount = completedRuns;
+        saved.paused = true;
+        schedulerSaveTasks(tasks);
+    }
+    schedulerStopTimer(task.id);
+    taskCurrentStage.set(task.id, -1);
+    log(`⏹️ [${task.id}] 已达到最大轮次 ${completedRuns}/${getMaxRuns(task)}，自动停止调度`);
 }
 
 /** 启动单个任务的定时器 */
@@ -4814,8 +4864,13 @@ function schedulerStartCronTimer(task) {
 
 /** 执行任务：通过 sendMessageToIde 发消息给目标 IDE */
 async function schedulerExecuteTask(task) {
-    const count = (taskExecCounts.get(task.id) || 0) + 1;
-    taskExecCounts.set(task.id, count);
+    if (shouldSkipScheduledRun(task, taskExecCounts)) {
+        schedulerStopAtMaxRuns(task);
+        log(`⏹️ [${task.id}] 已达到最大轮次 ${getCompletedRuns(task, taskExecCounts)}/${getMaxRuns(task)}，跳过执行`);
+        return;
+    }
+
+    const count = getCompletedRuns(task, taskExecCounts) + 1;
 
     // 流水线模式
     if (Array.isArray(task.pipeline) && task.pipeline.length >= 2) {
@@ -4839,7 +4894,9 @@ async function schedulerExecuteTask(task) {
             const result = await executePipelineStages(task, {
                 cdpPort,
                 targetPid,
-                isActive: () => activeTimers.has(task.id),
+                isActive: () => task.__manualTrigger
+                    ? schedulerLoadTasks().some(t => t.id === task.id)
+                    : activeTimers.has(task.id),
                 onStageChange: (idx) => taskCurrentStage.set(task.id, idx),
                 log,
                 switchModel: async ({ model, stageIndex }) => {
@@ -4860,7 +4917,8 @@ async function schedulerExecuteTask(task) {
                 log(`⚠️ [${task.id}] 流水线已取消，已完成 ${result.completedStages}/${task.pipeline.length} 阶段`);
                 return;
             }
-            log(`✅ [${task.id}] 流水线第 ${count} 轮全部完成`);
+            const done = schedulerPersistRunCompletion(task);
+            log(`✅ [${task.id}] 流水线第 ${done.completedRuns} 轮全部完成`);
         } catch (e) {
             taskCurrentStage.set(task.id, -1);
             log(`❌ [${task.id}] 流水线失败，已停止后续阶段: ${e.message}`);
@@ -4883,7 +4941,8 @@ async function schedulerExecuteTask(task) {
         }
 
         await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle, targetPid);
-        log(`✅ [${task.id}] 执行成功 (第 ${count} 次)`);
+        const done = schedulerPersistRunCompletion(task);
+        log(`✅ [${task.id}] 执行成功 (第 ${done.completedRuns} 次)`);
     } catch (e) {
         log(`❌ [${task.id}] 执行失败: ${e.message}`);
     }
@@ -4988,7 +5047,13 @@ function schedulerRestoreAll() {
     if (tasks.length === 0) return;
     log(`📅 恢复 ${tasks.length} 个调度任务...`);
     for (const task of tasks) {
-        taskExecCounts.set(task.id, 0);
+        taskExecCounts.set(task.id, getCompletedRuns(task, taskExecCounts));
+        if (shouldSkipScheduledRun(task, taskExecCounts)) {
+            task.paused = true;
+            schedulerSaveTasks(tasks);
+            log(`   ⏹️ ${task.targetIde}:${task.targetPort || '?'} — 已达到最大轮次 ${getCompletedRuns(task, taskExecCounts)}/${getMaxRuns(task)}`);
+            continue;
+        }
         if (task.paused) {
             log(`   ⏸️ ${task.targetIde}:${task.targetPort || '?'} — 已暂停 — "${task.prompt.substring(0, 40)}..."`);
             continue;

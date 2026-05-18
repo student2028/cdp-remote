@@ -94,6 +94,7 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
             intervalMinutes = task.intervalMinutes,
             fixedSessionTitle = task.fixedSessionTitle,
             cronExpression = task.cronExpression,
+            maxRuns = task.maxRuns,
             pipelineEnabled = task.pipeline.isNotEmpty(),
             pipeline = if (task.pipeline.isNotEmpty()) task.pipeline else listOf(
                 PipelineStage(prompt = "", model = "", delayMinutes = 0),
@@ -141,6 +142,7 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     put("intervalMinutes", draft.intervalMinutes)
                     put("cronExpression", draft.cronExpression)
                     put("fixedSessionTitle", draft.fixedSessionTitle)
+                    put("maxRuns", draft.maxRuns)
 
                     if (draft.pipelineEnabled) {
                         // 流水线模式：prompt 用第一个阶段的（向后兼容），pipeline 传完整阶段列表
@@ -325,6 +327,7 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     isRunning = obj.get("isRunning")?.asBoolean ?: false,
                     paused = obj.get("paused")?.asBoolean ?: false,
                     executionCount = obj.get("executionCount")?.asInt ?: 0,
+                    maxRuns = obj.get("maxRuns")?.asInt ?: 0,
                     pipeline = pipeline,
                     currentStage = obj.get("currentStage")?.asInt ?: -1
                 )
