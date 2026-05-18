@@ -33,7 +33,7 @@ data class ScheduledTaskUi(
 data class PipelineStage(
     val prompt: String = "",
     val model: String = "",        // 为空 = 使用 IDE 当前默认模型
-    val delayMinutes: Int = 0      // 该阶段执行前等待分钟数
+    val delayMinutes: Int = 0      // 上一阶段完成后、该阶段执行前额外等待分钟数
 )
 
 /** 新建/编辑任务时的草稿 */

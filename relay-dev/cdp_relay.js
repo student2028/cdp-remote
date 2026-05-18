@@ -24,6 +24,7 @@ const path = require('path');
 const fs = require('fs');
 const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
 const { detectAppType } = require('./cdp_target_detection');
+const { executePipelineStages } = require('./scheduler_pipeline');
 const otaMeta = require('./ota_meta');
 // 智能检测：如果上层目录有 app/ 和 build/（说明在 git 仓库里），就用上层；否则用当前目录（独立 npm 包）
 const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(__dirname, '..') : __dirname;
@@ -322,6 +323,8 @@ const CHECK_INTERVAL = 10000;
 const SCAN_TIMEOUT = 2000;
 const GRACEFUL_EXIT_TIMEOUT_MS = parseInt(process.env.RELAY_GRACEFUL_EXIT_TIMEOUT_MS || '8000', 10);
 const FORCE_KILL_TIMEOUT_MS = parseInt(process.env.RELAY_FORCE_KILL_TIMEOUT_MS || '3000', 10);
+const SCHEDULER_STAGE_TIMEOUT_MS = parseInt(process.env.SCHEDULER_STAGE_TIMEOUT_MS || String(30 * 60 * 1000), 10);
+const SCHEDULER_STAGE_POLL_MS = parseInt(process.env.SCHEDULER_STAGE_POLL_MS || '3000', 10);
 
 const RESTART_BACKOFF_SHORT_MS = parseInt(process.env.RELAY_RESTART_BACKOFF_SHORT_MS || '60000', 10);
 const RESTART_BACKOFF_LONG_MS = parseInt(process.env.RELAY_RESTART_BACKOFF_LONG_MS || String(5 * 60 * 1000), 10);
@@ -3811,6 +3814,587 @@ const WINDSURF_SUBMIT_EXPR = `
     })()
 `;
 
+async function fetchCdpPages(cdpPort) {
+    return new Promise((resolve, reject) => {
+        http.get(`http://${CDP_HOST}:${cdpPort}/json`, { timeout: 5000 }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+            });
+        }).on('error', reject).on('timeout', function () {
+            this.destroy();
+            reject(new Error('timeout'));
+        });
+    });
+}
+
+function selectIdePage(pages, appName = '') {
+    const lower = String(appName || '').toLowerCase();
+    let page = pages.find(p => p.type === 'page' && p.url && p.url.includes('workbench') && !p.url.includes('workbench-jetski'));
+    if (!page && lower === 'uitty') {
+        page = pages.find(p => p.type === 'page' && p.url && (p.title === 'uitty' || p.url.includes('uitty')));
+    }
+    if (!page && (lower === 'dsme' || lower.includes('deepseek'))) {
+        page = pages.find(p => p.type === 'page' && p.url && /^https?:\/\/(localhost|127\.0\.0\.1):/i.test(p.url));
+    }
+    return page || null;
+}
+
+async function withIdeCdp(cdpPort, callback) {
+    const targetAppName = activeCdpTargets.get(cdpPort)?.appName || '';
+    const pages = await fetchCdpPages(cdpPort);
+    const page = selectIdePage(pages, targetAppName);
+    if (!page || !page.webSocketDebuggerUrl) {
+        throw new Error(`未找到 ${targetAppName || 'IDE'} workbench 页面`);
+    }
+
+    const ws = new WebSocket(page.webSocketDebuggerUrl);
+    let msgId = 1;
+    const cdpCall = (method, params, timeoutMs = CDP_TIMEOUT_MS) => {
+        const id = msgId++;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`cdp timeout: ${method}`)), timeoutMs);
+            const handler = d => {
+                const r = JSON.parse(d);
+                if (r.id === id) {
+                    clearTimeout(timer);
+                    ws.removeListener('message', handler);
+                    if (r.error) reject(new Error(r.error.message || method));
+                    else resolve(r.result);
+                }
+            };
+            ws.on('message', handler);
+            ws.send(JSON.stringify({ id, method, params: params || {} }));
+        });
+    };
+
+    await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('WS超时')), 5000);
+        ws.on('open', () => { clearTimeout(timer); resolve(); });
+        ws.on('error', reject);
+    });
+
+    try {
+        return await callback(cdpCall);
+    } finally {
+        try { ws.close(); } catch (_) {}
+    }
+}
+
+function schedulerAppKey(appName) {
+    const lower = String(appName || '').toLowerCase();
+    if (lower.startsWith('uitty:') || lower.includes('uitty')) return 'uitty';
+    if (lower.includes('cursor')) return 'cursor';
+    if (lower.includes('windsurf')) return 'windsurf';
+    if (lower.includes('codex')) return 'codex';
+    if (lower.includes('claude')) return 'claude';
+    if (lower.includes('dsme') || lower.includes('deepseek')) return 'dsme';
+    if (lower.includes('antigravity')) return 'antigravity';
+    return lower || 'unknown';
+}
+
+function parseJsonEvalValue(result, fallback = 'evaluate 无返回值') {
+    const raw = result?.result?.value;
+    if (raw == null) return { ok: false, err: fallback };
+    if (typeof raw === 'object') return raw;
+    try {
+        return JSON.parse(String(raw));
+    } catch (_) {
+        return { ok: false, err: '解析结果失败', raw };
+    }
+}
+
+async function runModelSwitchScript(scriptPath, cdpPort, modelName, env = {}) {
+    if (!fs.existsSync(scriptPath)) {
+        throw new Error(`模型切换脚本不存在: ${scriptPath}`);
+    }
+    try {
+        const { stdout, stderr } = await execFilePromise(
+            process.execPath,
+            [scriptPath, modelName, '--port', String(cdpPort), '--quiet'],
+            { timeout: 60_000, env: { ...process.env, ...env } }
+        );
+        return (stdout || stderr || '').trim();
+    } catch (e) {
+        const detail = (e.stderr || e.stdout || e.message || '').toString().trim();
+        throw new Error(detail || e.message);
+    }
+}
+
+async function switchAntigravityLikeModel(cdpPort, modelName) {
+    const input = String(modelName || '').toLowerCase().trim();
+    const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
+        expression: `
+            (async function() {
+                try {
+                    var input = ${JSON.stringify(input)};
+                    var dropdownXPath = '//*[@id="antigravity.agentSidePanelInputBox"]/div[3]/div[1]/div[3]/div/div/button';
+                    var dropdownEl = document.evaluate(dropdownXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                    if (!dropdownEl) dropdownEl = document.querySelector('button[aria-label^="Select model"]');
+                    if (!dropdownEl) {
+                        var keywords = ['claude', 'gpt', 'gemini', 'opus', 'sonnet', 'haiku', 'o1', 'o3', 'deepseek', 'swe', 'kimi', 'minimax'];
+                        var allBtns = document.querySelectorAll('button');
+                        for (var i = 0; i < allBtns.length; i++) {
+                            if (!allBtns[i].offsetParent) continue;
+                            var t = (allBtns[i].textContent || '').trim().toLowerCase();
+                            for (var k = 0; k < keywords.length; k++) {
+                                if (t.indexOf(keywords[k]) >= 0 && t.length < 60) {
+                                    dropdownEl = allBtns[i];
+                                    break;
+                                }
+                            }
+                            if (dropdownEl) break;
+                        }
+                    }
+                    if (!dropdownEl) return JSON.stringify({ ok:false, err:'找不到模型选择下拉框' });
+                    dropdownEl.click();
+                    await new Promise(function(r) { setTimeout(r, 500); });
+
+                    var btnLabel = function(b) {
+                        return ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
+                    };
+                    var btns = Array.from(document.querySelectorAll('button, [role="menuitem"], [role="option"]'));
+                    var targetBtn = null;
+                    var bestBtn = null;
+                    var maxMatches = 0;
+                    var tokens = input.replace(/[()]/g, '').split(/\\s+/).filter(Boolean);
+                    var available = [];
+
+                    for (var i = 0; i < btns.length; i++) {
+                        if (!btns[i].offsetParent) continue;
+                        var label = btnLabel(btns[i]).replace(/\\s+/g, ' ').trim();
+                        var aria = btns[i].getAttribute('aria-label') || '';
+                        if (aria.startsWith('Select model')) continue;
+                        if (label.length > 1 && label.length < 80) available.push(label);
+                        if (label === input || label.indexOf(input) >= 0) {
+                            targetBtn = btns[i];
+                            break;
+                        }
+                        var matches = 0;
+                        for (var t = 0; t < tokens.length; t++) {
+                            if (label.indexOf(tokens[t]) >= 0) matches++;
+                        }
+                        if (matches > maxMatches && btns[i] !== dropdownEl) {
+                            maxMatches = matches;
+                            bestBtn = btns[i];
+                        }
+                    }
+                    if (!targetBtn && maxMatches > 0) targetBtn = bestBtn;
+                    if (!targetBtn) {
+                        dropdownEl.click();
+                        return JSON.stringify({ ok:false, err:'在列表中找不到匹配的模型: ' + input, available: available.slice(0, 20) });
+                    }
+                    targetBtn.click();
+                    return JSON.stringify({ ok:true, info: (targetBtn.textContent || targetBtn.getAttribute('aria-label') || '').trim() });
+                } catch (e) {
+                    return JSON.stringify({ ok:false, err:e.message });
+                }
+            })()
+        `,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: 60000
+    }, 60_000));
+    const parsed = parseJsonEvalValue(result);
+    if (!parsed.ok) throw new Error(parsed.err || '模型切换失败');
+    return parsed.info || modelName;
+}
+
+async function switchWindsurfModel(cdpPort, modelName) {
+    const input = String(modelName || '').toLowerCase().trim();
+    const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
+        expression: `
+            (async function() {
+                try {
+                    var input = ${JSON.stringify(input)};
+                    var panel = document.getElementById('windsurf.cascadePanel');
+                    if (!panel) return JSON.stringify({ ok:false, err:'找不到 cascadePanel' });
+                    var modelBtn = null;
+                    var precBtns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
+                    for (var pb = 0; pb < precBtns.length; pb++) {
+                        if (!precBtns[pb].offsetParent) continue;
+                        var pt = (precBtns[pb].textContent || '').trim();
+                        if (pt.length > 0 && pt.length < 40) { modelBtn = precBtns[pb]; break; }
+                    }
+                    if (!modelBtn) {
+                        var kw = ['adaptive','claude','gpt','gemini','sonnet','opus','haiku','deepseek','o1','o3','o4','flash','swe','kimi','codestral','mistral','llama','glm','grok','minimax'];
+                        var roots = document.querySelectorAll('[class*="chat-client-root"]');
+                        for (var ri = 0; ri < roots.length && !modelBtn; ri++) {
+                            var rBtns = roots[ri].querySelectorAll('button');
+                            for (var rb = 0; rb < rBtns.length; rb++) {
+                                if (!rBtns[rb].offsetParent) continue;
+                                var rt = (rBtns[rb].textContent || '').trim().toLowerCase();
+                                for (var rk = 0; rk < kw.length; rk++) {
+                                    if (rt.indexOf(kw[rk]) >= 0 && rt.length < 40) { modelBtn = rBtns[rb]; break; }
+                                }
+                                if (modelBtn) break;
+                            }
+                        }
+                    }
+                    if (!modelBtn) return JSON.stringify({ ok:false, err:'找不到模型选择按钮' });
+                    modelBtn.click();
+                    await new Promise(function(r) { setTimeout(r, 500); });
+
+                    var allBtns = panel.querySelectorAll('button');
+                    for (var sm = 0; sm < allBtns.length; sm++) {
+                        if (!allBtns[sm].offsetParent) continue;
+                        if ((allBtns[sm].textContent || '').trim() === 'See more') {
+                            allBtns[sm].click();
+                            await new Promise(function(r) { setTimeout(r, 400); });
+                            break;
+                        }
+                    }
+
+                    var menuItems = panel.querySelectorAll('button[class*="flex"][class*="w-full"][class*="flex-col"]');
+                    var bestMatch = null;
+                    var bestScore = -1;
+                    var available = [];
+                    for (var mi = 0; mi < menuItems.length; mi++) {
+                        var item = menuItems[mi];
+                        if (!item.offsetParent) continue;
+                        var rect = item.getBoundingClientRect();
+                        if (rect.y < 0) continue;
+                        var walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, null, false);
+                        var firstText = '';
+                        var node;
+                        while (node = walker.nextNode()) {
+                            var nt = node.textContent.trim();
+                            if (nt) { firstText = nt; break; }
+                        }
+                        if (!firstText) continue;
+                        var modelName = firstText.toLowerCase();
+                        available.push(firstText);
+                        if (modelName === input) { bestMatch = item; bestScore = 100; break; }
+                        if (modelName.indexOf(input) >= 0 && bestScore < 50) { bestMatch = item; bestScore = 50; }
+                        if (input.indexOf(modelName) >= 0 && bestScore < 40) { bestMatch = item; bestScore = 40; }
+                        if (bestScore < 30) {
+                            var inputWords = input.split(/[\\s\\-\\.]+/).filter(function(w){return w.length>0;});
+                            var nameWords = modelName.split(/[\\s\\-\\.]+/).filter(function(w){return w.length>0;});
+                            var allMatch = inputWords.length > 0;
+                            for (var iw = 0; iw < inputWords.length && allMatch; iw++) {
+                                var found = false;
+                                for (var nw = 0; nw < nameWords.length; nw++) {
+                                    if (nameWords[nw].indexOf(inputWords[iw]) >= 0 || inputWords[iw].indexOf(nameWords[nw]) >= 0) { found = true; break; }
+                                }
+                                if (!found) allMatch = false;
+                            }
+                            if (allMatch) { bestMatch = item; bestScore = 30; }
+                        }
+                    }
+                    if (bestMatch) {
+                        bestMatch.click();
+                        var w2 = document.createTreeWalker(bestMatch, NodeFilter.SHOW_TEXT, null, false);
+                        var clickedName = '';
+                        var n2;
+                        while (n2 = w2.nextNode()) {
+                            var t2 = n2.textContent.trim();
+                            if (t2) { clickedName = t2; break; }
+                        }
+                        return JSON.stringify({ ok:true, info: clickedName || bestMatch.textContent.trim() });
+                    }
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', code:'Escape', bubbles:true }));
+                    return JSON.stringify({ ok:false, err:'找不到匹配模型: ' + input, available: available.slice(0, 20) });
+                } catch (e) {
+                    return JSON.stringify({ ok:false, err:e.message });
+                }
+            })()
+        `,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: 60000
+    }, 60_000));
+    const parsed = parseJsonEvalValue(result);
+    if (!parsed.ok) throw new Error(parsed.err || 'Windsurf 模型切换失败');
+    return parsed.info || modelName;
+}
+
+async function switchCodexModel(cdpPort, modelName) {
+    const input = String(modelName || '').toLowerCase().trim();
+    return withIdeCdp(cdpPort, async (cdpCall) => {
+        const centerResult = await cdpCall('Runtime.evaluate', {
+            expression: `
+                (function(){
+                    function norm(el) { return (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(); }
+                    function visible(el) {
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
+                            r.top < window.innerHeight && r.left < window.innerWidth &&
+                            s.visibility !== 'hidden' && s.display !== 'none';
+                    }
+                    function scoreButton(btn) {
+                        if (!visible(btn)) return -1;
+                        var t = norm(btn).toLowerCase();
+                        var r = btn.getBoundingClientRect();
+                        if (/(automation|project|search|new chat|work locally|branch|copy|chat action|settings?)/.test(t)) return -1;
+                        var hasModel = /\\b(\\d+\\.\\d+|gpt-\\d|codex|o\\d)\\b/.test(t);
+                        var hasLevel = /\\b(extra high|high|medium|low)\\b/.test(t);
+                        if (!hasModel && !hasLevel) return -1;
+                        var score = 0;
+                        if (r.y > window.innerHeight * 0.55) score += 10;
+                        if (hasModel) score += 5;
+                        if (hasLevel) score += 3;
+                        if (btn.getAttribute('aria-haspopup') === 'menu') score += 2;
+                        if (r.width >= 40 && r.width <= 240) score += 1;
+                        return score;
+                    }
+                    var best = null, bestScore = 7;
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        var score = scoreButton(btns[i]);
+                        if (score > bestScore) { best = btns[i]; bestScore = score; }
+                    }
+                    if (!best) return '';
+                    var r = best.getBoundingClientRect();
+                    return r.x + r.width/2 + ',' + (r.y + r.height/2);
+                })()
+            `,
+            returnByValue: true
+        });
+        const center = centerResult?.result?.value || '';
+        if (!String(center).includes(',')) throw new Error('找不到 Codex 模型按钮');
+        const [x, y] = String(center).split(',').map(Number);
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+        await new Promise(r => setTimeout(r, 600));
+
+        const isLevel = ['low', 'medium', 'high', 'extra high'].includes(input);
+        const isSpeed = ['fast', 'standard'].includes(input);
+        if (isLevel) {
+            const posResult = await cdpCall('Runtime.evaluate', {
+                expression: `
+                    (function(){
+                        var input = ${JSON.stringify(input)};
+                        var menus = document.querySelectorAll('[role=menu]');
+                        if (!menus.length) return '';
+                        var spans = menus[0].querySelectorAll('span');
+                        for (var i = 0; i < spans.length; i++) {
+                            if ((spans[i].textContent || '').trim().toLowerCase() === input) {
+                                var r = spans[i].getBoundingClientRect();
+                                return r.x + r.width/2 + ',' + (r.y + r.height/2);
+                            }
+                        }
+                        return '';
+                    })()
+                `,
+                returnByValue: true
+            });
+            const pos = posResult?.result?.value || '';
+            if (!String(pos).includes(',')) throw new Error(`找不到 Codex Intelligence 等级: ${modelName}`);
+            const [tx, ty] = String(pos).split(',').map(Number);
+            await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: tx, y: ty, button: 'left', clickCount: 1 });
+            await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', clickCount: 1 });
+            return modelName;
+        }
+
+        const hoverResult = await cdpCall('Runtime.evaluate', {
+            expression: `
+                (function(){
+                    var isSpeed = ${isSpeed ? 'true' : 'false'};
+                    var menus = document.querySelectorAll('[role=menu]');
+                    for (var i = 0; i < menus.length; i++) {
+                        var spans = menus[i].querySelectorAll('span');
+                        for (var j = 0; j < spans.length; j++) {
+                            var t = (spans[j].textContent || '').trim();
+                            var hit = isSpeed
+                                ? t.toLowerCase() === 'speed'
+                                : (t.match(/^\\d+\\.\\d+/) || t.match(/^GPT-\\d/i) || t.match(/^gpt-\\d/i) || t.match(/^o\\d-/i) || t.match(/^codex/i));
+                            if (hit) {
+                                var r = spans[j].getBoundingClientRect();
+                                return r.x + r.width/2 + ',' + (r.y + r.height/2);
+                            }
+                        }
+                    }
+                    return '';
+                })()
+            `,
+            returnByValue: true
+        });
+        const hoverPos = hoverResult?.result?.value || '';
+        if (!String(hoverPos).includes(',')) throw new Error('Codex 主菜单中找不到模型项');
+        const [mx, my] = String(hoverPos).split(',').map(Number);
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mx, y: my });
+        await new Promise(r => setTimeout(r, 600));
+
+        const targetResult = await cdpCall('Runtime.evaluate', {
+            expression: `
+                (function(){
+                    var input = ${JSON.stringify(input)};
+                    var normalizedInput = input.replace(/^gpt[-\\s]*/i, '').replace(/^openai[-\\s]*/i, '').trim();
+                    var menus = document.querySelectorAll('[role=menu]');
+                    if (menus.length < 2) return JSON.stringify({ err:'子菜单未展开', count:menus.length });
+                    var sub = menus[menus.length - 1];
+                    var spans = sub.querySelectorAll('span');
+                    for (var i = 0; i < spans.length; i++) {
+                        var text = (spans[i].textContent || '').trim();
+                        var t = text.toLowerCase();
+                        var normalizedText = t.replace(/^gpt[-\\s]*/i, '').replace(/^openai[-\\s]*/i, '').trim();
+                        if ((t.indexOf(input) >= 0 || normalizedText.indexOf(normalizedInput) >= 0) &&
+                            t !== 'change model' && t !== 'other models') {
+                            var r = spans[i].getBoundingClientRect();
+                            return JSON.stringify({ ok:true, x:r.x + r.width/2, y:r.y + r.height/2, text:text });
+                        }
+                    }
+                    var avail = [];
+                    for (var j = 0; j < spans.length; j++) {
+                        var a = (spans[j].textContent || '').trim();
+                        if (a.length > 1 && a !== 'Change model') avail.push(a);
+                    }
+                    return JSON.stringify({ err:'子菜单中无匹配', avail:avail });
+                })()
+            `,
+            returnByValue: true
+        });
+        const parsed = parseJsonEvalValue(targetResult);
+        if (!parsed.ok) throw new Error(`${parsed.err || 'Codex 模型切换失败'}${parsed.avail ? ` (可选: ${parsed.avail.join(', ')})` : ''}`);
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: parsed.x, y: parsed.y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: parsed.x, y: parsed.y, button: 'left', clickCount: 1 });
+        return parsed.text || modelName;
+    });
+}
+
+async function schedulerSwitchModel(cdpPort, task, modelName) {
+    const appName = activeCdpTargets.get(cdpPort)?.appName || task.targetIde || '';
+    const appKey = schedulerAppKey(appName);
+    if (!String(modelName || '').trim()) return;
+
+    log(`🎚️ [${task.id}] 切换模型: ${appName}:${cdpPort} → ${modelName}`);
+    let picked = modelName;
+    if (appKey === 'cursor') {
+        const script = path.join(os.homedir(), '.agents', 'skills', 'cursor', 'scripts', 'cursor_switch_model.js');
+        picked = await runModelSwitchScript(script, cdpPort, modelName, { CURSOR_CDP_PORT: String(cdpPort) }) || modelName;
+    } else if (appKey === 'antigravity' || appKey === 'dsme') {
+        picked = await switchAntigravityLikeModel(cdpPort, modelName);
+    } else if (appKey === 'windsurf') {
+        picked = await switchWindsurfModel(cdpPort, modelName);
+    } else if (appKey === 'codex') {
+        picked = await switchCodexModel(cdpPort, modelName);
+    } else if (appKey === 'claude') {
+        await sendMessageToIde(cdpPort, `/model ${modelName}`, task.fixedSessionTitle || null, null);
+        picked = modelName;
+    } else if (appKey === 'uitty') {
+        throw new Error('uitty 终端没有全局模型选择器，不能在调度阶段自动切换模型');
+    } else {
+        throw new Error(`当前 IDE 不支持调度模型切换: ${appName || task.targetIde}`);
+    }
+    log(`✅ [${task.id}] 模型已切换: ${picked}`);
+}
+
+function schedulerGeneratingExpression(appName) {
+    const appKey = schedulerAppKey(appName);
+    if (appKey === 'uitty') return `(function(){ return false; })()`;
+    return `
+        (function() {
+            function flatten(root) {
+                var out = [];
+                function walk(node) {
+                    if (!node) return;
+                    if (node.nodeType === 1) {
+                        out.push(node);
+                        if (node.shadowRoot) walk(node.shadowRoot);
+                    }
+                    for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+                }
+                walk(root);
+                return out;
+            }
+            function docs(d) {
+                var out = [d];
+                var ifr = d.querySelectorAll ? d.querySelectorAll('iframe') : [];
+                for (var i = 0; i < ifr.length; i++) {
+                    try { if (ifr[i].contentDocument) out.push(ifr[i].contentDocument); } catch(e) {}
+                }
+                return out;
+            }
+            var roots = docs(document);
+            for (var di = 0; di < roots.length; di++) {
+                var doc = roots[di];
+                if (!doc || !doc.querySelectorAll) continue;
+                var nodes = flatten(doc);
+                for (var i = 0; i < nodes.length; i++) {
+                    var el = nodes[i];
+                    if (!el.tagName) continue;
+                    var tag = el.tagName.toLowerCase();
+                    var role = el.getAttribute('role') || '';
+                    var cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+                    var isButtonish = tag === 'button' || role === 'button' || cls.indexOf('button') >= 0 || tag.indexOf('button') >= 0;
+                    if (!isButtonish) continue;
+                    if (!el.offsetParent && !(el.getRootNode && el.getRootNode() instanceof ShadowRoot)) continue;
+                    var text = (el.textContent || '').trim().toLowerCase();
+                    var aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    var title = (el.getAttribute('title') || '').toLowerCase();
+                    if (text === 'stop' || text === 'cancel' || text === '停止生成' || text === '停止会话' ||
+                        aria.indexOf('stop') >= 0 || aria.indexOf('cancel') >= 0 || aria.indexOf('停止') >= 0 ||
+                        title.indexOf('stop') >= 0 || cls.indexOf('stop-button') >= 0 || cls.indexOf('cancel-button') >= 0) {
+                        return true;
+                    }
+                    if (['run','allow','approve','continue','yes','always allow','allow once','allow in workspace','approve action','run action'].indexOf(text) >= 0) {
+                        return true;
+                    }
+                }
+                var spinners = doc.querySelectorAll('[class*="animate-spin"], [class*="loading"], [class*="spinner"]');
+                for (var s = 0; s < spinners.length; s++) {
+                    if (spinners[s].offsetParent) return true;
+                }
+            }
+            return false;
+        })()
+    `;
+}
+
+async function isIdeGenerating(cdpPort) {
+    const appName = activeCdpTargets.get(cdpPort)?.appName || '';
+    const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
+        expression: schedulerGeneratingExpression(appName),
+        returnByValue: true
+    }));
+    return result?.result?.value === true;
+}
+
+async function waitForSchedulerStageCompletion(cdpPort, task, stageIndex) {
+    const appName = activeCdpTargets.get(cdpPort)?.appName || task.targetIde || '';
+    if (schedulerAppKey(appName) === 'uitty') {
+        log(`ℹ️ [${task.id}] uitty 无可靠完成检测，阶段 ${stageIndex + 1} 发送后视为完成`);
+        return;
+    }
+
+    const start = Date.now();
+    let sawGenerating = false;
+    let idleTicks = 0;
+    let neverBusyIdleTicks = 0;
+    await new Promise(r => setTimeout(r, 1200));
+
+    while (Date.now() - start < SCHEDULER_STAGE_TIMEOUT_MS) {
+        if (!activeTimers.has(task.id)) {
+            throw new Error('任务已取消');
+        }
+        let generating = false;
+        try {
+            generating = await isIdeGenerating(cdpPort);
+        } catch (e) {
+            log(`⚠️ [${task.id}] 阶段 ${stageIndex + 1}: 检测生成状态失败: ${e.message}`);
+        }
+        if (generating) {
+            sawGenerating = true;
+            idleTicks = 0;
+            neverBusyIdleTicks = 0;
+        } else if (sawGenerating) {
+            idleTicks += 1;
+            if (idleTicks >= 2) return;
+        } else {
+            neverBusyIdleTicks += 1;
+            if (neverBusyIdleTicks >= 3) {
+                log(`ℹ️ [${task.id}] 阶段 ${stageIndex + 1}: 未检测到生成中，连续空闲后视为完成`);
+                return;
+            }
+        }
+        await new Promise(r => setTimeout(r, SCHEDULER_STAGE_POLL_MS));
+    }
+    throw new Error(`阶段 ${stageIndex + 1} 等待完成超时 (${Math.round(SCHEDULER_STAGE_TIMEOUT_MS / 60000)} 分钟)`);
+}
+
 /**
  * 通过 CDP WebSocket 向指定端口的 IDE 发送消息。
  * 被 /cdp/{port}/send 路由和调度引擎共用。
@@ -4245,58 +4829,42 @@ async function schedulerExecuteTask(task) {
             targetIdeName = 'uitty';
         }
 
-        for (let stageIdx = 0; stageIdx < task.pipeline.length; stageIdx++) {
-            // 检查任务是否已被取消
-            if (!activeTimers.has(task.id)) {
-                log(`⚠️ [${task.id}] 流水线在阶段 ${stageIdx + 1} 前被取消`);
-                taskCurrentStage.set(task.id, -1);
+        const cdpPort = schedulerFindCdpPort(task);
+        if (!cdpPort) {
+            taskCurrentStage.set(task.id, -1);
+            return;
+        }
+
+        try {
+            const result = await executePipelineStages(task, {
+                cdpPort,
+                targetPid,
+                isActive: () => activeTimers.has(task.id),
+                onStageChange: (idx) => taskCurrentStage.set(task.id, idx),
+                log,
+                switchModel: async ({ model, stageIndex }) => {
+                    await schedulerSwitchModel(cdpPort, task, model);
+                    log(`✅ [${task.id}] 阶段 ${stageIndex + 1}: 模型就绪 → ${model}`);
+                },
+                sendMessage: async ({ message, stage, stageIndex }) => {
+                    log(`📅 [${task.id}] 执行阶段 ${stageIndex + 1}/${task.pipeline.length}${stage.model ? ` (模型: ${stage.model})` : ''}: ${String(message || '').substring(0, 50)}...`);
+                    await sendMessageToIde(cdpPort, message, task.fixedSessionTitle, targetPid);
+                },
+                waitForCompletion: async ({ stageIndex }) => {
+                    await waitForSchedulerStageCompletion(cdpPort, task, stageIndex);
+                    log(`✅ [${task.id}] 阶段 ${stageIndex + 1} 已完成`);
+                }
+            });
+
+            if (result.cancelled) {
+                log(`⚠️ [${task.id}] 流水线已取消，已完成 ${result.completedStages}/${task.pipeline.length} 阶段`);
                 return;
             }
-
-            const stage = task.pipeline[stageIdx];
-            taskCurrentStage.set(task.id, stageIdx);
-
-            // 前置等待
-            if (stage.delayMinutes && stage.delayMinutes > 0) {
-                log(`⏱ [${task.id}] 阶段 ${stageIdx + 1}: 等待 ${stage.delayMinutes} 分钟...`);
-                await new Promise(r => setTimeout(r, stage.delayMinutes * 60 * 1000));
-                // 等待后再次检查是否已取消
-                if (!activeTimers.has(task.id)) {
-                    log(`⚠️ [${task.id}] 流水线在阶段 ${stageIdx + 1} 等待后被取消`);
-                    taskCurrentStage.set(task.id, -1);
-                    return;
-                }
-            }
-
-            // 构建实际发送的 prompt：如果指定了模型，注入模型名前缀
-            let actualPrompt = stage.prompt;
-            if (stage.model && stage.model.trim()) {
-                // 使用 @model 前缀约定，这是 Cursor/Windsurf/Antigravity 等 IDE 通用的模型选择方式
-                actualPrompt = `@${stage.model.trim()} ${stage.prompt}`;
-                log(`🏚 [${task.id}] 阶段 ${stageIdx + 1}: 模型指定 → ${stage.model.trim()}`);
-            }
-
-            log(`📅 [${task.id}] 执行阶段 ${stageIdx + 1}/${task.pipeline.length}${stage.model ? ` (模型: ${stage.model})` : ''}: ${stage.prompt.substring(0, 50)}...`);
-
-            try {
-                // 查找 CDP 端口
-                const cdpPort = schedulerFindCdpPort(task);
-                if (!cdpPort) {
-                    log(`⚠️ [${task.id}] IDE ${task.targetIde}:${task.targetPort || '?'} 不在线，跳过本轮`);
-                    taskCurrentStage.set(task.id, -1);
-                    return;
-                }
-
-                // 发送消息（支持 uitty:pid）
-                await sendMessageToIde(cdpPort, actualPrompt, task.fixedSessionTitle, targetPid);
-                log(`✅ [${task.id}] 阶段 ${stageIdx + 1} 执行成功`);
-            } catch (e) {
-                log(`❌ [${task.id}] 阶段 ${stageIdx + 1} 执行失败: ${e.message}`);
-                // 流水线中某个阶段失败不中断，继续执行下一阶段
-            }
+            log(`✅ [${task.id}] 流水线第 ${count} 轮全部完成`);
+        } catch (e) {
+            taskCurrentStage.set(task.id, -1);
+            log(`❌ [${task.id}] 流水线失败，已停止后续阶段: ${e.message}`);
         }
-        taskCurrentStage.set(task.id, -1);
-        log(`✅ [${task.id}] 流水线第 ${count} 轮全部完成`);
         return;
     }
 

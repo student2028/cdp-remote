@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node cdp_relay.js",
-    "test": "node workflow_utils.test.js && node workflow_state.test.js && node cdp_target_detection.test.js"
+    "test": "node workflow_utils.test.js && node workflow_state.test.js && node cdp_target_detection.test.js && node scheduler_pipeline.test.js"
   },
   "keywords": [
     "cdp",

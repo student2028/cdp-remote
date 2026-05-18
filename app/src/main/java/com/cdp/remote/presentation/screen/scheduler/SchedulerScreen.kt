@@ -587,7 +587,11 @@ private fun TaskCreateSheet(
                                 colors = CardDefaults.cardColors(containerColor = style.bgColor),
                                 elevation = CardDefaults.cardElevation(if (isSelected) 2.dp else 0.dp),
                                 onClick = {
-                                    onUpdate(draft.copy(targetIde = ide.name, targetPort = ide.port))
+                                    onUpdate(draft.copy(
+                                        targetIde = ide.name,
+                                        targetPort = ide.port,
+                                        pipeline = draft.pipeline.map { it.copy(model = "") }
+                                    ))
                                 }
                             ) {
                                 Column(
@@ -709,7 +713,7 @@ private fun TaskCreateSheet(
             }
             if (draft.pipelineEnabled) {
                 Text(
-                    "多阶段依次执行，每个阶段可用不同模型和提示词",
+                    "多阶段按完成状态串行执行，每个阶段可切换不同模型",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -719,10 +723,12 @@ private fun TaskCreateSheet(
 
             if (draft.pipelineEnabled) {
                 // ── 流水线阶段编辑 ──
+                val modelOptions = schedulerModelOptionsForIde(draft.targetIde)
                 draft.pipeline.forEachIndexed { idx, stage ->
                     PipelineStageEditor(
                         index = idx,
                         stage = stage,
+                        modelOptions = modelOptions,
                         canDelete = draft.pipeline.size > 2,
                         onChange = { updated ->
                             val newPipeline = draft.pipeline.toMutableList()
@@ -826,6 +832,7 @@ private fun TaskCreateSheet(
 private fun PipelineStageEditor(
     index: Int,
     stage: PipelineStage,
+    modelOptions: List<SchedulerModelOption>,
     canDelete: Boolean,
     onChange: (PipelineStage) -> Unit,
     onDelete: () -> Unit
@@ -888,15 +895,11 @@ private fun PipelineStageEditor(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedTextField(
-                    value = stage.model,
-                    onValueChange = { onChange(stage.copy(model = it)) },
-                    label = { Text("模型") },
-                    placeholder = { Text("默认") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    shape = RoundedCornerShape(10.dp),
-                    textStyle = MaterialTheme.typography.bodySmall
+                SchedulerModelDropdown(
+                    selected = stage.model,
+                    options = modelOptions,
+                    onSelect = { onChange(stage.copy(model = it)) },
+                    modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
                     value = if (stage.delayMinutes > 0) stage.delayMinutes.toString() else "",
@@ -928,6 +931,59 @@ private fun PipelineStageEditor(
                 shape = RoundedCornerShape(10.dp),
                 textStyle = MaterialTheme.typography.bodySmall
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SchedulerModelDropdown(
+    selected: String,
+    options: List<SchedulerModelOption>,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = options.firstOrNull { it.value == selected }?.label
+        ?: selected.takeIf { it.isNotBlank() }
+        ?: "默认"
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("模型") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            option.label,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    onClick = {
+                        onSelect(option.value)
+                        expanded = false
+                    }
+                )
+            }
         }
     }
 }
