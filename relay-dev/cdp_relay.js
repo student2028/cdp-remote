@@ -2131,14 +2131,15 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({ error: '缺少 id 参数' }));
                 return;
             }
-            const ok = schedulerResumeTask(taskId);
-            if (!ok) {
-                res.writeHead(404, { 'Content-Type': 'application/json', ...cors });
-                res.end(JSON.stringify({ error: '任务不存在' }));
+            const result = schedulerResumeTask(taskId);
+            if (!result.success) {
+                const status = result.errorCode === 'not_found' ? 404 : 409;
+                res.writeHead(status, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({ error: result.error }));
                 return;
             }
             res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
-            res.end(JSON.stringify({ success: ok, id: taskId, paused: false }));
+            res.end(JSON.stringify({ success: true, id: taskId, paused: false }));
             return;
         }
 
@@ -2154,6 +2155,12 @@ const server = http.createServer(async (req, res) => {
             if (!task) {
                 res.writeHead(404, { 'Content-Type': 'application/json', ...cors });
                 res.end(JSON.stringify({ error: '任务不存在' }));
+                return;
+            }
+            if (shouldSkipScheduledRun(task, taskExecCounts)) {
+                schedulerStopAtMaxRuns(task);
+                res.writeHead(409, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({ error: `已达到最大轮次 ${getCompletedRuns(task, taskExecCounts)}/${getMaxRuns(task)}，请编辑任务提高最大轮次后再触发` }));
                 return;
             }
             schedulerExecuteTask({ ...task, __manualTrigger: true });
@@ -4345,6 +4352,13 @@ function schedulerGeneratingExpression(appName) {
     `;
 }
 
+function schedulerIsTaskActiveForWait(task) {
+    if (task.__manualTrigger) {
+        return schedulerLoadTasks().some(t => t.id === task.id);
+    }
+    return activeTimers.has(task.id);
+}
+
 async function isIdeGenerating(cdpPort) {
     const appName = activeCdpTargets.get(cdpPort)?.appName || '';
     const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
@@ -4364,11 +4378,11 @@ async function waitForSchedulerStageCompletion(cdpPort, task, stageIndex) {
     const start = Date.now();
     let sawGenerating = false;
     let idleTicks = 0;
-    let neverBusyIdleTicks = 0;
-    await new Promise(r => setTimeout(r, 1200));
+    // 给 IDE 留更长的"接住消息→进入 generating"窗口，避免路径 B 提前判完成
+    await new Promise(r => setTimeout(r, 3000));
 
     while (Date.now() - start < SCHEDULER_STAGE_TIMEOUT_MS) {
-        if (!activeTimers.has(task.id)) {
+        if (!schedulerIsTaskActiveForWait(task)) {
             throw new Error('任务已取消');
         }
         let generating = false;
@@ -4380,20 +4394,14 @@ async function waitForSchedulerStageCompletion(cdpPort, task, stageIndex) {
         if (generating) {
             sawGenerating = true;
             idleTicks = 0;
-            neverBusyIdleTicks = 0;
         } else if (sawGenerating) {
             idleTicks += 1;
             if (idleTicks >= 2) return;
-        } else {
-            neverBusyIdleTicks += 1;
-            if (neverBusyIdleTicks >= 3) {
-                log(`ℹ️ [${task.id}] 阶段 ${stageIndex + 1}: 未检测到生成中，连续空闲后视为完成`);
-                return;
-            }
         }
         await new Promise(r => setTimeout(r, SCHEDULER_STAGE_POLL_MS));
     }
-    throw new Error(`阶段 ${stageIndex + 1} 等待完成超时 (${Math.round(SCHEDULER_STAGE_TIMEOUT_MS / 60000)} 分钟)`);
+    const reason = sawGenerating ? '等待生成结束超时' : '未检测到 IDE 进入生成状态';
+    throw new Error(`阶段 ${stageIndex + 1} ${reason} (${Math.round(SCHEDULER_STAGE_TIMEOUT_MS / 60000)} 分钟)`);
 }
 
 /**
@@ -4744,23 +4752,27 @@ function schedulerPauseTask(taskId) {
 function schedulerResumeTask(taskId) {
     let tasks = schedulerLoadTasks();
     const task = tasks.find(t => t.id === taskId);
-    if (!task) return false;
+    if (!task) return { success: false, errorCode: 'not_found', error: '任务不存在' };
     if (shouldSkipScheduledRun(task, taskExecCounts)) {
         task.paused = true;
         schedulerSaveTasks(tasks);
         log(`⏹️ 调度任务 ${taskId} 已达到最大轮次 ${getMaxRuns(task)}，不能恢复`);
-        return false;
+        return {
+            success: false,
+            errorCode: 'max_runs_reached',
+            error: `已达到最大轮次 ${getCompletedRuns(task, taskExecCounts)}/${getMaxRuns(task)}，请编辑任务提高最大轮次后再恢复`
+        };
     }
     if (!task.paused && activeTimers.has(taskId)) {
         log(`ℹ️ 调度任务已在运行，跳过重复恢复: ${taskId}`);
-        return true;
+        return { success: true };
     }
     schedulerStopTimer(taskId);
     task.paused = false;
     schedulerSaveTasks(tasks);
     schedulerStartTimer(task);
     log(`▶️ 调度任务已恢复: ${taskId}`);
-    return true;
+    return { success: true };
 }
 
 function schedulerPersistRunCompletion(task) {
@@ -4874,6 +4886,14 @@ async function schedulerExecuteTask(task) {
 
     // 流水线模式
     if (Array.isArray(task.pipeline) && task.pipeline.length >= 2) {
+        // 重入保护：上一轮流水线尚未结束（currentStage >= 0）时，跳过本次调度触发，
+        // 避免 INTERVAL < 流水线总耗时 导致两轮并发写同一个 IDE。
+        const ongoingStage = taskCurrentStage.get(task.id);
+        if (typeof ongoingStage === 'number' && ongoingStage >= 0 && !task.__manualTrigger) {
+            log(`⏸ [${task.id}] 上一轮流水线仍在进行 (阶段 ${ongoingStage + 1})，跳过本次触发`);
+            return;
+        }
+
         log(`📅 [${task.id}] 流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段) → ${task.targetIde}:${task.targetPort || '?'}`);
 
         // 解析 uitty:pid
