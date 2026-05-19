@@ -28,4 +28,17 @@ class SchedulerModelOptionsTest {
 
         assertEquals(listOf(SchedulerModelOption("默认", "")), options)
     }
+
+    @Test
+    fun `dynamic ide models replace local presets`() {
+        val options = schedulerModelOptionsForIde(
+            ideName = "DSME",
+            liveModels = listOf("Gemini 3.1 Pro (High)", "Claude Sonnet 4.6 (Thinking)")
+        )
+
+        assertEquals("默认", options.first().label)
+        assertTrue(options.any { it.value == "Gemini 3.1 Pro (High)" })
+        assertTrue(options.any { it.value == "Claude Sonnet 4.6 (Thinking)" })
+        assertTrue(options.none { it.value == "MiniMax" })
+    }
 }

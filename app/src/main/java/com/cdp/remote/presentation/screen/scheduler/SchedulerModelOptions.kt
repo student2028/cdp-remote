@@ -5,9 +5,12 @@ data class SchedulerModelOption(
     val value: String
 )
 
-fun schedulerModelOptionsForIde(ideName: String): List<SchedulerModelOption> {
+fun schedulerModelOptionsForIde(
+    ideName: String,
+    liveModels: List<String> = emptyList()
+): List<SchedulerModelOption> {
     val key = ideName.substringBefore(":").trim().lowercase()
-    val models = when {
+    val presetModels = when {
         key.contains("cursor") -> listOf(
             "Auto",
             "Premium",
@@ -55,6 +58,11 @@ fun schedulerModelOptionsForIde(ideName: String): List<SchedulerModelOption> {
         )
         else -> emptyList()
     }
+    val models = liveModels
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .takeIf { it.isNotEmpty() }
+        ?: presetModels
 
     return listOf(SchedulerModelOption("默认", "")) +
         models.distinct().map { SchedulerModelOption(it, it) }

@@ -523,4 +523,67 @@ class CodexCommandsIntegrationTest {
             targetExpression.contains("normalizedInput")
         )
     }
+
+    @Test
+    fun `showRateLimits opens account menu and reads usage remaining panel`() = runBlocking {
+        var evaluateCount = 0
+        var mouseEventCount = 0
+        mockServer.onRequest { req ->
+            when (req.get("method")?.asString) {
+                "Runtime.evaluate" -> {
+                    evaluateCount += 1
+                    val value = when (evaluateCount) {
+                        1 -> """{"found":true,"x":120,"y":720,"text":"Settings","mode":"settings"}"""
+                        2 -> """{"found":true,"clicked":true,"expanded":true,"summary":"Usage remaining\n5h 69% 3:05 PM\nWeekly 80% May 25"}"""
+                        else -> ""
+                    }
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("value", value)
+                        })
+                    }
+                }
+                "Input.dispatchMouseEvent" -> {
+                    mouseEventCount += 1
+                    JsonObject()
+                }
+                else -> null
+            }
+        }
+
+        val result = codex.showRateLimits()
+
+        assertTrue(result.isSuccess)
+        assertTrue(result.getOrThrow().contains("Usage remaining"))
+        val firstExpression = mockServer.receivedExpressions.first()
+        assertTrue(
+            "New Codex usage UI is under the account/settings menu, not only the old Work locally button",
+            firstExpression.contains("account") || firstExpression.contains("Settings")
+        )
+        assertTrue(
+            "Codex usage lookup must prefer the lower-left Settings entry instead of transcript buttons",
+            firstExpression.contains("lowerLeft") && firstExpression.contains("/^settings$/i")
+        )
+        assertTrue(
+            "Codex usage lookup must ignore long collapsed tool/chat transcript buttons",
+            firstExpression.contains("collapsed-tool-activity") && firstExpression.contains("t2.length > 120")
+        )
+        assertTrue(
+            "Codex usage summary must not read Usage remaining text from long chat transcript containers",
+            firstExpression.contains("t.length > 260") && firstExpression.contains("thread")
+        )
+        val detailExpression = mockServer.receivedExpressions[1]
+        assertTrue(
+            "After opening the menu, Codex usage lookup must click the exact Usage remaining row inside the page and read the expanded details",
+            detailExpression.contains("/^(Usage remaining|Rate limits? remaining)$/i") &&
+                detailExpression.contains("fireClick") &&
+                detailExpression.contains("await new Promise")
+        )
+        assertEquals("Only the Settings entry needs a CDP click; Usage remaining is clicked inside the page script", 2, mouseEventCount)
+        assertFalse(
+            "The first lookup must not only depend on the removed Work locally status button",
+            firstExpression.contains("Work locally")
+        )
+    }
 }

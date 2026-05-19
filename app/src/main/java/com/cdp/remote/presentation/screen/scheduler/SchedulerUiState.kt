@@ -8,6 +8,8 @@ data class SchedulerUiState(
     val editing: TaskDraft? = null,
     val availableIdes: List<IdeInfo> = emptyList(),
     val isLoadingIdes: Boolean = false,
+    val modelOptionsByPort: Map<Int, List<String>> = emptyMap(),
+    val loadingModelOptionsPort: Int? = null,
     val toastMessage: String? = null
 )
 

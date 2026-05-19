@@ -794,7 +794,19 @@ fun ModelSwitchDialog(
 
                 // Codex 优先使用预设模型列表
 
+                if (ideOptionsLoading) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在读取当前 IDE 模型列表...", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
                 val models = when {
+                    ideOptions.isNotEmpty() -> ideOptions
                     isCursor -> cursorFixedModels
                     isWindsurf -> listOf("Claude Opus 4.7", "Claude Opus 4.6", "Claude Sonnet 4.6", "GPT-5.3-Codex", "GPT-5.4", "Kimi K2.6", "SWE-1.6", "Gemini 3.1 Pro", "Adaptive")
                     isCodex -> listOf(

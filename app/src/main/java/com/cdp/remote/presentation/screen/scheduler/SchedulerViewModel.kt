@@ -56,7 +56,7 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun refreshIdeList() {
-        uiState = uiState.copy(isLoadingIdes = true)
+        uiState = uiState.copy(isLoadingIdes = true, modelOptionsByPort = emptyMap())
         viewModelScope.launch {
             try {
                 val ides = fetchIdes()
@@ -109,6 +109,27 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun updateDraft(draft: TaskDraft) {
         uiState = uiState.copy(editing = draft)
+    }
+
+    fun loadModelOptionsForIde(ideName: String, port: Int) {
+        if (relayBase.isBlank() || ideName.isBlank() || port <= 0) return
+        if (uiState.modelOptionsByPort.containsKey(port) || uiState.loadingModelOptionsPort == port) return
+
+        uiState = uiState.copy(loadingModelOptionsPort = port)
+        viewModelScope.launch {
+            try {
+                val models = fetchModelOptions(ideName, port)
+                uiState = uiState.copy(
+                    modelOptionsByPort = uiState.modelOptionsByPort + (port to models),
+                    loadingModelOptionsPort = null
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "拉取 IDE 模型列表失败: ${e.message}")
+                uiState = uiState.copy(
+                    loadingModelOptionsPort = null
+                )
+            }
+        }
     }
 
     fun saveTask() {
@@ -277,6 +298,18 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private suspend fun fetchModelOptions(ideName: String, port: Int): List<String> = withContext(Dispatchers.IO) {
+        val url = "$relayBase/scheduler/models?port=$port&ide=${java.net.URLEncoder.encode(ideName, "UTF-8")}"
+        val request = Request.Builder().url(url).build()
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string() ?: "{}"
+            if (!response.isSuccessful) {
+                throw IllegalStateException(extractErrorMessage(body, "HTTP ${response.code}"))
+            }
+            parseModelOptionsJson(body)
+        }
+    }
+
     companion object {
         private const val TAG = "SchedulerVM"
 
@@ -344,6 +377,19 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     wsUrl = instance.wsUrl,
                     workspace = instance.workspace
                 )
+            }
+        }
+
+        internal fun parseModelOptionsJson(json: String): List<String> {
+            return try {
+                val root = JsonParser.parseString(json).asJsonObject
+                if (root.has("success") && !root.get("success").asBoolean) return emptyList()
+                val arr = root.getAsJsonArray("models") ?: return emptyList()
+                arr.mapNotNull { el ->
+                    el.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotEmpty() }
+                }.distinct()
+            } catch (_: Exception) {
+                emptyList()
             }
         }
 

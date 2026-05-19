@@ -26,6 +26,8 @@ const { parseBrainVerdict, parseBrainTask } = require('./workflow_utils');
 const { detectAppType } = require('./cdp_target_detection');
 const { executePipelineStages } = require('./scheduler_pipeline');
 const { getCompletedRuns, getMaxRuns, markRunCompleted, shouldSkipScheduledRun } = require('./scheduler_run_limits');
+const { defaultSchedulerModelOptions, sanitizeModelOptions } = require('./scheduler_model_options');
+const { parseTargetIde } = require('./parse_target_ide');
 const otaMeta = require('./ota_meta');
 // 智能检测：如果上层目录有 app/ 和 build/（说明在 git 仓库里），就用上层；否则用当前目录（独立 npm 包）
 const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(__dirname, '..') : __dirname;
@@ -2078,6 +2080,43 @@ const server = http.createServer(async (req, res) => {
         const parsed = urlModule.parse(req.url, true);
         const subPath = parsed.pathname.replace(/^\/scheduler\/?/, '');
 
+        if (req.method === 'GET' && subPath === 'models') {
+            const port = parseInt(parsed.query.port || '', 10);
+            if (!port || !activeCdpTargets.has(port)) {
+                res.writeHead(404, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: `CDP 端口 ${parsed.query.port || ''} 未发现实例`,
+                    available: [...activeCdpTargets.keys()]
+                }));
+                return;
+            }
+
+            const appName = activeCdpTargets.get(port)?.appName || String(parsed.query.ide || '');
+            (async () => {
+                let models = [];
+                let source = 'ide';
+                let warning = '';
+                try {
+                    models = sanitizeModelOptions(await listSchedulerModels(port, appName));
+                } catch (e) {
+                    source = 'fallback';
+                    warning = e.message;
+                    log(`⚠️ /scheduler/models ${appName}:${port} 动态读取失败，使用 fallback: ${e.message}`);
+                }
+                if (models.length === 0) {
+                    const fallback = sanitizeModelOptions(defaultSchedulerModelOptions(appName));
+                    if (fallback.length > 0) {
+                        models = fallback;
+                        if (source !== 'fallback') source = 'fallback';
+                    }
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+                res.end(JSON.stringify({ success: true, port, appName, source, warning, models }));
+            })();
+            return;
+        }
+
         if (req.method === 'GET' && (!subPath || subPath === '')) {
             // GET /scheduler — 列出所有任务
             const tasks = schedulerListTasks();
@@ -2706,15 +2745,17 @@ const server = http.createServer(async (req, res) => {
                 const initialTask = parsed.initial_task?.trim();
 
                 let brainPid = null;
-                if (brainIde && brainIde.toLowerCase().startsWith('uitty:')) {
-                    brainPid = Number(brainIde.split(':')[1]);
-                    brainIde = 'uitty';
+                {
+                    const p = parseTargetIde(brainIde);
+                    brainIde = p.ideName;
+                    brainPid = p.pid;
                 }
 
                 let workerPid = null;
-                if (workerIde && workerIde.toLowerCase().startsWith('uitty:')) {
-                    workerPid = Number(workerIde.split(':')[1]);
-                    workerIde = 'uitty';
+                {
+                    const p = parseTargetIde(workerIde);
+                    workerIde = p.ideName;
+                    workerPid = p.pid;
                 }
                 const cwd = parsed.cwd?.trim();
 
@@ -3846,6 +3887,10 @@ function selectIdePage(pages, appName = '') {
     if (!page && (lower === 'dsme' || lower.includes('deepseek'))) {
         page = pages.find(p => p.type === 'page' && p.url && /^https?:\/\/(localhost|127\.0\.0\.1):/i.test(p.url));
     }
+    if (!page && lower === 'codex') {
+        page = pages.find(p => p.type === 'page' && p.url && p.url.startsWith('app://-/'))
+            || pages.find(p => p.type === 'page' && String(p.title || '').toLowerCase().includes('codex'));
+    }
     return page || null;
 }
 
@@ -4263,6 +4308,348 @@ async function switchCodexModel(cdpPort, modelName) {
     });
 }
 
+async function listCursorModels(cdpPort) {
+    const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
+        expression: `
+            (async function() {
+                try {
+                    function allDocs() {
+                        var out = [document];
+                        var ifr = document.querySelectorAll('iframe');
+                        for (var i = 0; i < ifr.length; i++) {
+                            try { if (ifr[i].contentDocument) out.push(ifr[i].contentDocument); } catch(e) {}
+                        }
+                        return out;
+                    }
+                    function visible(el) {
+                        if (!el || !el.getBoundingClientRect) return false;
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    }
+                    function findTrigger() {
+                        var docs = allDocs();
+                        for (var i = 0; i < docs.length; i++) {
+                            var el = docs[i].querySelector('button.ui-model-picker__trigger');
+                            if (visible(el)) return el;
+                        }
+                        return null;
+                    }
+                    function findMenu() {
+                        var docs = allDocs();
+                        for (var i = 0; i < docs.length; i++) {
+                            var m = docs[i].querySelector('[data-testid="model-picker-menu"]');
+                            if (visible(m)) return m;
+                        }
+                        return null;
+                    }
+                    var trigger = findTrigger();
+                    if (!trigger) return JSON.stringify({ ok:false, err:'找不到 Cursor 模型选择器' });
+                    var ownerDoc = trigger.ownerDocument || document;
+                    trigger.click();
+                    var menu = null;
+                    for (var w = 0; w < 25; w++) {
+                        await new Promise(function(r){ setTimeout(r, 100); });
+                        menu = findMenu();
+                        if (menu) break;
+                    }
+                    if (!menu) return JSON.stringify({ ok:false, err:'Cursor 模型菜单未出现' });
+                    var models = ['Auto'];
+                    menu.querySelectorAll('li[role="menuitem"].ui-menu__row').forEach(function(li) {
+                        if (li.closest('.ui-menu__search-row')) return;
+                        if (li.getAttribute('data-testid') === 'max-mode-toggle') return;
+                        var nameEl = li.querySelector('.ui-model-picker__item-content-name');
+                        var raw = (nameEl ? nameEl.textContent : li.textContent) || '';
+                        var text = raw.replace(/\\s+/g, ' ').trim();
+                        if (!text || /^edit$/i.test(text) || text === 'Add Models') return;
+                        models.push(text);
+                    });
+                    ownerDoc.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', code:'Escape', bubbles:true }));
+                    return JSON.stringify({ ok:true, models:models });
+                } catch (e) {
+                    return JSON.stringify({ ok:false, err:e.message });
+                }
+            })()
+        `,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: 15000
+    }, 15_000));
+    const parsed = parseJsonEvalValue(result);
+    if (!parsed.ok) throw new Error(parsed.err || 'Cursor 模型列表读取失败');
+    return parsed.models || [];
+}
+
+async function listAntigravityLikeModels(cdpPort) {
+    const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
+        expression: `
+            (async function() {
+                try {
+                    function visible(el) {
+                        if (!el || !el.getBoundingClientRect) return false;
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    }
+                    function textOf(el) {
+                        var text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (text) return text;
+                        return (el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
+                    }
+                    var dropdownXPath = '//*[@id="antigravity.agentSidePanelInputBox"]/div[3]/div[1]/div[3]/div/div/button';
+                    var dropdownEl = document.evaluate(dropdownXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                    if (!dropdownEl) dropdownEl = document.querySelector('button[aria-label^="Select model"]');
+                    if (!dropdownEl) {
+                        var keywords = ['claude', 'gpt', 'gemini', 'opus', 'sonnet', 'haiku', 'o1', 'o3', 'deepseek', 'swe', 'kimi', 'minimax'];
+                        var allBtns = document.querySelectorAll('button');
+                        for (var i = 0; i < allBtns.length; i++) {
+                            if (!visible(allBtns[i])) continue;
+                            var t = textOf(allBtns[i]).toLowerCase();
+                            for (var k = 0; k < keywords.length; k++) {
+                                if (t.indexOf(keywords[k]) >= 0 && t.length < 80) { dropdownEl = allBtns[i]; break; }
+                            }
+                            if (dropdownEl) break;
+                        }
+                    }
+                    if (!dropdownEl) return JSON.stringify({ ok:false, err:'找不到模型选择下拉框' });
+                    dropdownEl.click();
+                    await new Promise(function(r) { setTimeout(r, 550); });
+
+                    var models = [];
+                    var seen = {};
+                    var nodes = Array.from(document.querySelectorAll('button, [role="menuitem"], [role="option"]'));
+                    for (var n = 0; n < nodes.length; n++) {
+                        var el = nodes[n];
+                        if (!visible(el) || el === dropdownEl) continue;
+                        var text = textOf(el).replace(/^Select model,?\\s*current:\\s*/i, '').trim();
+                        var lower = text.toLowerCase();
+                        if (!text || text.length > 90) continue;
+                        if (lower.indexOf('select model') >= 0 || lower === 'models' || lower === 'model') continue;
+                        if (!/(claude|gpt|gemini|opus|sonnet|haiku|deepseek|swe|kimi|minimax|flash|thinking|oss)/i.test(text)) continue;
+                        if (!seen[text]) { seen[text] = true; models.push(text); }
+                    }
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', code:'Escape', bubbles:true }));
+                    return JSON.stringify({ ok:true, models:models });
+                } catch (e) {
+                    return JSON.stringify({ ok:false, err:e.message });
+                }
+            })()
+        `,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: 15000
+    }, 15_000));
+    const parsed = parseJsonEvalValue(result);
+    if (!parsed.ok) throw new Error(parsed.err || 'Antigravity 模型列表读取失败');
+    return parsed.models || [];
+}
+
+async function listAntigravitySettingsModels(cdpPort) {
+    const models = await evaluateOnCdpPage(cdpPort, `
+        (function() {
+            function clean(line) {
+                return String(line || '')
+                    .replace(/\\s+/g, ' ')
+                    .replace(/Refreshes.*$/i, '')
+                    .replace(/Available.*$/i, '')
+                    .trim();
+            }
+            var text = (document.body ? (document.body.innerText || document.body.textContent || '') : '').replace(/\\r/g, '');
+            var out = [];
+            var seen = {};
+            var lines = text.split('\\n').map(clean).filter(Boolean);
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (!/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE|MiniMax)/i.test(line)) continue;
+                if (/devtools|settings|extension|server|port/i.test(line)) continue;
+                if (line.length > 90) continue;
+                if (!seen[line]) { seen[line] = true; out.push(line); }
+            }
+            return out;
+        })()
+    `, {
+        timeoutMs: 5000,
+        pageMatcher: p => String(p.title || '').toLowerCase().includes('settings')
+            || String(p.url || '').includes('workbench-jetski-agent')
+    });
+    return Array.isArray(models) ? models : [];
+}
+
+async function listWindsurfModels(cdpPort) {
+    const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
+        expression: `
+            (async function() {
+                try {
+                    var panel = document.getElementById('windsurf.cascadePanel');
+                    if (!panel) return JSON.stringify({ ok:false, err:'找不到 cascadePanel' });
+                    function visible(el) {
+                        if (!el || !el.getBoundingClientRect) return false;
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    }
+                    var modelBtn = null;
+                    var precBtns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
+                    for (var pb = 0; pb < precBtns.length; pb++) {
+                        if (!visible(precBtns[pb])) continue;
+                        var pt = (precBtns[pb].textContent || '').trim();
+                        if (pt.length > 0 && pt.length < 40) { modelBtn = precBtns[pb]; break; }
+                    }
+                    if (!modelBtn) return JSON.stringify({ ok:false, err:'找不到模型选择按钮' });
+                    modelBtn.click();
+                    await new Promise(function(r) { setTimeout(r, 500); });
+                    var allBtns = panel.querySelectorAll('button');
+                    for (var sm = 0; sm < allBtns.length; sm++) {
+                        if (!visible(allBtns[sm])) continue;
+                        if ((allBtns[sm].textContent || '').trim() === 'See more') {
+                            allBtns[sm].click();
+                            await new Promise(function(r) { setTimeout(r, 400); });
+                            break;
+                        }
+                    }
+                    var models = [];
+                    panel.querySelectorAll('button[class*="flex"][class*="w-full"][class*="flex-col"]').forEach(function(item) {
+                        if (!visible(item)) return;
+                        var walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, null, false);
+                        var node, firstText = '';
+                        while (node = walker.nextNode()) {
+                            var nt = node.textContent.trim();
+                            if (nt) { firstText = nt; break; }
+                        }
+                        if (firstText) models.push(firstText);
+                    });
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', code:'Escape', bubbles:true }));
+                    return JSON.stringify({ ok:true, models:models });
+                } catch (e) {
+                    return JSON.stringify({ ok:false, err:e.message });
+                }
+            })()
+        `,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: 15000
+    }, 15_000));
+    const parsed = parseJsonEvalValue(result);
+    if (!parsed.ok) throw new Error(parsed.err || 'Windsurf 模型列表读取失败');
+    return parsed.models || [];
+}
+
+async function listCodexModels(cdpPort) {
+    return withIdeCdp(cdpPort, async (cdpCall) => {
+        const centerResult = await cdpCall('Runtime.evaluate', {
+            expression: `
+                (function(){
+                    function norm(el) { return (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(); }
+                    function visible(el) {
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                    }
+                    function scoreButton(btn) {
+                        if (!visible(btn)) return -1;
+                        var t = norm(btn).toLowerCase();
+                        var r = btn.getBoundingClientRect();
+                        if (/(automation|project|search|new chat|work locally|branch|copy|chat action|settings?)/.test(t)) return -1;
+                        var hasModel = /\\b(\\d+\\.\\d+|gpt-\\d|codex|o\\d)\\b/.test(t);
+                        var hasLevel = /\\b(extra high|high|medium|low)\\b/.test(t);
+                        if (!hasModel && !hasLevel) return -1;
+                        var score = 0;
+                        if (r.y > window.innerHeight * 0.55) score += 10;
+                        if (hasModel) score += 5;
+                        if (hasLevel) score += 3;
+                        if (btn.getAttribute('aria-haspopup') === 'menu') score += 2;
+                        return score;
+                    }
+                    var best = null, bestScore = 7;
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        var score = scoreButton(btns[i]);
+                        if (score > bestScore) { best = btns[i]; bestScore = score; }
+                    }
+                    if (!best) return '';
+                    var r = best.getBoundingClientRect();
+                    return r.x + r.width/2 + ',' + (r.y + r.height/2);
+                })()
+            `,
+            returnByValue: true
+        });
+        const center = centerResult?.result?.value || '';
+        if (!String(center).includes(',')) throw new Error('找不到 Codex 模型按钮');
+        const [x, y] = String(center).split(',').map(Number);
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+        await new Promise(r => setTimeout(r, 600));
+        const result = await cdpCall('Runtime.evaluate', {
+            expression: `
+                (function(){
+                    var models = [];
+                    var menus = document.querySelectorAll('[role=menu]');
+                    if (!menus.length) return JSON.stringify({ ok:false, err:'菜单未打开' });
+                    var first = menus[0];
+                    first.querySelectorAll('span').forEach(function(span) {
+                        var t = (span.textContent || '').trim();
+                        if (['Low','Medium','High','Extra High'].indexOf(t) >= 0) models.push(t);
+                    });
+                    var spans = first.querySelectorAll('span');
+                    for (var i = 0; i < spans.length; i++) {
+                        var t = (spans[i].textContent || '').trim();
+                        if (t.match(/^\\d+\\.\\d+/) || t.match(/^GPT-\\d/i) || t.match(/^o\\d-/i) || t.match(/^codex/i)) {
+                            var r = spans[i].getBoundingClientRect();
+                            return JSON.stringify({ ok:true, models:models, hoverX:r.x+r.width/2, hoverY:r.y+r.height/2 });
+                        }
+                    }
+                    return JSON.stringify({ ok:true, models:models });
+                })()
+            `,
+            returnByValue: true
+        });
+        const parsed = parseJsonEvalValue(result);
+        if (!parsed.ok) throw new Error(parsed.err || 'Codex 模型列表读取失败');
+        const models = parsed.models || [];
+        if (Number.isFinite(parsed.hoverX) && Number.isFinite(parsed.hoverY)) {
+            await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x: parsed.hoverX, y: parsed.hoverY });
+            await new Promise(r => setTimeout(r, 600));
+            const subResult = await cdpCall('Runtime.evaluate', {
+                expression: `
+                    (function(){
+                        var menus = document.querySelectorAll('[role=menu]');
+                        if (menus.length < 2) return JSON.stringify({ ok:true, models:[] });
+                        var sub = menus[menus.length - 1];
+                        var out = [];
+                        sub.querySelectorAll('span').forEach(function(span) {
+                            var t = (span.textContent || '').trim();
+                            if (t.length > 1 && t.length < 40 && t !== 'Change model' && t !== 'Other models') out.push(t);
+                        });
+                        return JSON.stringify({ ok:true, models:out });
+                    })()
+                `,
+                returnByValue: true
+            });
+            const subParsed = parseJsonEvalValue(subResult);
+            if (subParsed.ok) models.push(...(subParsed.models || []));
+        }
+        await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
+        await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });
+        return models;
+    });
+}
+
+async function listSchedulerModels(cdpPort, appName) {
+    const appKey = schedulerAppKey(appName);
+    if (appKey === 'cursor') return listCursorModels(cdpPort);
+    if (appKey === 'antigravity' || appKey === 'dsme') {
+        const settingsModels = await listAntigravitySettingsModels(cdpPort).catch(() => []);
+        const menuModels = await listAntigravityLikeModels(cdpPort).catch(() => []);
+        return [...settingsModels, ...menuModels];
+    }
+    if (appKey === 'windsurf') return listWindsurfModels(cdpPort);
+    if (appKey === 'codex') return listCodexModels(cdpPort);
+    if (appKey === 'claude') return defaultSchedulerModelOptions(appName);
+    if (appKey === 'uitty') return [];
+    return defaultSchedulerModelOptions(appName);
+}
+
 async function schedulerSwitchModel(cdpPort, task, modelName) {
     const appName = activeCdpTargets.get(cdpPort)?.appName || task.targetIde || '';
     const appKey = schedulerAppKey(appName);
@@ -4644,6 +5031,7 @@ const activeTimers = new Map(); // taskId → { timer, config }
 const taskExecCounts = new Map(); // taskId → count
 const taskCurrentStage = new Map(); // taskId → current stage index (-1 = idle)
 
+
 /** 加载持久化的任务 */
 function schedulerLoadTasks() {
     try {
@@ -4883,8 +5271,9 @@ async function schedulerExecuteTask(task) {
     }
 
     const count = getCompletedRuns(task, taskExecCounts) + 1;
+    const { pid: targetPid } = parseTargetIde(task.targetIde);
 
-    // 流水线模式
+    // 流水线模式（至少 2 个阶段）
     if (Array.isArray(task.pipeline) && task.pipeline.length >= 2) {
         // 重入保护：上一轮流水线尚未结束（currentStage >= 0）时，跳过本次调度触发，
         // 避免 INTERVAL < 流水线总耗时 导致两轮并发写同一个 IDE。
@@ -4895,14 +5284,6 @@ async function schedulerExecuteTask(task) {
         }
 
         log(`📅 [${task.id}] 流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段) → ${task.targetIde}:${task.targetPort || '?'}`);
-
-        // 解析 uitty:pid
-        let targetIdeName = task.targetIde;
-        let targetPid = null;
-        if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
-            targetPid = Number(targetIdeName.split(':')[1]);
-            targetIdeName = 'uitty';
-        }
 
         const cdpPort = schedulerFindCdpPort(task);
         if (!cdpPort) {
@@ -4933,6 +5314,9 @@ async function schedulerExecuteTask(task) {
                 }
             });
 
+            // P2 防御：无论取消还是正常完成，确保 stage 标记复位
+            taskCurrentStage.set(task.id, -1);
+
             if (result.cancelled) {
                 log(`⚠️ [${task.id}] 流水线已取消，已完成 ${result.completedStages}/${task.pipeline.length} 阶段`);
                 return;
@@ -4946,19 +5330,17 @@ async function schedulerExecuteTask(task) {
         return;
     }
 
+    // P6: pipeline 只有 1 个阶段时静默降级到单任务模式，给出告警
+    if (Array.isArray(task.pipeline) && task.pipeline.length === 1) {
+        log(`⚠️ [${task.id}] 流水线仅 1 个阶段，降级为单任务模式（使用 task.prompt）`);
+    }
+
     // 单任务模式（原逻辑）
     log(`📅 [${task.id}] 执行第 ${count} 次 → ${task.targetIde}:${task.targetPort || '?'}: ${task.prompt.substring(0, 50)}...`);
 
     try {
         const cdpPort = schedulerFindCdpPort(task);
         if (!cdpPort) return;
-
-        let targetPid = null;
-        let targetIdeName = task.targetIde;
-        if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
-            targetPid = Number(targetIdeName.split(':')[1]);
-            targetIdeName = 'uitty';
-        }
 
         await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle, targetPid);
         const done = schedulerPersistRunCompletion(task);
@@ -4970,12 +5352,7 @@ async function schedulerExecuteTask(task) {
 
 /** 查找任务对应的 CDP 端口（抽取公共逻辑） */
 function schedulerFindCdpPort(task) {
-    let targetIdeName = task.targetIde;
-    let targetPid = null;
-    if (targetIdeName && targetIdeName.toLowerCase().startsWith('uitty:')) {
-        targetPid = Number(targetIdeName.split(':')[1]);
-        targetIdeName = 'uitty';
-    }
+    const { ideName: targetIdeName } = parseTargetIde(task.targetIde);
 
     let cdpPort = null;
     if (task.targetPort && task.targetPort > 0) {
@@ -5066,11 +5443,12 @@ function schedulerRestoreAll() {
     const tasks = schedulerLoadTasks();
     if (tasks.length === 0) return;
     log(`📅 恢复 ${tasks.length} 个调度任务...`);
+    let needsSave = false;
     for (const task of tasks) {
         taskExecCounts.set(task.id, getCompletedRuns(task, taskExecCounts));
         if (shouldSkipScheduledRun(task, taskExecCounts)) {
             task.paused = true;
-            schedulerSaveTasks(tasks);
+            needsSave = true;
             log(`   ⏹️ ${task.targetIde}:${task.targetPort || '?'} — 已达到最大轮次 ${getCompletedRuns(task, taskExecCounts)}/${getMaxRuns(task)}`);
             continue;
         }
@@ -5082,6 +5460,7 @@ function schedulerRestoreAll() {
         const label = task.scheduleType === 'CRON' ? `cron: ${task.cronExpression}` : `每 ${task.intervalMinutes} 分钟`;
         log(`   📅 ${task.targetIde}:${task.targetPort || '?'} — ${label} — "${task.prompt.substring(0, 40)}..."`);
     }
+    if (needsSave) schedulerSaveTasks(tasks);
 }
 
 // 启动时恢复

@@ -1351,32 +1351,79 @@ class CodexCommands(private val cdp: ICdpClient) {
     // ─────────────────── 查看用量 ───────────────────
 
     /**
-     * 点击底部状态栏 "Work locally x%" 按钮，弹出 Rate limits remaining 面板。
-     * 用户在手机端 TV 画面上即可直观查看 5h / Weekly 剩余额度。
+     * 打开 Codex 左下角账号/设置菜单并展开 Usage remaining。
      */
     suspend fun showRateLimits(): CdpResult<String> {
         val result = cdp.evaluate("""
             (function() {
                 try {
-                    // 底部状态栏按钮，文字包含 "Work locally" 和百分比
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (!btns[i].offsetParent) continue;
-                        var t = (btns[i].textContent || '').trim();
-                        if (t.indexOf('Work locally') >= 0 || t.indexOf('ork locally') >= 0) {
-                            var r = btns[i].getBoundingClientRect();
-                            return JSON.stringify({found:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
+                    function visible(el) {
+                        if (!el || !el.getBoundingClientRect) return false;
+                        var r = el.getBoundingClientRect();
+                        var s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
+                            r.top < window.innerHeight && r.left < window.innerWidth &&
+                            s.visibility !== 'hidden' && s.display !== 'none';
+                    }
+                    function norm(el) {
+                        return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                    }
+                    function usageSummary() {
+                        var nodes = document.querySelectorAll('button, [role="button"], [role="menuitem"], div');
+                        var best = '';
+                        for (var i = 0; i < nodes.length; i++) {
+                            if (!visible(nodes[i])) continue;
+                            var t = norm(nodes[i]);
+                            var cls = String(nodes[i].className || '');
+                            if (t.length > 260 || cls.indexOf('thread') >= 0 || cls.indexOf('_markdownContent_') >= 0) continue;
+                            if (/Usage remaining/i.test(t) && (/\bWeekly\b/i.test(t) || /\b\d+h\b/.test(t) || /%/.test(t))) {
+                                if (!best || t.length < best.length) best = t;
+                            }
+                        }
+                        return best;
+                    }
+                    var already = usageSummary();
+                    if (already) return JSON.stringify({found:true, summary:already});
+
+                    var all = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup], [data-testid]'));
+                    var best = null;
+                    var bestScore = -1;
+                    for (var j = 0; j < all.length; j++) {
+                        var el = all[j];
+                        if (!visible(el)) continue;
+                        var t2 = norm(el);
+                        var cls = String(el.className || '');
+                        if (t2.length > 120 || cls.indexOf('collapsed-tool-activity') >= 0) continue;
+                        var a = (el.getAttribute('aria-label') || '').trim();
+                        var testId = (el.getAttribute('data-testid') || '').trim();
+                        var text = (t2 + ' ' + a + ' ' + testId).toLowerCase();
+                        var r2 = el.getBoundingClientRect();
+                        var leftSidebar = r2.x < Math.min(360, window.innerWidth * 0.45);
+                        var lowerHalf = r2.y > window.innerHeight * 0.50;
+                        var lowerLeft = leftSidebar && lowerHalf;
+                        if (lowerLeft && /^settings$/i.test(t2)) {
+                            return JSON.stringify({found:true, x:r2.x+r2.width/2, y:r2.y+r2.height/2, text:t2, mode:'settings'});
+                        }
+                        var score = -1;
+                        if (lowerLeft) {
+                            if (/@/.test(text) || text.indexOf('account') >= 0 || text.indexOf('profile') >= 0) score = 40;
+                            else if (text.indexOf('settings') >= 0) score = 35;
+                            else if (text.indexOf('usage remaining') >= 0) score = 35;
+                        } else if (r2.y > window.innerHeight * 0.70 &&
+                            (text.indexOf('full access') >= 0 || text.indexOf('usage remaining') >= 0)) {
+                            score = 15;
+                        }
+                        if (score < 0) continue;
+                        if (lowerHalf) score += 8;
+                        if (leftSidebar) score += 20;
+                        if (score > bestScore) {
+                            best = el;
+                            bestScore = score;
                         }
                     }
-                    // 备选: 查找包含 "Rate limit" 或 "Usage remaining" 文字的可点击元素
-                    var all = document.querySelectorAll('button, [role="button"]');
-                    for (var j = 0; j < all.length; j++) {
-                        if (!all[j].offsetParent) continue;
-                        var t2 = (all[j].textContent || '').trim();
-                        if (t2.indexOf('Rate limit') >= 0 || t2.indexOf('rate limit') >= 0 || t2.indexOf('Usage remaining') >= 0 || t2.indexOf('usage remaining') >= 0) {
-                            var r2 = all[j].getBoundingClientRect();
-                            return JSON.stringify({found:true, x:r2.x+r2.width/2, y:r2.y+r2.height/2, text:t2});
-                        }
+                    if (best) {
+                        var br = best.getBoundingClientRect();
+                        return JSON.stringify({found:true, x:br.x+br.width/2, y:br.y+br.height/2, text:norm(best)});
                     }
                     return JSON.stringify({found:false});
                 } catch(e) { return JSON.stringify({found:false, error:e.message}); }
@@ -1388,41 +1435,123 @@ class CodexCommands(private val cdp: ICdpClient) {
         return try {
             val json = JsonParser.parseString(evalStr).asJsonObject
             if (json.get("found")?.asBoolean == true) {
+                json.get("summary")?.asString?.takeIf { it.isNotBlank() }?.let {
+                    return CdpResult.Success(it)
+                }
                 val x = json.get("x").asDouble
                 val y = json.get("y").asDouble
-                // 第一次点击：打开 "Continue in" 弹出菜单
                 cdpMouseClick(x, y)
                 delay(500)
-                // 第二次点击：点击菜单中的 "Rate limits remaining" 或 "Usage remaining" 展开详细用量
                 val detail = cdp.evaluate("""
-                    (function() {
+                    (async function() {
                         try {
+                            function visible(el) {
+                                if (!el || !el.getBoundingClientRect) return false;
+                                var r = el.getBoundingClientRect();
+                                var s = window.getComputedStyle(el);
+                                return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
+                                    r.top < window.innerHeight && r.left < window.innerWidth &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            }
+                            function norm(el) {
+                                return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                            }
+                            function usageSummary() {
+                                var nodes = document.querySelectorAll('button, [role="button"], [role="menuitem"], div');
+                                var best = '';
+                                for (var i = 0; i < nodes.length; i++) {
+                                    if (!visible(nodes[i])) continue;
+                                    var t = norm(nodes[i]);
+                                    var cls = String(nodes[i].className || '');
+                                    if (t.length > 260 || cls.indexOf('thread') >= 0 || cls.indexOf('_markdownContent_') >= 0) continue;
+                                    if (/Usage remaining/i.test(t) && (/\bWeekly\b/i.test(t) || /\b\d+h\b/.test(t) || /%/.test(t))) {
+                                        if (!best || t.length < best.length) best = t;
+                                    }
+                                }
+                                return best;
+                            }
+                            var summary = usageSummary();
+                            if (summary) return JSON.stringify({found:true, expanded:true, summary:summary});
+
+                            function fireClick(el) {
+                                if (!el) return false;
+                                var r = el.getBoundingClientRect();
+                                var opts = {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window,
+                                    clientX: r.x + r.width / 2,
+                                    clientY: r.y + r.height / 2
+                                };
+                                try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (_) {}
+                                try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (_) {}
+                                try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (_) {}
+                                try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (_) {}
+                                try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (_) {}
+                                try { el.click(); } catch (_) {}
+                                return true;
+                            }
+
                             var els = document.querySelectorAll('button, [role="menuitem"], [role="button"], div, span, a');
                             for (var i = 0; i < els.length; i++) {
-                                if (!els[i].offsetParent) continue;
-                                var t = (els[i].textContent || '').trim();
-                                if ((t.indexOf('Rate limit') >= 0 || t.indexOf('Usage remaining') >= 0) && t.length < 60) {
-                                    var r = els[i].getBoundingClientRect();
+                                if (!visible(els[i])) continue;
+                                var t = norm(els[i]);
+                                if (/^(Usage remaining|Rate limits? remaining)$/i.test(t)) {
+                                    var target = els[i].closest('[role="menuitem"], button, [role="button"]') || els[i];
+                                    var r = target.getBoundingClientRect();
                                     if (r.width > 0 && r.height > 0) {
-                                        return JSON.stringify({found:true, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
+                                        fireClick(target);
+                                        await new Promise(function(resolve) { setTimeout(resolve, 700); });
+                                        summary = usageSummary();
+                                        if (summary) return JSON.stringify({found:true, clicked:true, expanded:true, summary:summary});
+                                        return JSON.stringify({found:true, clicked:true, expanded:false, x:r.x+r.width/2, y:r.y+r.height/2, text:t});
                                     }
                                 }
                             }
                             return JSON.stringify({found:false});
                         } catch(e) { return JSON.stringify({found:false}); }
                     })()
-                """.trimIndent()).getOrNull() ?: ""
+                """.trimIndent(), awaitPromise = true).getOrNull() ?: ""
                 if (detail.isNotEmpty()) {
                     try {
                         val dj = JsonParser.parseString(detail).asJsonObject
                         if (dj.get("found")?.asBoolean == true) {
-                            cdpMouseClick(dj.get("x").asDouble, dj.get("y").asDouble)
-                            delay(300)
+                            dj.get("summary")?.asString?.takeIf { it.isNotBlank() }?.let {
+                                return CdpResult.Success(it)
+                            }
+                            if (dj.has("x") && dj.has("y")) {
+                                cdpMouseClick(dj.get("x").asDouble, dj.get("y").asDouble)
+                                delay(300)
+                            }
                         }
                     } catch (_: Exception) {}
                 }
-                val info = json.get("text")?.asString ?: ""
-                CdpResult.Success(info)
+                val afterExpand = cdp.evaluate("""
+                    (function() {
+                        function visible(el) {
+                            if (!el || !el.getBoundingClientRect) return false;
+                            var r = el.getBoundingClientRect();
+                            var s = window.getComputedStyle(el);
+                            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                        }
+                        function norm(el) {
+                            return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                        }
+                        var nodes = document.querySelectorAll('button, [role="button"], [role="menuitem"], div');
+                        var best = '';
+                        for (var i = 0; i < nodes.length; i++) {
+                            if (!visible(nodes[i])) continue;
+                            var t = norm(nodes[i]);
+                            var cls = String(nodes[i].className || '');
+                            if (t.length > 260 || cls.indexOf('thread') >= 0 || cls.indexOf('_markdownContent_') >= 0) continue;
+                            if (/Usage remaining/i.test(t) && (/\bWeekly\b/i.test(t) || /\b\d+h\b/.test(t) || /%/.test(t))) {
+                                if (!best || t.length < best.length) best = t;
+                            }
+                        }
+                        return best;
+                    })()
+                """.trimIndent()).getOrNull().orEmpty()
+                CdpResult.Success(afterExpand.ifBlank { json.get("text")?.asString ?: "Usage remaining" })
             } else {
                 CdpResult.Error("未找到用量按钮")
             }

@@ -66,6 +66,17 @@ fun SchedulerScreen(
         }
     }
 
+    LaunchedEffect(
+        state.editing?.targetIde,
+        state.editing?.targetPort,
+        state.editing?.pipelineEnabled
+    ) {
+        val draft = state.editing
+        if (draft != null && draft.pipelineEnabled) {
+            viewModel.loadModelOptionsForIde(draft.targetIde, draft.targetPort)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -147,6 +158,8 @@ fun SchedulerScreen(
         TaskCreateSheet(
             draft = state.editing,
             availableIdes = state.availableIdes,
+            liveModelOptions = state.modelOptionsByPort[state.editing.targetPort].orEmpty(),
+            isLoadingModelOptions = state.loadingModelOptionsPort == state.editing.targetPort,
             onDismiss = { viewModel.closeDialog() },
             onUpdate = { viewModel.updateDraft(it) },
             onSave = { viewModel.saveTask() }
@@ -516,6 +529,8 @@ private fun TaskCard(
 private fun TaskCreateSheet(
     draft: TaskDraft,
     availableIdes: List<IdeInfo>,
+    liveModelOptions: List<String>,
+    isLoadingModelOptions: Boolean,
     onDismiss: () -> Unit,
     onUpdate: (TaskDraft) -> Unit,
     onSave: () -> Unit
@@ -741,7 +756,23 @@ private fun TaskCreateSheet(
 
             if (draft.pipelineEnabled) {
                 // ── 流水线阶段编辑 ──
-                val modelOptions = schedulerModelOptionsForIde(draft.targetIde)
+                val modelOptions = schedulerModelOptionsForIde(draft.targetIde, liveModelOptions)
+                if (isLoadingModelOptions) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = purpleAccent
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "正在读取当前 IDE 模型列表...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 draft.pipeline.forEachIndexed { idx, stage ->
                     PipelineStageEditor(
                         index = idx,

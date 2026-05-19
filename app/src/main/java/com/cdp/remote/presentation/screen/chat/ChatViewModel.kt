@@ -2252,12 +2252,59 @@ class ChatViewModel(
     // ─── Utility ────────────────────────────────────────────────────
 
     fun prepareModelSwitchDialog() {
-        // 模型列表已硬编码，无需从 IDE 动态加载
-        uiState = uiState.copy(ideModelOptionsLoading = false, ideModelOptions = emptyList())
+        val host = connectHost
+        val cdpPort = extractCdpPort(connectWsUrl)
+        if (host == null || cdpPort <= 0) {
+            uiState = uiState.copy(ideModelOptionsLoading = false, ideModelOptions = emptyList())
+            return
+        }
+
+        uiState = uiState.copy(ideModelOptionsLoading = true, ideModelOptions = emptyList())
+        viewModelScope.launch {
+            try {
+                val url = "http://${host.ip}:${host.port}/scheduler/models" +
+                    "?port=$cdpPort&ide=${java.net.URLEncoder.encode(uiState.appName, "UTF-8")}"
+                val models = withContext(Dispatchers.IO) {
+                    val request = okhttp3.Request.Builder().url(url).build()
+                    httpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) return@withContext emptyList<String>()
+                        parseModelOptionsResponse(response.body?.string() ?: "{}")
+                    }
+                }
+                uiState = uiState.copy(
+                    ideModelOptionsLoading = false,
+                    ideModelOptions = models
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "读取模型列表失败: ${e.message}")
+                uiState = uiState.copy(ideModelOptionsLoading = false, ideModelOptions = emptyList())
+            }
+        }
     }
 
     fun onModelSwitchDialogClosed() {
         uiState = uiState.copy(ideModelOptionsLoading = false)
+    }
+
+    private fun extractCdpPort(wsUrl: String): Int {
+        Regex("/cdp/(\\d+)/").find(wsUrl)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
+        return Regex("://[^:/]+:(\\d+)/").find(wsUrl)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    }
+
+    private fun parseModelOptionsResponse(json: String): List<String> {
+        return try {
+            val obj = JSONObject(json)
+            if (obj.has("success") && !obj.optBoolean("success", true)) return emptyList()
+            val arr = obj.optJSONArray("models") ?: return emptyList()
+            val out = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                val item = arr.optString(i).trim()
+                if (item.isNotEmpty() && !out.contains(item)) out += item
+            }
+            out
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     fun dismissPendingOta() {

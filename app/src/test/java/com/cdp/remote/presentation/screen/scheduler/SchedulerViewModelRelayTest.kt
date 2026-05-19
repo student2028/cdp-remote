@@ -41,6 +41,28 @@ class SchedulerViewModelRelayTest {
         )
     }
 
+    @Test
+    fun `parse scheduler model options response`() {
+        val json = """{
+            "success": true,
+            "port": 9333,
+            "appName": "DSME",
+            "models": ["Gemini 3.1 Pro (High)", "Claude Sonnet 4.6 (Thinking)"]
+        }"""
+
+        assertEquals(
+            listOf("Gemini 3.1 Pro (High)", "Claude Sonnet 4.6 (Thinking)"),
+            SchedulerViewModel.parseModelOptionsJson(json)
+        )
+    }
+
+    @Test
+    fun `parse scheduler model options returns empty on error response`() {
+        val json = """{"success": false, "error": "unsupported"}"""
+
+        assertEquals(emptyList<String>(), SchedulerViewModel.parseModelOptionsJson(json))
+    }
+
     private fun expectThrows(block: () -> Unit): Throwable {
         try {
             block()
