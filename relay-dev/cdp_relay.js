@@ -360,34 +360,37 @@ async function runServerWatchdog(cdpPort) {
                                     if (!doc) continue;
                                     var chatPanel = findChatPanel(doc);
                                     if (!chatPanel) continue;
-                                    var buttons = chatPanel.querySelectorAll('button');
+                                    
+                                    var flatChat = helpers.flattenElements(chatPanel);
                                     var retryPatterns = [
                                         'retry', '重试', 'try again', 'regenerate',
                                         'resend', 'resubmit', '重新生成', '再试一次'
                                     ];
-                                    for (var j = 0; j < buttons.length; j++) {
-                                        var btn = buttons[j];
-                                        if (!btn.offsetParent) continue;
-                                        var btnText = (btn.textContent || '').toLowerCase().trim();
-                                        var btnAria = (btn.getAttribute('aria-label') || '').toLowerCase();
-                                        var btnTitle = (btn.title || '').toLowerCase();
-                                        var combined = btnText + ' ' + btnAria + ' ' + btnTitle;
-                                        for (var k = 0; k < retryPatterns.length; k++) {
-                                            if (combined.includes(retryPatterns[k])) {
-                                                var rect = btn.getBoundingClientRect();
-                                                btn.click(); // DOM 级别优先尝试点击
-                                                return JSON.stringify({
-                                                    needClick: true,
-                                                    type: 'retry',
-                                                    text: btnText,
-                                                    x: rect.x + item.offsetX + rect.width / 2,
-                                                    y: rect.y + item.offsetY + rect.height / 2
-                                                });
+                                    for (var j = 0; j < flatChat.length; j++) {
+                                        var btn = flatChat[j];
+                                        if (helpers.isButtonLike(btn) && helpers.isVisibleButton(btn)) {
+                                            var btnText = (btn.textContent || '').toLowerCase().trim();
+                                            var btnAria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                                            var btnTitle = (btn.title || '').toLowerCase();
+                                            var combined = btnText + ' ' + btnAria + ' ' + btnTitle;
+                                            for (var k = 0; k < retryPatterns.length; k++) {
+                                                if (combined.includes(retryPatterns[k])) {
+                                                    var rect = btn.getBoundingClientRect();
+                                                    helpers.fullClick(btn); // DOM 级别优先尝试点击
+                                                    return JSON.stringify({
+                                                        needClick: true,
+                                                        type: 'retry',
+                                                        text: btnText || btnAria || btnTitle,
+                                                        x: rect.x + item.offsetX + rect.width / 2,
+                                                        y: rect.y + item.offsetY + rect.height / 2
+                                                    });
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+
 
                             return JSON.stringify({ needClick: false });
                         })()

@@ -1,3 +1,3 @@
-1. 架构升级：实现了全局服务端自动审批与错误重试看门狗 (Server-Side Auto-Approve & Watchdog)。现在 Action 按钮放行和 Busy 报错重试完全运行在电脑中继端 (cdp_relay)，每 2 秒本地高频轮询，手机发送请求后无需保持亮屏连接。
-2. 双重物理仿真点击：中继检测到需要点击的按钮后，同步通过 CDP 派发高保真 mouseMoved/mousePressed/mouseReleased 物理鼠标轨迹，确保放行机制 100% 成功通过。
+1. 架构升级：实现了全局服务端自动审批与错误重试看门狗 (Server-Side Auto-Approve & Watchdog)。现在 Action 按钮和错误重试按钮匹配均支持穿透并提取 Shadow DOM 中的元素，支持更多非 button 标签或特殊包装的类按钮，保证检测在各种现代 IDE 中全覆盖。
+2. 双重物理仿真点击：中继检测到需要点击的按钮后，同步通过 CDP 派发高保真 mouseMoved/mousePressed/mouseReleased 物理鼠标轨迹，确保放行和重试机制 100% 成功通过。
 3. 优化了模型过滤展示，优先呈现 Gemini 3.5 Flash 和 Claude Sonnet 4.6 用量。
