@@ -34,6 +34,26 @@ const REPO_ROOT = fs.existsSync(path.join(__dirname, '..', 'app')) ? path.join(_
 const ORCHESTRA_SCRIPT = path.join(REPO_ROOT, 'scripts', 'orchestra.sh');
 const REFERENCE_TRANSACTION_HOOK = path.join(REPO_ROOT, 'scripts', 'git-hooks', 'reference-transaction');
 
+// ─── 加载 cdp_helpers.js 到内存 ───
+const CDP_HELPERS_PATH = fs.existsSync(path.join(REPO_ROOT, 'app/src/main/assets/js/cdp_helpers.js'))
+    ? path.join(REPO_ROOT, 'app/src/main/assets/js/cdp_helpers.js')
+    : (fs.existsSync(path.join(__dirname, 'js/cdp_helpers.js'))
+        ? path.join(__dirname, 'js/cdp_helpers.js')
+        : path.join(__dirname, 'cdp_helpers.js'));
+
+let cdpHelpersSource = '';
+try {
+    if (fs.existsSync(CDP_HELPERS_PATH)) {
+        cdpHelpersSource = fs.readFileSync(CDP_HELPERS_PATH, 'utf8');
+        log(`ℹ️ 成功载入 cdp_helpers.js 共 ${cdpHelpersSource.length} 字节`);
+    } else {
+        log(`⚠️ cdp_helpers.js 未找到，看门狗可能会受限`);
+    }
+} catch (e) {
+    log(`⚠️ 载入 cdp_helpers.js 异常: ${e.message}`);
+}
+
+
 // ─── 目录历史持久化 ───
 const CWD_HISTORY_DIR = path.join(os.homedir(), '.cdp-relay');
 const CWD_HISTORY_FILE = path.join(CWD_HISTORY_DIR, 'cwd_history.json');
@@ -212,6 +232,232 @@ async function addCodexWorkspaceRootToRunningApp(cdpPort, workspaceRoot) {
 function isCodexMainPage(p) {
     return p.url?.startsWith('app://') || p.url?.includes('index.html') || p.url?.includes('127.0.0.1:') || p.url?.includes('localhost:');
 }
+
+/**
+ * 服务端看门狗：对指定端口的 IDE 实例检测是否有 Action 按钮需要放行，或是否有繁忙报错需要重试
+ */
+async function runServerWatchdog(cdpPort) {
+    let pages;
+    try {
+        pages = await getJson(`http://${CDP_HOST}:${cdpPort}/json`, 3000);
+    } catch (e) {
+        // IDE 不在线或端口未打开，直接返回
+        return;
+    }
+
+    const pageTargets = pages.filter(p => p.type === 'page' && p.webSocketDebuggerUrl);
+    if (pageTargets.length === 0) return;
+
+    // 对每个活跃页面执行检测
+    for (const page of pageTargets) {
+        try {
+            await new Promise((resolve, reject) => {
+                const ws = new WebSocket(page.webSocketDebuggerUrl);
+                const timeoutMs = 8000;
+                
+                const timer = setTimeout(() => {
+                    try { ws.close(); } catch (_) {}
+                    reject(new Error('Watchdog query timeout'));
+                }, timeoutMs);
+
+                ws.on('open', () => {
+                    // 拼接 helper 脚本和我们的融合探测 JS 代码
+                    const expression = `
+                        (function() {
+                            ${cdpHelpersSource}
+
+                            var helpers = window.__cdpHelpers;
+                            if (!helpers) return JSON.stringify({ needClick: false, reason: 'helpers-missing' });
+
+                            var all = helpers.allDocsWithOffset(document);
+                            
+                            // 1. 自动放行 Action 按钮 (Run/Allow/Approve)
+                            for (var di = 0; di < all.length; di++) {
+                                var item = all[di];
+                                var doc = item.doc;
+                                if (!doc || !doc.querySelectorAll) continue;
+
+                                var panel = helpers.findPanelNode(doc);
+                                var flat = helpers.flattenElements(panel);
+
+                                for (var j = 0; j < flat.length; j++) {
+                                    var btn = flat[j];
+                                    if (helpers.isButtonLike(btn) && helpers.isVisibleButton(btn)) {
+                                        var txt = (btn.textContent || '').trim();
+                                        if (helpers.matchesActionButton(txt)) {
+                                            var rect = btn.getBoundingClientRect();
+                                            helpers.fullClick(btn); // DOM 级别优先尝试点击
+                                            return JSON.stringify({
+                                                needClick: true,
+                                                type: 'approve',
+                                                text: txt,
+                                                x: rect.x + item.offsetX + rect.width / 2,
+                                                y: rect.y + item.offsetY + rect.height / 2
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 2. 检查是否有 Busy/Rate-Limit 错误并自动 Retry
+                            function findChatPanel(doc) {
+                                var selectors = [
+                                    '.antigravity-agent-side-panel',
+                                    '[class*="antigravity-agent"]',
+                                    '[class*="interactive-session"]',
+                                    '[class*="aichat"]',
+                                    '[class*="composer"]',
+                                    '[class*="chat-view"]',
+                                    '[class*="cascade-scrollbar"]',
+                                    '[class*="chat-client-root"]'
+                                ];
+                                for (var i = 0; i < selectors.length; i++) {
+                                    var el = doc.querySelector(selectors[i]);
+                                    if (el) return el;
+                                }
+                                return null;
+                            }
+
+                            var hasError = false;
+                            var errorPatterns = [
+                                'server is busy', 'rate limit', 'overloaded',
+                                'too many requests', 'try again later', 'capacity',
+                                'internal error', 'internal server error',
+                                'something went wrong', 'an error occurred',
+                                'model is currently overloaded', 'the model is overloaded',
+                                'resource exhausted', 'quota exceeded',
+                                'service unavailable', 'temporarily unavailable',
+                                'request failed', 'generation failed',
+                                'unexpected error', 'failed to generate',
+                                'our servers are experiencing',
+                                'agent terminated due to error',
+                                'terminated due to error',
+                                'prompt the model to try again',
+                                '服务器繁忙', '稍后重试', '请求过多', '服务不可用',
+                                '内部错误', '出现错误', '算力不足', '模型繁忙',
+                                'error 429', 'error 500', 'error 502', 'error 503', 'error 504'
+                            ];
+
+                            for (var di = 0; di < all.length; di++) {
+                                var doc = all[di].doc;
+                                if (!doc) continue;
+                                var chatPanel = findChatPanel(doc);
+                                if (!chatPanel) continue;
+                                var panelText = (chatPanel.innerText || '').toLowerCase();
+                                for (var i = 0; i < errorPatterns.length; i++) {
+                                    if (panelText.includes(errorPatterns[i])) {
+                                        hasError = true;
+                                        break;
+                                    }
+                                }
+                                if (hasError) break;
+                            }
+
+                            if (hasError) {
+                                for (var di = 0; di < all.length; di++) {
+                                    var item = all[di];
+                                    var doc = item.doc;
+                                    if (!doc) continue;
+                                    var chatPanel = findChatPanel(doc);
+                                    if (!chatPanel) continue;
+                                    var buttons = chatPanel.querySelectorAll('button');
+                                    var retryPatterns = [
+                                        'retry', '重试', 'try again', 'regenerate',
+                                        'resend', 'resubmit', '重新生成', '再试一次'
+                                    ];
+                                    for (var j = 0; j < buttons.length; j++) {
+                                        var btn = buttons[j];
+                                        if (!btn.offsetParent) continue;
+                                        var btnText = (btn.textContent || '').toLowerCase().trim();
+                                        var btnAria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                                        var btnTitle = (btn.title || '').toLowerCase();
+                                        var combined = btnText + ' ' + btnAria + ' ' + btnTitle;
+                                        for (var k = 0; k < retryPatterns.length; k++) {
+                                            if (combined.includes(retryPatterns[k])) {
+                                                var rect = btn.getBoundingClientRect();
+                                                btn.click(); // DOM 级别优先尝试点击
+                                                return JSON.stringify({
+                                                    needClick: true,
+                                                    type: 'retry',
+                                                    text: btnText,
+                                                    x: rect.x + item.offsetX + rect.width / 2,
+                                                    y: rect.y + item.offsetY + rect.height / 2
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            return JSON.stringify({ needClick: false });
+                        })()
+                    `;
+
+                    ws.send(JSON.stringify({
+                        id: 1,
+                        method: 'Runtime.evaluate',
+                        params: { expression, awaitPromise: true, returnByValue: true }
+                    }));
+                });
+
+                ws.on('message', async (buf) => {
+                    try {
+                        const msg = JSON.parse(buf.toString());
+                        if (msg.id === 1) {
+                            const valStr = msg.result?.result?.value;
+                            if (valStr) {
+                                const result = JSON.parse(valStr);
+                                if (result.needClick && typeof result.x === 'number' && typeof result.y === 'number') {
+                                    const { x, y, type, text } = result;
+                                    log(`🤖 [Watchdog] 监测到 ${type === 'approve' ? 'Action 确认按钮' : '错误重试按钮'} ("${text}")，准备触发物理点击...`);
+
+                                    // 发送原生物理点击事件流
+                                    ws.send(JSON.stringify({
+                                        id: 2,
+                                        method: 'Input.dispatchMouseEvent',
+                                        params: { type: 'mouseMoved', x, y }
+                                    }));
+                                    await new Promise(r => setTimeout(r, 50));
+
+                                    ws.send(JSON.stringify({
+                                        id: 3,
+                                        method: 'Input.dispatchMouseEvent',
+                                        params: { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }
+                                    }));
+                                    await new Promise(r => setTimeout(r, 50));
+
+                                    ws.send(JSON.stringify({
+                                        id: 4,
+                                        method: 'Input.dispatchMouseEvent',
+                                        params: { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }
+                                    }));
+                                    await new Promise(r => setTimeout(r, 50));
+                                    
+                                    log(`🤖 [Watchdog] 已成功向坐标 (${Math.round(x)}, ${Math.round(y)}) 发送 CDP 物理点击 ✅`);
+                                }
+                            }
+                            clearTimeout(timer);
+                            try { ws.close(); } catch (_) {}
+                            resolve();
+                        }
+                    } catch (e) {
+                        clearTimeout(timer);
+                        try { ws.close(); } catch (_) {}
+                        reject(e);
+                    }
+                });
+
+                ws.on('error', (e) => {
+                    clearTimeout(timer);
+                    reject(e);
+                });
+            });
+        } catch (err) {
+            // 静默处理单页错误
+        }
+    }
+}
+
 
 // ─── 用户环境变量加载（解决 LaunchAgent 缺少代理等环境变量问题）───
 let _cachedUserEnv = null;
@@ -5471,3 +5717,20 @@ function schedulerRestoreAll() {
 
 // 启动时恢复
 setTimeout(schedulerRestoreAll, 3000); // 等扫描完再恢复
+
+// ─── 启动全局服务端看门狗定时器 (轮询所有活跃 CDP 实例) ───
+const ENABLE_SERVER_WATCHDOG = process.env.ENABLE_SERVER_WATCHDOG !== 'false';
+if (ENABLE_SERVER_WATCHDOG) {
+    let watchdogTimer = setInterval(async () => {
+        for (const port of activeCdpTargets.keys()) {
+            try {
+                await runServerWatchdog(port);
+            } catch (e) {
+                // 静默异常
+            }
+        }
+    }, 2000);
+    if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
+    log("🤖 服务端自动审批与错误重试看门狗已启动 (周期: 2000ms)");
+}
+
