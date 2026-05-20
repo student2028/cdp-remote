@@ -1,3 +1,3 @@
-1. 修复 Codex 用量查看：优先点击左下 Settings 菜单，再精确展开 Usage remaining。
-2. 过滤聊天记录/工具折叠区里的 Usage remaining 文本，避免误判为用量面板。
-3. 调度/聊天模型列表继续使用当前 IDE 实时返回列表，失败才回退本地预设。
+1. 修复新版 Antigravity CDP 目标识别：支持 https://127.0.0.1:<随机端口>/ 主窗口。
+2. 修复主机列表和聊天切换菜单看不到 Antigravity :9333 的问题。
+3. 保持 Relay appName 作为 IDE 身份来源，避免误判其他 IDE。

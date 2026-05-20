@@ -66,6 +66,22 @@ class IdeTargetsParserTest {
     }
 
     @Test
+    fun `parsePages treats Antigravity local https shell as workbench`() {
+        val json = """{"targets":[
+            {"cdpPort":9333,"appName":"Antigravity","appEmoji":"🚀","pages":[
+                {"id":"ag1","type":"page","url":"https://127.0.0.1:49690/","title":"Antigravity","webSocketDebuggerUrl":"ws://t/antigravity","devtoolsFrontendUrl":""},
+                {"id":"worker","type":"worker","url":"","title":"","webSocketDebuggerUrl":"ws://t/worker","devtoolsFrontendUrl":""}
+            ]}
+        ]}"""
+
+        val pages = IdeTargetsParser.parsePages(json)
+
+        assertEquals(2, pages.size)
+        assertEquals(ElectronAppType.ANTIGRAVITY, pages[0].appType)
+        assertEquals(true, pages[0].isWorkbench)
+    }
+
+    @Test
     fun `parsePages includes standalone uitty file page as workbench`() {
         val json = """{"targets":[
             {"cdpPort":9488,"appName":"uitty","appEmoji":"🐚","pages":[

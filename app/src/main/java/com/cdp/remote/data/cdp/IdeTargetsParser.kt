@@ -106,6 +106,7 @@ object IdeTargetsParser {
         val type = ElectronAppType.fromAppName(appName)
         return url.contains("workbench", ignoreCase = true) ||
             url.startsWith("app://") ||
+            (type == ElectronAppType.ANTIGRAVITY && isLocalHostPage(url)) ||
             (type == ElectronAppType.CLAUDE_CODE && isLocalHostPage(url)) ||
             type == ElectronAppType.DSME ||
             type == ElectronAppType.UITTY

@@ -1622,7 +1622,7 @@ function scanSinglePort(port) {
                 try {
                     const pages = JSON.parse(data);
                     if (Array.isArray(pages) && pages.length > 0) {
-                        const app = detectAppType(pages);
+                        const app = detectAppType(pages, { port });
                         resolve({ port, pages, appName: app.name, appEmoji: app.emoji });
                     } else { resolve(null); }
                 } catch (e) { resolve(null); }
