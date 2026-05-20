@@ -5721,16 +5721,24 @@ setTimeout(schedulerRestoreAll, 3000); // 等扫描完再恢复
 // ─── 启动全局服务端看门狗定时器 (轮询所有活跃 CDP 实例) ───
 const ENABLE_SERVER_WATCHDOG = process.env.ENABLE_SERVER_WATCHDOG !== 'false';
 if (ENABLE_SERVER_WATCHDOG) {
+    let _isServerWatchdogRunning = false;
     let watchdogTimer = setInterval(async () => {
-        for (const port of activeCdpTargets.keys()) {
-            try {
-                await runServerWatchdog(port);
-            } catch (e) {
-                // 静默异常
+        if (_isServerWatchdogRunning) return; // 防并发重叠与资源耗尽（IDE卡顿时超时可能达 8 秒）
+        _isServerWatchdogRunning = true;
+        try {
+            for (const port of activeCdpTargets.keys()) {
+                try {
+                    await runServerWatchdog(port);
+                } catch (e) {
+                    // 静默异常
+                }
             }
+        } finally {
+            _isServerWatchdogRunning = false;
         }
     }, 2000);
     if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
     log("🤖 服务端自动审批与错误重试看门狗已启动 (周期: 2000ms)");
 }
+
 
