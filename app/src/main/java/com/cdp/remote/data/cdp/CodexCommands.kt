@@ -692,8 +692,37 @@ class CodexCommands(private val cdp: ICdpClient) {
         val result = cdp.evaluate("""
             (function() {
                 try {
+                    // ── 反重力: group/section 容器 ──
+                    var sections = document.querySelectorAll('div[class*="group/section"]');
+                    if (sections.length > 0) {
+                        var projects = [];
+                        var current = '';
+                        var expanded = {};
+                        for (var i = 0; i < sections.length; i++) {
+                            var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0');
+                            if (!nameEl) continue;
+                            var name = nameEl.textContent.trim();
+                            if (!name) continue;
+                            projects.push(name);
+                            var pills = sections[i].querySelectorAll('[data-testid^="convo-pill"]');
+                            expanded[name] = pills.length > 0;
+                            if (!current) {
+                                for (var j = 0; j < pills.length; j++) {
+                                    var row = pills[j];
+                                    for (var k = 0; k < 5 && row; k++) {
+                                        row = row.parentElement;
+                                        if (row && row.className && row.className.toString().includes('bg-sidebar-secondary')) {
+                                            current = name; break;
+                                        }
+                                    }
+                                    if (current) break;
+                                }
+                            }
+                        }
+                        return JSON.stringify({projects: projects, current: current, expanded: expanded});
+                    }
+                    // ── Codex ──
                     var projects = [];
-                    // 从 "Start new chat in {name}" 按钮提取项目名
                     var btns = document.querySelectorAll('button[aria-label^="Start new chat in "]');
                     for (var i = 0; i < btns.length; i++) {
                         var aria = btns[i].getAttribute('aria-label') || '';
@@ -701,13 +730,10 @@ class CodexCommands(private val cdp: ICdpClient) {
                         if (name) projects.push(name);
                     }
 
-                    // 判定当前活跃项目:
-                    // 方法1: 顶部栏有项目名的链接/按钮
                     var topBtns = document.querySelectorAll('button[type="button"]');
                     var current = '';
                     for (var j = 0; j < topBtns.length; j++) {
                         var r = topBtns[j].getBoundingClientRect();
-                        // 顶部栏区域(y<30)、非工具按钮(aria-label为空)、宽度适中
                         if (r.y > 0 && r.y < 30 && r.height < 40) {
                             var t = (topBtns[j].textContent || '').trim();
                             var a = topBtns[j].getAttribute('aria-label') || '';
@@ -716,8 +742,6 @@ class CodexCommands(private val cdp: ICdpClient) {
                             }
                         }
                     }
-
-                    // 方法2: 如果顶部栏没有(新聊天界面)，用 composer 下方的项目选择器
                     if (!current) {
                         var allBtns = document.querySelectorAll('button');
                         for (var k = 0; k < allBtns.length; k++) {
@@ -730,15 +754,12 @@ class CodexCommands(private val cdp: ICdpClient) {
                             }
                         }
                     }
-
-                    // 各项目 expanded 状态
                     var expanded = {};
                     var roleBtns = document.querySelectorAll('[role="button"][aria-expanded]');
                     for (var m = 0; m < roleBtns.length; m++) {
                         var a2 = (roleBtns[m].getAttribute('aria-label') || '');
                         if (a2) expanded[a2] = roleBtns[m].getAttribute('aria-expanded') === 'true';
                     }
-
                     return JSON.stringify({projects: projects, current: current, expanded: expanded});
                 } catch(e) { return JSON.stringify({projects: [], current: '', expanded: {}, error: e.message}); }
             })()
@@ -770,27 +791,40 @@ class CodexCommands(private val cdp: ICdpClient) {
         ensureSidebarOpen()
         val result = cdp.evaluate("""
             (function() {
-                // 先获取项目名列表
+                // ── 反重力 ──
+                var sections = document.querySelectorAll('div[class*="group/section"]');
+                if (sections.length > 0) {
+                    for (var i = 0; i < sections.length; i++) {
+                        var pills = sections[i].querySelectorAll('[data-testid^="convo-pill"]');
+                        for (var j = 0; j < pills.length; j++) {
+                            var row = pills[j];
+                            for (var k = 0; k < 5 && row; k++) {
+                                row = row.parentElement;
+                                if (row && row.className && row.className.toString().includes('bg-sidebar-secondary')) {
+                                    var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0');
+                                    return nameEl ? nameEl.textContent.trim() : '';
+                                }
+                            }
+                        }
+                    }
+                    return '';
+                }
+                // ── Codex ──
                 var projects = [];
                 var btns = document.querySelectorAll('button[aria-label^="Start new chat in "]');
                 for (var i = 0; i < btns.length; i++) {
                     var name = (btns[i].getAttribute('aria-label') || '').replace('Start new chat in ', '');
                     if (name) projects.push(name);
                 }
-
-                // 1. 顶部标题栏(有聊天时显示聊天标题旁的项目名)
                 var topBtns = document.querySelectorAll('button[type="button"]');
                 for (var j = 0; j < topBtns.length; j++) {
                     var r = topBtns[j].getBoundingClientRect();
                     if (r.y > 0 && r.y < 30 && r.height < 40) {
                         var t = (topBtns[j].textContent || '').trim();
                         var aria = topBtns[j].getAttribute('aria-label') || '';
-                        // 排除工具按钮(有 aria-label 的如 Commit, Back 等)
                         if (t && !aria && projects.indexOf(t) >= 0) return t;
                     }
                 }
-
-                // 2. composer 下方项目选择器(新聊天界面)
                 var allBtns = document.querySelectorAll('button');
                 for (var k = 0; k < allBtns.length; k++) {
                     var r2 = allBtns[k].getBoundingClientRect();
@@ -799,14 +833,11 @@ class CodexCommands(private val cdp: ICdpClient) {
                         if (projects.indexOf(t2) >= 0) return t2;
                     }
                 }
-
-                // 3. 侧边栏展开的项目(有聊天项目可见)
                 var roleBtns = document.querySelectorAll('[role="button"][aria-expanded="true"]');
                 for (var m = 0; m < roleBtns.length; m++) {
                     var a = (roleBtns[m].getAttribute('aria-label') || '');
                     if (a && projects.indexOf(a) >= 0) return a;
                 }
-
                 return '';
             })()
         """.trimIndent())
@@ -828,7 +859,41 @@ class CodexCommands(private val cdp: ICdpClient) {
         val result = cdp.evaluate("""
             (async function() {
                 var projectName = $projectLiteral;
-                // 找到项目的 role=button 元素
+                // ── 反重力 ──
+                var sections = document.querySelectorAll('div[class*="group/section"]');
+                if (sections.length > 0) {
+                    var targetSection = null;
+                    for (var i = 0; i < sections.length; i++) {
+                        var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0');
+                        if (nameEl && nameEl.textContent.trim() === projectName) {
+                            targetSection = sections[i]; break;
+                        }
+                    }
+                    if (!targetSection) return 'not-found';
+                    var nameRow = targetSection.querySelector('div.text-sm.font-medium.truncate.m-0');
+                    if (nameRow) {
+                        var clickTarget = nameRow;
+                        for (var p = 0; p < 5 && clickTarget; p++) {
+                            clickTarget = clickTarget.parentElement;
+                            if (clickTarget && clickTarget.className && clickTarget.className.toString().includes('cursor-pointer')) break;
+                        }
+                        if (clickTarget) clickTarget.click();
+                        await new Promise(function(r) { setTimeout(r, 400); });
+                    }
+                    var pills = targetSection.querySelectorAll('[data-testid^="convo-pill"]');
+                    if (pills.length > 0) {
+                        var row = pills[0];
+                        for (var k = 0; k < 5 && row; k++) {
+                            row = row.parentElement;
+                            if (row && row.className && row.className.toString().includes('cursor-pointer')) {
+                                row.click(); return 'switched';
+                            }
+                        }
+                        pills[0].click(); return 'switched';
+                    }
+                    return 'expanded-only';
+                }
+                // ── Codex ──
                 var roleBtns = document.querySelectorAll('[role="button"][aria-expanded]');
                 var projectEl = null;
                 for (var i = 0; i < roleBtns.length; i++) {
@@ -837,36 +902,25 @@ class CodexCommands(private val cdp: ICdpClient) {
                     }
                 }
                 if (!projectEl) return 'not-found';
-
-                // 先展开项目(如果折叠)
                 if (projectEl.getAttribute('aria-expanded') !== 'true') {
                     projectEl.click();
                     await new Promise(function(resolve) { setTimeout(resolve, 300); });
                 }
-
-                // 然后查找该项目下的第一个聊天并点击
                 var parent = projectEl.parentElement;
                 if (!parent) return 'expanded-only';
-
-                // 等待展开后查找聊天项(需要点击后 DOM 可能异步更新)
                 var chatEls = parent.querySelectorAll('[role="button"]');
                 for (var j = 0; j < chatEls.length; j++) {
                     var el = chatEls[j];
                     if (el === projectEl) continue;
-                    // 聊天项有 .truncate.select-none 子元素
                     if (el.querySelector('.truncate.select-none')) {
-                        el.click();
-                        return 'switched';
+                        el.click(); return 'switched';
                     }
                 }
-
-                // 没有聊天，点击 "Start new chat in {name}"
                 var newChatLabel = 'Start new chat in ' + projectName;
                 var buttons = document.querySelectorAll('button');
                 for (var k = 0; k < buttons.length; k++) {
                     if ((buttons[k].getAttribute('aria-label') || '') === newChatLabel) {
-                        buttons[k].click();
-                        return 'new-chat';
+                        buttons[k].click(); return 'new-chat';
                     }
                 }
                 return 'expanded-only';

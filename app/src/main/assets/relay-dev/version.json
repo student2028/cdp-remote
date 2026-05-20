@@ -1,0 +1,1 @@
+{"versionCode":300127,"versionName":"ota-300127","updateMessage":"1. uitty 全局规则：读取/写入在 uittyAPI 不可用时自动回退 window.uitty（与 preload rules:* 一致），已加单元测试验证注入脚本。\n2. uitty「全局」弹窗：仅 Claude + OpenCode；保存成功后再关窗；读取失败有系统提示。\n3. uitty 新建 Tab / CLI 左对齐 / TV 左视图 / 附件双 Enter 等行为保持近期版本。"}

@@ -87,6 +87,7 @@ fun TvLiveView(
             appName.contains("Cursor", ignoreCase = true) -> 2
             appName.contains("uitty", ignoreCase = true) -> 2 // 终端主区在左侧，默认「左」视图
             appName.contains("Codex", ignoreCase = true) -> 3 // 默认"中"，偏右展示主聊天画布
+            appName.contains("Antigravity", ignoreCase = true) -> 3
             else -> 0
         }
         mutableIntStateOf(initial)
@@ -200,7 +201,13 @@ fun TvLiveView(
                 alignment = when (focusMode) {
                     0 -> Alignment.TopEnd                                  // 右
                     2 -> Alignment.TopStart                                // 左
-                    3 -> androidx.compose.ui.BiasAlignment(0.4f, -1f)      // 中(略偏右)：跳过左侧 sidebar，露出右边模型按钮
+                    3 -> {
+                        if (appName.contains("Antigravity", ignoreCase = true)) {
+                            androidx.compose.ui.BiasAlignment(0f, -1f)      // 中：正中间
+                        } else {
+                            androidx.compose.ui.BiasAlignment(0.4f, -1f)    // 中(略偏右)：跳过左侧 sidebar，露出右边模型按钮
+                        }
+                    }
                     else -> Alignment.Center                               // 全 (Fit)
                 },
                 modifier = Modifier
@@ -298,7 +305,7 @@ fun TvLiveView(
                                                     }
                                                 } else {
                                                     // 触屏模式下拖拽可选择性发送 mouseMoved 或保持原生不发，这里为了体验发送拖拽
-                                                    val ratio = toImageRatio(pointer.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                                    val ratio = toImageRatio(pointer.position, imageLayoutSize, bitmapW, bitmapH, focusMode, appName, scale, offsetX, offsetY)
                                                     if (ratio != null) {
                                                         vMouseRx = ratio.first
                                                         vMouseRy = ratio.second
@@ -315,7 +322,7 @@ fun TvLiveView(
                                         if (!isScrolling && duration < 500) {
                                             // 双指轻点 -> 右键点击
                                             if (!isVirtualCursor) {
-                                                val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                                val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, appName, scale, offsetX, offsetY)
                                                 if (ratio != null) {
                                                     vMouseRx = ratio.first
                                                     vMouseRy = ratio.second
@@ -327,7 +334,7 @@ fun TvLiveView(
                                     } else if (!isDragging && duration < 500) {
                                         // 单指轻点 -> 左键点击
                                         if (!isVirtualCursor) {
-                                            val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, scale, offsetX, offsetY)
+                                            val ratio = toImageRatio(down.position, imageLayoutSize, bitmapW, bitmapH, focusMode, appName, scale, offsetX, offsetY)
                                             if (ratio != null) {
                                                 vMouseRx = ratio.first
                                                 vMouseRy = ratio.second
@@ -511,6 +518,7 @@ private fun toImageRatio(
     bitmapW: Float,
     bitmapH: Float,
     focusMode: Int,
+    appName: String,
     scale: Float,
     transX: Float,
     transY: Float
@@ -557,8 +565,9 @@ private fun toImageRatio(
             imgLeft = 0f
             imgTop = 0f
         }
-        3 -> { // 中(略偏右): horizontalBias = 0.4  →  imgLeft = (viewW - drawW) * (1 + 0.4) / 2 = (viewW - drawW) * 0.7
-            imgLeft = (viewW - drawW) * 0.7f
+        3 -> { // 中
+            val bias = if (appName.contains("Antigravity", ignoreCase = true)) 0f else 0.4f
+            imgLeft = (viewW - drawW) * (1 + bias) / 2f
             imgTop = 0f
         }
         else -> { // 全: Fit + Center

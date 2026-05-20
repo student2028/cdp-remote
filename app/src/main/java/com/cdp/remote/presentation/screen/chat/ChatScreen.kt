@@ -147,7 +147,7 @@ fun ChatScreen(
     var globalRuleDraft by remember { mutableStateOf("") }
     var uittyGlobalRuleKind by remember { mutableStateOf("claude") }
     val showAntigravityGlobalRule = appName.contains("Antigravity", ignoreCase = true)
-    val isCodexApp = appName.contains("Codex", ignoreCase = true)
+    val isCodexApp = appName.contains("Codex", ignoreCase = true) || appName.contains("Antigravity", ignoreCase = true)
     val showGlobalRuleForUitty = state.isUitty
     val showUsageButton = isCodexApp || state.isWindsurf || showAntigravityGlobalRule
 
@@ -791,6 +791,7 @@ fun ModelSwitchDialog(
             ) {
                 val isWindsurf = appName.contains("Windsurf", ignoreCase = true)
                 val isCodex = appName.contains("Codex", ignoreCase = true)
+                val isAntigravity = appName.contains("Antigravity", ignoreCase = true)
 
                 // Codex 优先使用预设模型列表
 
@@ -816,6 +817,12 @@ fun ModelSwitchDialog(
                         "Fast", "Standard",
                         // 模型
                         "GPT-5.5", "GPT-5.4"
+                    )
+                    isAntigravity -> listOf(
+                        "Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (Medium)",
+                        "Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (Low)",
+                        "Claude Sonnet 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)",
+                        "GPT-OSS 120B (Medium)"
                     )
                     else -> listOf(
                         "Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (Low)", "Gemini 3 Flash",

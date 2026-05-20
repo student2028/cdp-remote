@@ -312,6 +312,36 @@ class CommandsIntegrationTest {
         assertFalse("没找到 action 按钮应返回 false", result)
     }
 
+    @Test
+    fun `autoAcceptActions supports new Antigravity allow command prompt`() = runBlocking {
+        mockServer.onRequest { req ->
+            val method = req.get("method")?.asString
+            if (method == "Runtime.evaluate") {
+                val expr = req.getAsJsonObject("params")?.get("expression")?.asString ?: ""
+                if (expr.contains("__cdpHelpers")) {
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("value", """{"found":false,"reason":"no-buttons"}""")
+                        })
+                    }
+                } else {
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("type", "string")
+                            addProperty("value", "ok")
+                        })
+                    }
+                }
+            } else null
+        }
+
+        commands.autoAcceptActions()
+
+        assertTrue(mockServer.receivedExpressions.any { it.contains("doc.body || doc") })
+        assertTrue(mockServer.receivedExpressions.any { it.contains("matchesActionButton(txt)") })
+    }
+
     // ─── CDP 错误处理 ────────────────────────────────────────────────
 
     @Test

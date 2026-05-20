@@ -257,9 +257,13 @@
                 lowerTxt === 'approve' ||
                 lowerTxt === 'continue' ||
                 lowerTxt === 'yes' ||
+                lowerTxt === 'yes, allow this time' ||
                 lowerTxt === 'always allow' ||
                 lowerTxt === 'allow once' ||
                 lowerTxt === 'allow in workspace' ||
+                lowerTxt === 'allow this time' ||
+                (lowerTxt.indexOf('allow running this command') >= 0) ||
+                (lowerTxt.indexOf('yes') === 0 && lowerTxt.indexOf('allow') >= 0) ||
                 (lowerTxt.startsWith('run') && lowerTxt.includes('(')) ||
                 (lowerTxt.startsWith('allow') && lowerTxt.includes('(')) ||
                 (lowerTxt.startsWith('approve') && lowerTxt.includes('(')) ||

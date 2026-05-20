@@ -1047,9 +1047,13 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                                 lowerTxt === 'approve' ||
                                 lowerTxt === 'continue' ||
                                 lowerTxt === 'yes' ||
+                                lowerTxt === 'yes, allow this time' ||
                                 lowerTxt === 'always allow' ||
                                 lowerTxt === 'allow once' ||
                                 lowerTxt === 'allow in workspace' ||
+                                lowerTxt === 'allow this time' ||
+                                lowerTxt.includes('allow running this command') ||
+                                (lowerTxt.startsWith('yes') && lowerTxt.includes('allow')) ||
                                 (lowerTxt.startsWith('run') && lowerTxt.includes('(')) || 
                                 (lowerTxt.startsWith('allow') && lowerTxt.includes('(')) ||
                                 (lowerTxt.startsWith('approve') && lowerTxt.includes('(')) ||
@@ -1110,7 +1114,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                              || doc.querySelector('[class*="aichat"]')
                              || doc.querySelector('[class*="cascade-scrollbar"]')
                              || doc.querySelector('[class*="chat-client-root"]');
-                        if (!panel) continue; // 找不到面板就跳过，绝不扫全页面
+                        if (!panel) panel = doc.body || doc;
                     }
                     var flat = helpers.flattenElements(panel);
 
@@ -1588,98 +1592,109 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
 
     open suspend fun getRecentSessionsList(): CdpResult<List<String>> {
         val script = """
-            (async function() {
-                // Antigravity: quickinput 覆盖面板
-                function getQuickInputItems() {
-                    var container = document.querySelector('[class*="bg-quickinput-background"]');
-                    if (!container) return [];
-                    var items = container.querySelectorAll('div.cursor-pointer');
-                    var result = [];
-                    for (var i = 0; i < items.length; i++) {
-                        var el = items[i];
-                        var cls = (typeof el.className === 'string') ? el.className : '';
-                        if (cls.includes('justify-between') && el.offsetParent) {
-                            result.push(el);
+            (function() {
+                try {
+                    // 新版反重力: 直接从侧边栏 group/section 读取当前项目下的对话
+                    var sections = document.querySelectorAll('div[class*="group/section"]');
+                    if (sections.length > 0) {
+                        // 找当前活跃项目的 section (包含 bg-sidebar-secondary 高亮行的)
+                        var currentSection = null;
+                        for (var i = 0; i < sections.length; i++) {
+                            var pills = sections[i].querySelectorAll('[data-testid^="convo-pill"]');
+                            for (var j = 0; j < pills.length; j++) {
+                                var row = pills[j];
+                                for (var k = 0; k < 5 && row; k++) {
+                                    row = row.parentElement;
+                                    if (row && row.className && row.className.toString().includes('bg-sidebar-secondary')) {
+                                        currentSection = sections[i];
+                                        break;
+                                    }
+                                }
+                                if (currentSection) break;
+                            }
+                            if (currentSection) break;
                         }
-                    }
-                    return result;
-                }
+                        if (!currentSection) return JSON.stringify({status: 'no-project'});
 
-                function extractTitles(items) {
-                    // 解析相对时间为分钟数用于排序
-                    function parseTime(t) {
-                        if (!t) return 999999;
-                        var m = t.match(/(\d+)\s*(sec|min|hour|hr|day|week|month|year)/i);
-                        if (!m) return 999999;
-                        var n = parseInt(m[1]);
-                        var u = m[2].toLowerCase();
-                        if (u.startsWith('sec')) return n / 60;
-                        if (u.startsWith('min')) return n;
-                        if (u.startsWith('h')) return n * 60;
-                        if (u.startsWith('day')) return n * 1440;
-                        if (u.startsWith('week')) return n * 10080;
-                        if (u.startsWith('month')) return n * 43200;
-                        if (u.startsWith('year')) return n * 525600;
-                        return 999999;
-                    }
-                    var entries = [];
-                    for (var i = 0; i < items.length; i++) {
-                        var el = items[i];
-                        var titleEl = el.children[0];
-                        var timeEl = el.children[1];
-                        var title = titleEl ? titleEl.textContent.trim() : '';
-                        var time = timeEl ? timeEl.textContent.trim() : '';
-                        if (!title) title = (el.textContent || '').trim();
-                        title = title.replace(/\n/g, ' ').trim();
-                        if (title.length > 50) title = title.substring(0, 50) + '...';
-                        entries.push({title: title, time: time, minutes: parseTime(time), origIdx: i});
-                    }
-                    entries.sort(function(a, b) { return a.minutes - b.minutes; });
-                    var res = [], idxMap = [];
-                    for (var i = 0; i < entries.length; i++) {
-                        var s = entries[i].title;
-                        if (entries[i].time) s += ' · ' + entries[i].time;
-                        if (s) { res.push(s); idxMap.push(entries[i].origIdx); }
-                    }
-                    return {sessions: res, indexMap: idxMap};
-                }
-
-                // 先检查面板是否已打开
-                var existing = getQuickInputItems();
-                if (existing.length > 0) {
-                    var data = extractTitles(existing);
-                    return JSON.stringify({status: 'found', sessions: data.sessions, indexMap: data.indexMap});
-                }
-
-                // 打开 Past Conversations 面板
-                var historyBtn = document.querySelector('a[data-tooltip-id="history-tooltip"]');
-                if (!historyBtn) {
-                    var btns = document.querySelectorAll('a, button, [role="button"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (!btns[i].offsetParent) continue;
-                        var tooltip = btns[i].getAttribute('data-tooltip-id') || '';
-                        var text = (btns[i].textContent || '').trim().toLowerCase();
-                        if (tooltip === 'history-tooltip' || text === 'past conversations') {
-                            historyBtn = btns[i]; break;
+                        var nameEl = currentSection.querySelector('div.text-sm.font-medium.truncate.m-0');
+                        var projectName = nameEl ? nameEl.textContent.trim() : '';
+                        var pills = currentSection.querySelectorAll('[data-testid^="convo-pill"]');
+                        var sessions = [];
+                        for (var p = 0; p < pills.length; p++) {
+                            var text = (pills[p].textContent || '').trim();
+                            if (text.length > 50) text = text.substring(0, 50) + '...';
+                            if (text) sessions.push(text);
                         }
+                        return JSON.stringify({status: 'found', sessions: sessions, indexMap: sessions.map(function(_, i) { return i; })});
                     }
+
+                    // 旧版: quickinput 覆盖面板
+                    function getQuickInputItems() {
+                        var container = document.querySelector('[class*="bg-quickinput-background"]');
+                        if (!container) return [];
+                        var items = container.querySelectorAll('div.cursor-pointer');
+                        var result = [];
+                        for (var i = 0; i < items.length; i++) {
+                            var el = items[i];
+                            var cls = (typeof el.className === 'string') ? el.className : '';
+                            if (cls.includes('justify-between') && el.offsetParent) {
+                                result.push(el);
+                            }
+                        }
+                        return result;
+                    }
+
+                    function extractTitles(items) {
+                        function parseTime(t) {
+                            if (!t) return 999999;
+                            var m = t.match(/(\d+)\s*(sec|min|hour|hr|day|week|month|year)/i);
+                            if (!m) return 999999;
+                            var n = parseInt(m[1]);
+                            var u = m[2].toLowerCase();
+                            if (u.startsWith('sec')) return n / 60;
+                            if (u.startsWith('min')) return n;
+                            if (u.startsWith('h')) return n * 60;
+                            if (u.startsWith('day')) return n * 1440;
+                            if (u.startsWith('week')) return n * 10080;
+                            if (u.startsWith('month')) return n * 43200;
+                            if (u.startsWith('year')) return n * 525600;
+                            return 999999;
+                        }
+                        var entries = [];
+                        for (var i = 0; i < items.length; i++) {
+                            var el = items[i];
+                            var titleEl = el.children[0];
+                            var timeEl = el.children[1];
+                            var title = titleEl ? titleEl.textContent.trim() : '';
+                            var time = timeEl ? timeEl.textContent.trim() : '';
+                            if (!title) title = (el.textContent || '').trim();
+                            title = title.replace(/\n/g, ' ').trim();
+                            if (title.length > 50) title = title.substring(0, 50) + '...';
+                            entries.push({title: title, time: time, minutes: parseTime(time), origIdx: i});
+                        }
+                        entries.sort(function(a, b) { return a.minutes - b.minutes; });
+                        var res = [], idxMap = [];
+                        for (var i = 0; i < entries.length; i++) {
+                            var s = entries[i].title;
+                            if (entries[i].time) s += ' · ' + entries[i].time;
+                            if (s) { res.push(s); idxMap.push(entries[i].origIdx); }
+                        }
+                        return {sessions: res, indexMap: idxMap};
+                    }
+
+                    var existing = getQuickInputItems();
+                    if (existing.length > 0) {
+                        var data = extractTitles(existing);
+                        return JSON.stringify({status: 'found', sessions: data.sessions, indexMap: data.indexMap});
+                    }
+                    return JSON.stringify({status: 'no-items'});
+                } catch(e) {
+                    return JSON.stringify({status: 'error', error: e.message});
                 }
-                if (!historyBtn) return JSON.stringify({status: 'no-button'});
-
-                historyBtn.click();
-                await new Promise(r => setTimeout(r, 800));
-
-                var items = getQuickInputItems();
-                if (items.length > 0) {
-                    var data = extractTitles(items);
-                    return JSON.stringify({status: 'found', sessions: data.sessions, indexMap: data.indexMap});
-                }
-
-                return JSON.stringify({status: 'no-items'});
             })()
         """.trimIndent()
         
-        val result = cdp.evaluate(script, awaitPromise = true)
+        val result = cdp.evaluate(script)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         val jsonStr = result.getOrNull() ?: return CdpResult.Error("无返回结果")
         return try {
@@ -1688,7 +1703,6 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                 val sessionsArray = root.getAsJsonArray("sessions")
                 val list = mutableListOf<String>()
                 sessionsArray.forEach { list.add(it.asString) }
-                // 保存索引映射供 switchSessionByIndex 使用
                 val idxArray = root.getAsJsonArray("indexMap")
                 sessionIndexMap = idxArray?.map { it.asInt } ?: emptyList()
                 CdpResult.Success(list)
@@ -1708,33 +1722,68 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
             index
         }
         val script = """
-            (async function() {
-                // Antigravity: quickinput 覆盖面板中的会话条目
-                function getQuickInputItems() {
+            (function() {
+                try {
+                    // 新版反重力: 直接点击侧边栏 convo-pill
+                    var sections = document.querySelectorAll('div[class*="group/section"]');
+                    if (sections.length > 0) {
+                        var currentSection = null;
+                        for (var i = 0; i < sections.length; i++) {
+                            var pills = sections[i].querySelectorAll('[data-testid^="convo-pill"]');
+                            for (var j = 0; j < pills.length; j++) {
+                                var row = pills[j];
+                                for (var k = 0; k < 5 && row; k++) {
+                                    row = row.parentElement;
+                                    if (row && row.className && row.className.toString().includes('bg-sidebar-secondary')) {
+                                        currentSection = sections[i];
+                                        break;
+                                    }
+                                }
+                                if (currentSection) break;
+                            }
+                            if (currentSection) break;
+                        }
+                        if (!currentSection) return 'no-project';
+
+                        var pills = currentSection.querySelectorAll('[data-testid^="convo-pill"]');
+                        if (pills.length <= $realIndex) return 'out-of-range';
+
+                        var target = pills[$realIndex];
+                        // 找可点击的容器行
+                        var clickRow = target;
+                        for (var p = 0; p < 5 && clickRow; p++) {
+                            clickRow = clickRow.parentElement;
+                            if (clickRow && clickRow.className && clickRow.className.toString().includes('cursor-pointer')) {
+                                clickRow.click();
+                                return 'clicked';
+                            }
+                        }
+                        target.click();
+                        return 'clicked';
+                    }
+
+                    // 旧版: quickinput 覆盖面板
                     var container = document.querySelector('[class*="bg-quickinput-background"]');
-                    if (!container) return [];
+                    if (!container) return 'no-items';
                     var items = container.querySelectorAll('div.cursor-pointer');
-                    var result = [];
+                    var vItems = [];
                     for (var i = 0; i < items.length; i++) {
                         var el = items[i];
                         var cls = (typeof el.className === 'string') ? el.className : '';
                         if (cls.includes('justify-between') && el.offsetParent) {
-                            result.push(el);
+                            vItems.push(el);
                         }
                     }
-                    return result;
-                }
-                
-                var vItems = getQuickInputItems();
-                if (vItems.length > $realIndex) {
-                    vItems[$realIndex].click();
-                    return 'clicked';
-                }
-                return 'no-items';
+                    if (vItems.length > $realIndex) {
+                        vItems[$realIndex].click();
+                        return 'clicked';
+                    }
+                    return 'no-items';
+                } catch(e) { return 'error:' + e.message; }
             })()
         """.trimIndent()
         
-        val result = cdp.evaluate(script, awaitPromise = true)
+        val result = cdp.evaluate(script)
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         return when (result.getOrNull()) {
             "clicked" -> CdpResult.Success(Unit)
@@ -1814,36 +1863,251 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
      * 这里只负责把设置窗口唤出来，读取额度由上层连接 Settings target 完成。
      */
     open suspend fun showUsagePanel(): CdpResult<String> {
-        val current = cdp.evaluate("""
-            (function() {
-                var text = document.body ? (document.body.innerText || '') : '';
-                if (/MODEL QUOTA/i.test(text) || /Available AI Credits/i.test(text)) return 'models';
-                if (/Settings/i.test(document.title || '')) return 'settings';
-                return '';
-            })()
-        """.trimIndent()).getOrNull().orEmpty()
-        if (current == "models") return CdpResult.Success("Antigravity Models")
+        // 1. 确保聚焦到主窗口
+        cdp.call("Page.bringToFront")
+        delay(200)
 
-        // Antigravity 菜单里的 "Open Antigravity User Settings" 绑定 Cmd+,。
-        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
-            addProperty("type", "rawKeyDown")
-            addProperty("key", ",")
-            addProperty("code", "Comma")
-            addProperty("modifiers", 4)
-            addProperty("windowsVirtualKeyCode", 188)
-            addProperty("nativeVirtualKeyCode", 188)
-        })
-        delay(50)
-        cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
-            addProperty("type", "keyUp")
-            addProperty("key", ",")
-            addProperty("code", "Comma")
-            addProperty("modifiers", 4)
-            addProperty("windowsVirtualKeyCode", 188)
-            addProperty("nativeVirtualKeyCode", 188)
-        })
-        delay(700)
-        return CdpResult.Success("已打开 Antigravity User Settings")
+        // 2. 寻找 Settings 按钮的坐标
+        val coordsRes = cdp.evaluate("""
+            (function() {
+                var elements = document.querySelectorAll('button, div, a');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    var text = (el.innerText || el.textContent || '').trim();
+                    var r = el.getBoundingClientRect();
+                    if (text === 'Settings' && r.x < 260 && r.width > 0 && r.height > 0) {
+                        return JSON.stringify({ x: r.x + r.width/2, y: r.y + r.height/2 });
+                    }
+                }
+                return null;
+            })()
+        """.trimIndent())
+
+        val coordsStr = coordsRes.getOrNull()
+        val coords = if (!coordsStr.isNullOrBlank() && coordsStr != "null") {
+            try {
+                val obj = JsonParser.parseString(coordsStr).asJsonObject
+                val x = obj.get("x")?.asDouble
+                val y = obj.get("y")?.asDouble
+                if (x != null && y != null) Pair(x, y) else null
+            } catch (e: Exception) { null }
+        } else null
+
+        if (coords != null) {
+            val (x, y) = coords
+            cdp.dispatchMouseEvent("mousePressed", x, y, "left", 1)
+            cdp.dispatchMouseEvent("mouseReleased", x, y, "left", 1)
+        } else {
+            // Fallback: 发送 Cmd+, 快捷键
+            cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+                addProperty("type", "rawKeyDown")
+                addProperty("key", ",")
+                addProperty("code", "Comma")
+                addProperty("modifiers", 4)
+                addProperty("windowsVirtualKeyCode", 188)
+                addProperty("nativeVirtualKeyCode", 188)
+            })
+            delay(50)
+            cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
+                addProperty("type", "keyUp")
+                addProperty("key", ",")
+                addProperty("code", "Comma")
+                addProperty("modifiers", 4)
+                addProperty("windowsVirtualKeyCode", 188)
+                addProperty("nativeVirtualKeyCode", 188)
+            })
+        }
+
+        delay(800)
+
+        // 3. 寻找 Models 按钮的坐标并点击
+        val modelsCoordsRes = cdp.evaluate("""
+            (function() {
+                var elements = document.querySelectorAll('button, div, a');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    var text = (el.innerText || el.textContent || '').trim();
+                    var r = el.getBoundingClientRect();
+                    if (text === 'Models' && r.x < 260 && r.width > 0 && r.height > 0) {
+                        return JSON.stringify({ x: r.x + r.width/2, y: r.y + r.height/2 });
+                    }
+                }
+                return null;
+            })()
+        """.trimIndent())
+
+        val modelsCoordsStr = modelsCoordsRes.getOrNull()
+        val modelsCoords = if (!modelsCoordsStr.isNullOrBlank() && modelsCoordsStr != "null") {
+            try {
+                val obj = JsonParser.parseString(modelsCoordsStr).asJsonObject
+                val x = obj.get("x")?.asDouble
+                val y = obj.get("y")?.asDouble
+                if (x != null && y != null) Pair(x, y) else null
+            } catch (e: Exception) { null }
+        } else null
+
+        if (modelsCoords != null) {
+            val (x, y) = modelsCoords
+            cdp.dispatchMouseEvent("mousePressed", x, y, "left", 1)
+            cdp.dispatchMouseEvent("mouseReleased", x, y, "left", 1)
+        }
+
+        delay(1200)
+
+        // 4. 解析额度数据
+        val detailRes = cdp.evaluate("""
+            (async function() {
+                function bodyText() {
+                    return (document.body ? (document.body.innerText || '') : '').replace(/\r/g, '');
+                }
+                function readQuotaRows() {
+                    var rows = [];
+                    var divs = document.querySelectorAll('div');
+                    for (var i = 0; i < divs.length; i++) {
+                        var div = divs[i];
+                        var text = (div.innerText || '').trim();
+                        if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(text) && 
+                            /Refreshes/i.test(text) && 
+                            text.length < 500) {
+                            
+                            var lines = text.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+                            if (lines.length >= 2) {
+                                var name = lines[0];
+                                var reset = lines[1];
+                                
+                                var segments = div.querySelectorAll('[class*="bg-gray-500"], [class*="bg-muted"]');
+                                var remaining = '';
+                                if (segments.length > 0) {
+                                    var filled = 0;
+                                    for (var s = 0; s < segments.length; s++) {
+                                        var fill = segments[s].firstElementChild;
+                                        var width = fill ? (fill.style.width || window.getComputedStyle(fill).width || '') : '';
+                                        var percent = 0;
+                                        var m = String(width).match(/([0-9.]+)%/);
+                                        if (m) {
+                                            percent = parseFloat(m[1]);
+                                        } else if (fill) {
+                                            var sr = segments[s].getBoundingClientRect();
+                                            var fr = fill.getBoundingClientRect();
+                                            percent = sr.width > 0 ? (fr.width / sr.width) * 100 : 0;
+                                        }
+                                        if (percent >= 90) filled += 1;
+                                        else if (percent > 5) filled += percent / 100;
+                                    }
+                                    remaining = Math.round(filled * 10) / 10 + '/' + segments.length;
+                                }
+                                
+                                var exists = false;
+                                for (var r = 0; r < rows.length; r++) {
+                                    if (rows[r].name === name) {
+                                        exists = true;
+                                        break;
+                                    }
+                                }
+                                if (!exists) {
+                                    rows.push({ name: name, reset: reset, remaining: remaining });
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (rows.length === 0) {
+                        var textAll = document.body ? document.body.innerText : '';
+                        var linesAll = textAll.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+                        for (var j = 0; j < linesAll.length; j++) {
+                            if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(linesAll[j]) && j + 1 < linesAll.length && /Refreshes/i.test(linesAll[j + 1])) {
+                                rows.push({ name: linesAll[j], reset: linesAll[j + 1], remaining: '' });
+                            }
+                        }
+                    }
+                    return rows;
+                }
+
+                function isKeyQuota(row) {
+                    var normalized = (row && row.name ? row.name : '')
+                        .toLowerCase()
+                        .replace(/[^a-z0-9.]+/g, ' ')
+                        .trim();
+                    var isGeminiHigh = normalized.indexOf('gemini') >= 0 &&
+                        (normalized.indexOf('3.1') >= 0 || normalized.indexOf('3.5') >= 0) &&
+                        normalized.indexOf('high') >= 0;
+                    var isOpus = normalized.indexOf('claude') >= 0 && normalized.indexOf('opus') >= 0;
+                    return isGeminiHigh || isOpus;
+                }
+
+                function hasStableKeyQuota(rows) {
+                    var keyRows = rows.filter(isKeyQuota);
+                    if (keyRows.length < 2 && rows.length >= 5) {
+                        keyRows = [rows[0], rows[4]];
+                    }
+                    if (keyRows.length < 2) return false;
+                    for (var i = 0; i < keyRows.length; i++) {
+                        if (!keyRows[i].reset || !keyRows[i].remaining) return false;
+                    }
+                    return true;
+                }
+
+                var credits = '';
+                var rows = [];
+                for (var attempt = 0; attempt < 6; attempt++) {
+                    var text = bodyText();
+                    credits = (text.match(/Available AI Credits:\s*([0-9,]+)/i) || [])[1] || credits;
+                    rows = readQuotaRows();
+                    if (hasStableKeyQuota(rows)) break;
+                    await new Promise(r => setTimeout(r, 450));
+                }
+                return JSON.stringify({ ok: true, credits: credits, rows: rows });
+            })()
+        """.trimIndent(), awaitPromise = true)
+
+        // 5. 提取完毕，通过模拟完整指针点击右上角关闭按钮关闭 Settings 面板，避免键盘事件引发系统快捷键冲突 (如 macOS 听写)
+        delay(150)
+        cdp.evaluate("""
+            (function() {
+                function fullClick(el) {
+                    try {
+                        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+                    } catch (e) {}
+                    el.click();
+                }
+
+                // 1. 优先使用最具特异性的类名组合寻找关闭按钮
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var cls = buttons[i].className || '';
+                    if (typeof cls === 'object' && cls !== null && cls.baseVal !== undefined) {
+                        cls = cls.baseVal;
+                    }
+                    if (typeof cls === 'string' && cls.indexOf('absolute') >= 0 && cls.indexOf('top-4') >= 0 && cls.indexOf('right-4') >= 0) {
+                        fullClick(buttons[i]);
+                        return true;
+                    }
+                }
+
+                // 2. 几何坐标兜底（必须避开 y < 80 区域的其它小按钮，真正的关闭按钮通常在 y: 80~150）
+                for (var i = 0; i < buttons.length; i++) {
+                    var r = buttons[i].getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0 && r.y > 80 && r.y < 200 && r.x > 800 && r.width < 50 && r.height < 50) {
+                        fullClick(buttons[i]);
+                        return true;
+                    }
+                }
+                return false;
+            })()
+        """.trimIndent())
+
+
+
+
+        val detailStr = detailRes.getOrNull()
+        return if (!detailStr.isNullOrBlank()) {
+            CdpResult.Success(detailStr)
+        } else {
+            CdpResult.Error(detailRes.let { if (it is CdpResult.Error) it.message else "未知错误" })
+        }
     }
 
     // ─────────────────── 模型切换 ───────────────────

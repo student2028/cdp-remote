@@ -224,7 +224,7 @@ class ChatViewModel(
                     // 其它 IDE 保留反重力实现，行为保持不变。
                     commands = if (appType == ElectronAppType.CURSOR) CursorCommands(cdpClient, appName)
                                else AntigravityCommands(cdpClient, appName)
-                    codexCommands = null
+                    codexCommands = if (isAntigravity) CodexCommands(cdpClient) else null
                     claudeCodeCommands = null
                     uittyCommands = null
                 }
@@ -1224,7 +1224,7 @@ class ChatViewModel(
     // ─── Codex 项目管理 ─────────────────────────────────────────────
 
     fun openCodexProjectFolderBrowser() {
-        if (!isCodex) return
+        if (!isCodex && !isAntigravity) return
         val hostUrl = connectHost?.httpUrl
         if (hostUrl == null) {
             addSystemMessage("添加项目失败: 未连接 Relay")
@@ -1333,7 +1333,7 @@ class ChatViewModel(
     }
 
     fun fetchCodexProjects() {
-        if (!isCodex || codexCommands == null) return
+        if ((!isCodex && !isAntigravity) || codexCommands == null) return
         uiState = uiState.copy(codexProjectsLoading = true)
         viewModelScope.launch {
             val result = codexCommands!!.listProjects()
@@ -1355,7 +1355,7 @@ class ChatViewModel(
     }
 
     fun switchCodexProject(projectName: String) {
-        if (!isCodex || codexCommands == null) return
+        if ((!isCodex && !isAntigravity) || codexCommands == null) return
         viewModelScope.launch {
             val result = codexCommands!!.switchProject(projectName)
             when (result) {
@@ -1369,7 +1369,7 @@ class ChatViewModel(
     }
 
     fun startNewChatInProject(projectName: String) {
-        if (!isCodex || codexCommands == null) return
+        if ((!isCodex && !isAntigravity) || codexCommands == null) return
         viewModelScope.launch {
             val result = codexCommands!!.startNewChatInProject(projectName)
             when (result) {
@@ -1380,7 +1380,7 @@ class ChatViewModel(
     }
 
     fun addCodexProject(path: String) {
-        if (!isCodex) return
+        if (!isCodex && !isAntigravity) return
         val hostUrl = connectHost?.httpUrl
         if (hostUrl == null) {
             addSystemMessage("添加项目失败: 未连接 Relay")
@@ -1495,189 +1495,12 @@ class ChatViewModel(
     }
 
     private suspend fun showAntigravityUsagePanel(): CdpResult<String> {
-        val openResult = commands?.showUsagePanel()
+        val detail = commands?.showUsagePanel()
             ?: return CdpResult.Error("Antigravity 命令未初始化")
-        if (openResult is CdpResult.Error) return CdpResult.Error(openResult.message)
+        if (detail is CdpResult.Error) return CdpResult.Error(detail.message)
 
-        delay(900)
-        val settingsPage = findAntigravitySettingsPage()
-            ?: return CdpResult.Error("未找到 Antigravity Settings CDP target")
-
-        val settingsClient = CdpClient()
         return try {
-            val connectResult = settingsClient.connectDirect(settingsPage.webSocketDebuggerUrl)
-            if (connectResult is CdpResult.Error) return CdpResult.Error(connectResult.message)
-
-            val detail = settingsClient.evaluate("""
-                (async function() {
-                    function isVisible(el) {
-                        if (!el) return false;
-                        var r = el.getBoundingClientRect();
-                        var s = window.getComputedStyle(el);
-                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-                    }
-                    function fullClick(el) {
-                        try {
-                            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
-                            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
-                            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
-                            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
-                        } catch (e) {}
-                        el.click();
-                    }
-                    function bodyText() {
-                        return (document.body ? (document.body.innerText || '') : '').replace(/\r/g, '');
-                    }
-                    function clickModels() {
-                        var items = document.querySelectorAll('[role="button"], button, a, .settings-toc-entry, .monaco-list-row, div');
-                        for (var i = 0; i < items.length; i++) {
-                            var el = items[i];
-                            if (!isVisible(el)) continue;
-                            var raw = (el.innerText || el.textContent || '').trim();
-                            var exact = raw.toLowerCase();
-                            var t = raw.replace(/\s+/g, ' ').toLowerCase();
-                            var a = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-                            var r = el.getBoundingClientRect();
-                            if ((exact === 'models' || t === 'models' || a === 'models') && r.x < 260) {
-                                fullClick(el);
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                    function segmentFill(group) {
-                        var segments = group.querySelectorAll('[class*="bg-gray-500"]');
-                        if (segments.length === 0) return null;
-                        var filled = 0;
-                        for (var s = 0; s < segments.length; s++) {
-                            var fill = segments[s].firstElementChild;
-                            var width = fill ? (fill.style.width || window.getComputedStyle(fill).width || '') : '';
-                            var percent = 0;
-                            var m = String(width).match(/([0-9.]+)%/);
-                            if (m) {
-                                percent = parseFloat(m[1]);
-                            } else if (fill) {
-                                var sr = segments[s].getBoundingClientRect();
-                                var fr = fill.getBoundingClientRect();
-                                percent = sr.width > 0 ? (fr.width / sr.width) * 100 : 0;
-                            }
-                            if (percent >= 90) filled += 1;
-                            else if (percent > 5) filled += percent / 100;
-                        }
-                        return {
-                            filled: Math.round(filled * 10) / 10,
-                            total: segments.length
-                        };
-                    }
-
-                    function findProgressGroup(container) {
-                        var groups = container.querySelectorAll('div');
-                        for (var i = 0; i < groups.length; i++) {
-                            var gr = groups[i].getBoundingClientRect();
-                            if (!isVisible(groups[i]) || gr.width < 100 || gr.height > 8) continue;
-                            var segments = groups[i].querySelectorAll('[class*="bg-gray-500"]');
-                            if (segments.length >= 3) return groups[i];
-                        }
-                        return null;
-                    }
-
-                    function readQuotaRows() {
-                        var rows = [];
-                        var containers = document.querySelectorAll('[class*="py-3"][class*="border-b"]');
-                        for (var i = 0; i < containers.length; i++) {
-                            var el = containers[i];
-                            if (!isVisible(el)) continue;
-                            var text = (el.innerText || el.textContent || '').trim();
-                            if (!/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(text)) continue;
-                            var lines = text.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
-                            var name = '';
-                            var reset = '';
-                            for (var li = 0; li < lines.length; li++) {
-                                if (!name && /^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[li])) name = lines[li];
-                                if (!reset && /Refreshes/i.test(lines[li])) reset = lines[li];
-                            }
-                            if (!reset) {
-                                var resetMatch = text.match(/Refreshes[^\n]*/i);
-                                reset = resetMatch ? resetMatch[0].trim() : '';
-                            }
-                            if (!name) continue;
-                            var group = findProgressGroup(el);
-                            var fill = group ? segmentFill(group) : null;
-                            rows.push({
-                                name: name,
-                                reset: reset,
-                                remaining: fill ? (fill.filled + '/' + fill.total) : ''
-                            });
-                        }
-
-                        if (rows.length > 0) return rows;
-
-                        var text = bodyText();
-                        var lines = text.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
-                        for (var j = 0; j < lines.length; j++) {
-                            if (/^(Gemini|Claude|GPT|OpenAI|DeepSeek|Kimi|SWE)/i.test(lines[j]) && j + 1 < lines.length && /Refreshes/i.test(lines[j + 1])) {
-                                rows.push({ name: lines[j], reset: lines[j + 1], remaining: '' });
-                            }
-                        }
-                        var fills = [];
-                        var groups = document.querySelectorAll('div');
-                        for (var g = 0; g < groups.length; g++) {
-                            var gr = groups[g].getBoundingClientRect();
-                            if (!isVisible(groups[g]) || gr.x < 250 || gr.width < 100 || gr.height > 8) continue;
-                            if (groups[g].querySelectorAll('[class*="bg-gray-500"]').length < 3) continue;
-                            var f = segmentFill(groups[g]);
-                            if (f) fills.push(f);
-                        }
-                        for (var ri = 0; ri < rows.length && ri < fills.length; ri++) {
-                            rows[ri].remaining = fills[ri].filled + '/' + fills[ri].total;
-                        }
-                        return rows;
-                    }
-
-                    function isKeyQuota(row) {
-                        var normalized = (row && row.name ? row.name : '')
-                            .toLowerCase()
-                            .replace(/[^a-z0-9.]+/g, ' ')
-                            .trim();
-                        var isGeminiHigh = normalized.indexOf('gemini') >= 0 &&
-                            normalized.indexOf('3.1') >= 0 &&
-                            normalized.indexOf('pro') >= 0 &&
-                            normalized.indexOf('high') >= 0;
-                        var isOpus = normalized.indexOf('claude') >= 0 && normalized.indexOf('opus') >= 0;
-                        return isGeminiHigh || isOpus;
-                    }
-
-                    function hasStableKeyQuota(rows) {
-                        var keyRows = rows.filter(isKeyQuota);
-                        if (keyRows.length < 2 && rows.length >= 5) {
-                            keyRows = [rows[0], rows[4]];
-                        }
-                        if (keyRows.length < 2) return false;
-                        for (var i = 0; i < keyRows.length; i++) {
-                            if (!keyRows[i].reset || !keyRows[i].remaining) return false;
-                        }
-                        var allZero = keyRows.every(function(row) {
-                            return /^0(?:\.0+)?\/\d+/.test(row.remaining || '');
-                        });
-                        return !allZero;
-                    }
-
-                    var credits = '';
-                    var rows = [];
-                    for (var attempt = 0; attempt < 8; attempt++) {
-                        if (!/MODEL QUOTA/i.test(bodyText())) clickModels();
-                        await new Promise(r => setTimeout(r, attempt === 0 ? 800 : 600));
-                        var text = bodyText();
-                        credits = (text.match(/Available AI Credits:\s*([0-9,]+)/i) || [])[1] || credits;
-                        rows = readQuotaRows();
-                        if (hasStableKeyQuota(rows)) break;
-                    }
-                    if (!hasStableKeyQuota(rows)) return JSON.stringify({ ok: false, error: 'Settings 已打开，但模型额度还未加载稳定' });
-                    return JSON.stringify({ ok: true, credits: credits, rows: rows.slice(0, 8) });
-                })()
-            """.trimIndent(), awaitPromise = true)
-            if (detail is CdpResult.Error) return CdpResult.Error(detail.message)
-            val jsonStr = detail.getOrNull() ?: return CdpResult.Error("Settings target 无返回结果")
+            val jsonStr = detail.getOrNull() ?: return CdpResult.Error("无返回结果")
             val json = com.google.gson.JsonParser.parseString(jsonStr).asJsonObject
             if (json.get("ok")?.asBoolean != true) {
                 return CdpResult.Error(json.get("error")?.asString ?: "未读取到 Antigravity 用量")
@@ -1699,13 +1522,18 @@ class ChatViewModel(
                     .replace(Regex("[^a-z0-9.]+"), " ")
                     .trim()
                 val isGeminiHigh = normalized.contains("gemini") &&
-                    normalized.contains("3.1") &&
+                    (normalized.contains("3.1") || normalized.contains("3.5")) &&
                     normalized.contains("pro") &&
                     normalized.contains("high")
+                val isFlashHigh = normalized.contains("gemini") &&
+                    normalized.contains("3.5") &&
+                    normalized.contains("flash") &&
+                    normalized.contains("high")
                 val isOpus = normalized.contains("claude") && normalized.contains("opus")
-                isGeminiHigh || isOpus
+                val isSonnet = normalized.contains("claude") && normalized.contains("sonnet")
+                isGeminiHigh || isFlashHigh || isOpus || isSonnet
             }.ifEmpty {
-                listOfNotNull(allQuotaRows.getOrNull(0), allQuotaRows.getOrNull(4))
+                allQuotaRows
             }
             val rows = selectedRows.mapNotNull { row ->
                 val name = row.get("name")?.asString.orEmpty()
@@ -1728,39 +1556,10 @@ class ChatViewModel(
             CdpResult.Success(parts.joinToString(" · ").ifBlank { "Antigravity Models" })
         } catch (e: Exception) {
             CdpResult.Error("读取 Antigravity 用量失败: ${e.message}")
-        } finally {
-            settingsClient.disconnect()
         }
     }
 
-    private suspend fun findAntigravitySettingsPage(): CdpPage? = withContext(Dispatchers.IO) {
-        val host = connectHost ?: return@withContext null
-        val pages = mutableListOf<CdpPage>()
 
-        runCatching {
-            val request = okhttp3.Request.Builder()
-                .url("http://${host.ip}:${host.port}/targets")
-                .build()
-            val response = httpClient.newCall(request).execute()
-            val body = response.body?.string().orEmpty()
-            pages.addAll(IdeTargetsParser.parsePages(body))
-        }
-
-        if (pages.isEmpty()) {
-            when (val discovered = cdpClient.discoverPages(host)) {
-                is CdpResult.Success -> pages.addAll(discovered.data)
-                is CdpResult.Error -> Unit
-            }
-        }
-
-        pages.firstOrNull {
-            it.type == "page" &&
-                it.title.contains("Settings", ignoreCase = true) &&
-                (it.appType == ElectronAppType.ANTIGRAVITY || it.url.contains("jetski", ignoreCase = true))
-        } ?: pages.firstOrNull {
-            it.type == "page" && it.title.contains("Settings", ignoreCase = true)
-        }
-    }
 
     fun stopGeneration() {
         pollJob?.cancel()

@@ -105,6 +105,7 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -132,6 +133,23 @@ android {
             val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
             output.outputFileName = "CdpRemote-${buildType.name}.apk"
         }
+    }
+}
+
+// ── relay-dev 脚本打包到 assets ──────────────────────────────────────
+val copyRelayDev by tasks.registering(Sync::class) {
+    from(rootProject.file("relay-dev")) {
+        include("*.js", "*.json", "node_modules/**")
+        exclude("*.test.js")
+    }
+    into(project.file("src/main/assets/relay-dev"))
+}
+
+afterEvaluate {
+    listOf("Debug", "Release").forEach { variant ->
+        tasks.findByName("merge${variant}Assets")?.dependsOn(copyRelayDev)
+        tasks.findByName("lintVitalAnalyze${variant}")?.dependsOn(copyRelayDev)
+        tasks.findByName("generate${variant}LintVitalReportModel")?.dependsOn(copyRelayDev)
     }
 }
 
