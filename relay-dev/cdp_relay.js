@@ -589,7 +589,7 @@ let nextRestartAllowedAt = 0;
 
 // 支持的 Electron 应用配置（用于自动启动）
 const ELECTRON_APPS = [
-    { name: 'Antigravity', bundleId: 'com.antigravity.app', appPath: '/Applications/Antigravity.app', binPath: '/Applications/Antigravity.app/Contents/MacOS/Electron' },
+    { name: 'Antigravity', bundleId: 'com.google.antigravity', appPath: '/Applications/Antigravity.app', binPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity', directBin: true },
     { name: 'Codex', bundleId: 'com.openai.codex', appPath: '/Applications/Codex.app', binPath: '/Applications/Codex.app/Contents/MacOS/Codex' },
     { name: 'Cursor', bundleId: 'com.todesktop.230313mzl4w4u92', appPath: '/Applications/Cursor.app', binPath: '/Applications/Cursor.app/Contents/MacOS/Cursor' },
     { name: 'Windsurf', bundleId: 'com.codeium.windsurf', appPath: '/Applications/Windsurf.app', binPath: '/Applications/Windsurf.app/Contents/MacOS/Windsurf' }
@@ -2023,8 +2023,39 @@ async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '',
                 const userDataDir = path.join(os.homedir(), '.cdp-instances', `${app.name}-${port}`);
                 const hasUserData = fs.existsSync(path.join(userDataDir, 'User')) || fs.existsSync(path.join(userDataDir, 'Cookies'));
                 const hasDefaultData = fs.existsSync(path.join(defaultDataDir, 'User')) || fs.existsSync(path.join(defaultDataDir, 'Cookies'));
+
+                // 同步 .gemini app data 目录以保留会话记录和大脑状态
+                if (app.name.toLowerCase() === 'antigravity') {
+                    const defaultGeminiDir = path.join(os.homedir(), '.gemini', 'antigravity');
+                    const portGeminiDir = path.join(os.homedir(), '.gemini', `antigravity-${port}`);
+                    if (fs.existsSync(defaultGeminiDir)) {
+                        log(`📋 同步 .gemini 配置: ${defaultGeminiDir} → ${portGeminiDir}`);
+                        fs.mkdirSync(portGeminiDir, { recursive: true });
+                        try {
+                            execSync(`rsync -au "${defaultGeminiDir}/" "${portGeminiDir}/"`);
+                        } catch (e) {
+                            log(`⚠️ 同步 .gemini 失败: ${e.message}`);
+                        }
+                    }
+                }
+
                 if (isPreprovisioned && hasUserData) {
                     log(`📋 使用预制数据目录: ${userDataDir} (端口 ${port})`);
+                    // 增量同步最新的设置和 Cookie，避免配置和登录状态过期
+                    if (hasDefaultData) {
+                        log(`📋 增量同步用户配置 (rsync): ${defaultDataDir} → ${userDataDir}`);
+                        const authFiles = ['User', 'Cookies', 'Cookies-journal', 'Local Storage', 'Session Storage',
+                            'Preferences', 'Trust Tokens', 'Trust Tokens-journal', 'TransportSecurity', 'Network Persistent State', 'machineid'];
+                        for (const f of authFiles) {
+                            const src = path.join(defaultDataDir, f);
+                            const dst = path.join(userDataDir, f);
+                            try {
+                                if (fs.existsSync(src)) {
+                                    execSync(`rsync -au "${src}" "${path.dirname(dst)}/"`);
+                                }
+                            } catch (e) { log(`⚠️ 同步 ${f} 失败: ${e.message}`); }
+                        }
+                    }
                 } else if (!hasUserData && hasDefaultData) {
                     log(`📋 复制用户配置: ${defaultDataDir} → ${userDataDir}`);
                     fs.mkdirSync(userDataDir, { recursive: true });
@@ -2075,13 +2106,23 @@ async function autoLaunchWithCdp({ force = false, port = CDP_PORT, appName = '',
 
             _cachedUserEnv = null; // 每次启动前强制刷新环境变量
             const userEnv = getUserEnv();
-            log(`📋 执行: open -n -a "${app.appPath}" --args ${launchArgs.join(' ')}`);
-            // 走 /usr/bin/open 经 LaunchServices 启动：新 App 在独立 session/进程组，
-            // relay 被 launchd 重启时不会再连坐杀掉 IDE（对应 plist AbandonProcessGroup=true 的纵深防御）。
-            const child = spawn('/usr/bin/open',
-                ['-n', '-a', app.appPath, '--args', ...launchArgs],
-                { detached: true, stdio: 'ignore', env: { ...process.env, ...userEnv } });
-            child.unref();
+
+            // Antigravity 等 app 的 `open -n -a --args` 不能正确传递 Chromium flags，
+            // 需要直接通过二进制文件启动。其余 app 继续走 /usr/bin/open 以获得独立 session。
+            if (app.directBin && fs.existsSync(app.binPath)) {
+                log(`📋 执行 (直接二进制): ${app.binPath} ${launchArgs.join(' ')}`);
+                const child = spawn(app.binPath, launchArgs,
+                    { detached: true, stdio: 'ignore', env: { ...process.env, ...userEnv } });
+                child.unref();
+            } else {
+                log(`📋 执行: open -n -a "${app.appPath}" --args ${launchArgs.join(' ')}`);
+                // 走 /usr/bin/open 经 LaunchServices 启动：新 App 在独立 session/进程组，
+                // relay 被 launchd 重启时不会再连坐杀掉 IDE（对应 plist AbandonProcessGroup=true 的纵深防御）。
+                const child = spawn('/usr/bin/open',
+                    ['-n', '-a', app.appPath, '--args', ...launchArgs],
+                    { detached: true, stdio: 'ignore', env: { ...process.env, ...userEnv } });
+                child.unref();
+            }
 
             // 等待新实例 CDP 端口就绪
             for (let i = 0; i < 30; i++) {

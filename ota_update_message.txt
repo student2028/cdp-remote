@@ -1,1 +1,4 @@
-1. 项目列表支持 "Conversations" (临时会话) 虚拟项目，方便手机端直接查看和操作远程临时会话。
+1. 修复 Antigravity 无法通过 cdp-remote 启动的问题：open -n -a --args 不能正确传递 --remote-debugging-port 参数，改为直接二进制启动。
+2. 修正 Antigravity 配置：bundleId (com.google.antigravity)、binPath (/Contents/MacOS/Antigravity)。
+3. 支持启动多个不同端口的 Antigravity 实例。
+4. 自动增量同步主 IDE 的 .gemini 目录及用户配置，修复多实例启动后会话记录丢失和登录状态过期的问题。
