@@ -699,7 +699,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                         var current = '';
                         var expanded = {};
                         for (var i = 0; i < sections.length; i++) {
-                            var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0');
+                            var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0, h2');
                             if (!nameEl) continue;
                             var name = nameEl.textContent.trim();
                             if (!name) continue;
@@ -801,7 +801,7 @@ class CodexCommands(private val cdp: ICdpClient) {
                             for (var k = 0; k < 5 && row; k++) {
                                 row = row.parentElement;
                                 if (row && row.className && row.className.toString().includes('bg-sidebar-secondary')) {
-                                    var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0');
+                                    var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0, h2');
                                     return nameEl ? nameEl.textContent.trim() : '';
                                 }
                             }
@@ -864,13 +864,13 @@ class CodexCommands(private val cdp: ICdpClient) {
                 if (sections.length > 0) {
                     var targetSection = null;
                     for (var i = 0; i < sections.length; i++) {
-                        var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0');
+                        var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0, h2');
                         if (nameEl && nameEl.textContent.trim() === projectName) {
                             targetSection = sections[i]; break;
                         }
                     }
                     if (!targetSection) return 'not-found';
-                    var nameRow = targetSection.querySelector('div.text-sm.font-medium.truncate.m-0');
+                    var nameRow = targetSection.querySelector('div.text-sm.font-medium.truncate.m-0, h2');
                     if (nameRow) {
                         var clickTarget = nameRow;
                         for (var p = 0; p < 5 && clickTarget; p++) {
@@ -943,6 +943,18 @@ class CodexCommands(private val cdp: ICdpClient) {
         val result = cdp.evaluate("""
             (function() {
                 var projectName = $projectLiteral;
+                if (projectName === 'Conversations') {
+                    var btns = document.querySelectorAll('a, button, [role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (!btns[i].offsetParent) continue;
+                        var aria = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+                        var text = (btns[i].textContent || '').trim().toLowerCase();
+                        if (aria.includes('new chat') || text === 'new chat') {
+                            btns[i].click(); return 'clicked';
+                        }
+                    }
+                    return 'new-session-fallback';
+                }
                 var newChatLabel = 'Start new chat in ' + projectName;
                 var buttons = document.querySelectorAll('button');
                 for (var i = 0; i < buttons.length; i++) {
@@ -957,6 +969,7 @@ class CodexCommands(private val cdp: ICdpClient) {
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         return when (result.getOrNull()) {
             "clicked" -> CdpResult.Success(Unit)
+            "new-session-fallback" -> startNewSession()
             else -> CdpResult.Error("未找到项目: $projectName")
         }
     }
@@ -1017,6 +1030,26 @@ class CodexCommands(private val cdp: ICdpClient) {
             (function() {
                 var projectName = $projectLiteral;
                 try {
+                    // ── 反重力 ──
+                    var sections = document.querySelectorAll('div[class*="group/section"]');
+                    if (sections.length > 0) {
+                        var targetSection = null;
+                        for (var i = 0; i < sections.length; i++) {
+                            var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0, h2');
+                            if (nameEl && nameEl.textContent.trim() === projectName) {
+                                targetSection = sections[i]; break;
+                            }
+                        }
+                        if (!targetSection) return JSON.stringify([]);
+                        var chats = [];
+                        var pills = targetSection.querySelectorAll('[data-testid^="convo-pill"]');
+                        for (var j = 0; j < pills.length; j++) {
+                            var t = (pills[j].textContent || '').trim();
+                            if (t) chats.push(t);
+                        }
+                        return JSON.stringify(chats);
+                    }
+                    // ── Codex ──
                     var roleBtns = document.querySelectorAll('[role="button"][aria-expanded]');
                     var projectEl = null;
                     for (var i = 0; i < roleBtns.length; i++) {
