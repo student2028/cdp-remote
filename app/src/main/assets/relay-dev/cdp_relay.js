@@ -5881,12 +5881,10 @@ async function schedulerExecuteTask(task) {
         const cdpPort = schedulerFindCdpPort(task);
         if (!cdpPort) return;
 
-        // 切换模型（如果指定了）
+        // 切换模型（如果指定了）— 使用各 IDE 原生的 DOM 切换方式
         if (task.model) {
             try {
-                await sendMessageToIde(cdpPort, `/model ${task.model}`, null, null);
-                await new Promise(r => setTimeout(r, 500));
-                log(`🔄 [${task.id}] 已切换模型: ${task.model}`);
+                await schedulerSwitchModel(cdpPort, task, task.model);
             } catch (e) {
                 log(`⚠️ [${task.id}] 切换模型失败: ${e.message}`);
             }
