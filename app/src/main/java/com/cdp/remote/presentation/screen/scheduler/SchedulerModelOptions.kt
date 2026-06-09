@@ -21,7 +21,7 @@ fun schedulerModelOptionsForIde(
             "Sonnet",
             "Opus"
         )
-        key.contains("windsurf") -> listOf(
+        key.contains("devin") -> listOf(
             "Claude Opus 4.7",
             "Claude Opus 4.6",
             "Claude Sonnet 4.6",

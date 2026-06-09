@@ -33,7 +33,7 @@ async function attachLsMonitor(cdpPort, webSocketDebuggerUrl) {
                     const portMatch = req.url.match(/127\.0\.0\.1:(\d+)/);
                     const lsPort = portMatch ? parseInt(portMatch[1]) : null;
                     const protocol = req.url.startsWith('https') ? 'https' : 'http';
-                    const csrfToken = req.headers['x-codeium-csrf-token'] || req.headers['X-Codeium-Csrf-Token'] || req.headers['x-csrf-token'];
+                    const csrfToken = req.headers['x-cognition-csrf-token'] || req.headers['X-Cognition-Csrf-Token'] || req.headers['x-csrf-token'];
                     
                     let postData = req.postData;
                     let cascadeId = null;
@@ -78,7 +78,7 @@ function lsFetch(url, body, csrfToken) {
             headers: {
                 'content-type': 'application/json',
                 'connect-protocol-version': '1',
-                'x-codeium-csrf-token': csrfToken
+                'x-cognition-csrf-token': csrfToken
             },
             rejectAuthorized: false  // 跳过自签名证书验证
         };

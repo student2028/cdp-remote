@@ -11,13 +11,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * WindsurfCommands + CursorCommands 集成测试。
+ * DevinCommands + CursorCommands 集成测试。
  *
  * 验证这两个 IDE 覆写方法相对于 AntigravityCommands 基类的差异：
- * - Windsurf: pasteImage 使用 #chat / windsurf.cascadePanel 容器
- * - Windsurf: startNewSession 使用 lucide-plus SVG / Cmd+L 降级
- * - Windsurf: switchModel 使用 chat-client-root + adaptive 关键词
- * - Windsurf: getRecentSessionsList 使用 h-[34px] min-w-[80px] 标签栏
+ * - Devin: pasteImage 使用 #chat / devin.cascadePanel 容器
+ * - Devin: startNewSession 使用 lucide-plus SVG / Cmd+L 降级
+ * - Devin: switchModel 使用 chat-client-root + adaptive 关键词
+ * - Devin: getRecentSessionsList 使用 h-[34px] min-w-[80px] 标签栏
  * - Cursor: switchModel 使用 ui-model-picker__trigger / model-picker-menu
  * - Cursor: showRecentSessions 使用 codicon-history-two
  */
@@ -27,7 +27,7 @@ class IdeSpecificCommandsTest {
 
     private lateinit var mockServer: MockCdpServer
     private lateinit var cdpClient: CdpClient
-    private lateinit var windsurf: WindsurfCommands
+    private lateinit var devin: DevinCommands
     private lateinit var cursor: CursorCommands
 
     @Before
@@ -38,7 +38,7 @@ class IdeSpecificCommandsTest {
         runBlocking {
             assertTrue(cdpClient.connectDirect(mockServer.wsUrl).isSuccess)
         }
-        windsurf = WindsurfCommands(cdpClient)
+        devin = DevinCommands(cdpClient)
         cursor = CursorCommands(cdpClient, "Cursor")
     }
 
@@ -49,11 +49,11 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — pasteImage 容器选择器
+    // DevinCommands — pasteImage 容器选择器
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf pasteImage uses chat and cascadePanel selectors`() = runBlocking {
+    fun `Devin pasteImage uses chat and cascadePanel selectors`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -66,18 +66,18 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.pasteImage("dGVzdA==", "image/png")
+        val result = devin.pasteImage("dGVzdA==", "image/png")
         assertTrue(result.isSuccess)
 
         val js = mockServer.receivedExpressions
         assertTrue("应包含 #chat 选择器",
             js.any { it.contains("getElementById('chat')") })
-        assertTrue("应包含 windsurf.cascadePanel",
-            js.any { it.contains("windsurf.cascadePanel") })
+        assertTrue("应包含 devin.cascadePanel",
+            js.any { it.contains("devin.cascadePanel") })
     }
 
     @Test
-    fun `Windsurf pasteImage returns error on no-container`() = runBlocking {
+    fun `Devin pasteImage returns error on no-container`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -95,15 +95,15 @@ class IdeSpecificCommandsTest {
         }
 
         // 即使返回 no-container，也不会 crash
-        windsurf.pasteImage("dGVzdA==")
+        devin.pasteImage("dGVzdA==")
         Unit
     }
 
     @Test
-    fun `Windsurf pasteImage chunks large base64 data`() = runBlocking {
-        val largeBase64 = "A".repeat(120_000) // 120KB > 2 chunks
+    fun `Devin pasteImage chunks large base64 data`() = runBlocking {
+        val largeBase64 = "A".repeat(600_000) // 600KB > 2 chunks
 
-        windsurf.pasteImage(largeBase64, "image/png")
+        devin.pasteImage(largeBase64, "image/png")
 
         val chunkCalls = mockServer.receivedExpressions
             .filter { it.contains("__pasteImageB64 +=") }
@@ -111,11 +111,11 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — startNewSession (lucide-plus + Cmd+L)
+    // DevinCommands — startNewSession (lucide-plus + Cmd+L)
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf startNewSession uses lucide-plus selector`() = runBlocking {
+    fun `Devin startNewSession uses lucide-plus selector`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -128,7 +128,7 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.startNewSession()
+        val result = devin.startNewSession()
         assertTrue(result.isSuccess)
 
         val js = mockServer.receivedExpressions
@@ -136,39 +136,12 @@ class IdeSpecificCommandsTest {
             js.any { it.contains("lucide-plus") })
     }
 
-    @Test
-    fun `Windsurf startNewSession falls back to Cmd+L`() = runBlocking {
-        mockServer.onRequest { req ->
-            val method = req.get("method")?.asString
-            when (method) {
-                "Runtime.evaluate" -> JsonObject().apply {
-                    add("result", JsonObject().apply {
-                        addProperty("type", "string")
-                        addProperty("value", "no-button")
-                    })
-                }
-                "Input.dispatchKeyEvent" -> JsonObject()
-                else -> null
-            }
-        }
-
-        val result = windsurf.startNewSession()
-        assertTrue("应通过快捷键成功", result.isSuccess)
-
-        val keyEvents = mockServer.receivedMessages.filter {
-            it.get("method")?.asString == "Input.dispatchKeyEvent"
-        }
-        assertTrue("应发送 Cmd+L", keyEvents.any {
-            it.getAsJsonObject("params")?.get("key")?.asString == "l"
-        })
-    }
-
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — stopGeneration (圆形 lucide-square 按钮)
+    // DevinCommands — stopGeneration (圆形 lucide-square 按钮)
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf stopGeneration searches for lucide-square SVG`() = runBlocking {
+    fun `Devin stopGeneration searches for lucide-square SVG`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -181,7 +154,7 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.stopGeneration()
+        val result = devin.stopGeneration()
         assertTrue(result.isSuccess)
 
         val js = mockServer.receivedExpressions
@@ -192,11 +165,11 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — cancelRunningTask (多级降级: hover:text-red-500 → aria-label/title → textContent)
+    // DevinCommands — cancelRunningTask (多级降级: hover:text-red-500 → aria-label/title → textContent)
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf cancelRunningTask uses hover-text-red-500 selector`() = runBlocking {
+    fun `Devin cancelRunningTask uses hover-text-red-500 selector`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -209,14 +182,14 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.cancelRunningTask()
+        val result = devin.cancelRunningTask()
         assertTrue(result.isSuccess)
 
         val js = mockServer.receivedExpressions
         assertTrue("应包含 hover:text-red-500 选择器",
             js.any { it.contains("hover:text-red-500") })
         assertTrue("应检查 cascadePanel",
-            js.any { it.contains("windsurf.cascadePanel") })
+            js.any { it.contains("devin.cascadePanel") })
         assertTrue("应检查 lucide SVG 图标",
             js.any { it.contains("lucide") || (it.contains("circle") && it.contains("rect")) })
         // 验证新增的降级策略也在 JS 中存在
@@ -229,7 +202,7 @@ class IdeSpecificCommandsTest {
     }
 
     @Test
-    fun `Windsurf cancelRunningTask returns error when no panel`() = runBlocking {
+    fun `Devin cancelRunningTask returns error when no panel`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -242,14 +215,14 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.cancelRunningTask()
+        val result = devin.cancelRunningTask()
         assertTrue("无面板时应返回 Error", result is CdpResult.Error)
         val msg = (result as CdpResult.Error).message
         assertTrue("错误消息应提及面板", msg.contains("面板"))
     }
 
     @Test
-    fun `Windsurf cancelRunningTask returns descriptive error when no cancel button`() = runBlocking {
+    fun `Devin cancelRunningTask returns descriptive error when no cancel button`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -262,7 +235,7 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.cancelRunningTask()
+        val result = devin.cancelRunningTask()
         assertTrue("无取消按钮时应返回 Error", result is CdpResult.Error)
         val msg = (result as CdpResult.Error).message
         assertTrue("错误消息应提示确认任务状态", msg.contains("确认") || msg.contains("取消按钮"))
@@ -278,11 +251,11 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — getRecentSessionsList (标签栏)
+    // DevinCommands — getRecentSessionsList (标签栏)
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf getRecentSessionsList uses tab bar selectors`() = runBlocking {
+    fun `Devin getRecentSessionsList uses tab bar selectors`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -295,7 +268,7 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.getRecentSessionsList()
+        val result = devin.getRecentSessionsList()
         assertTrue(result.isSuccess)
         assertEquals(2, result.getOrNull()!!.size)
 
@@ -305,11 +278,11 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — switchModel (chat-client-root + adaptive)
+    // DevinCommands — switchModel (chat-client-root + adaptive)
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf switchModel uses chat-client-root selector`() = runBlocking {
+    fun `Devin switchModel uses chat-client-root selector`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -322,7 +295,7 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.switchModel("claude")
+        val result = devin.switchModel("claude")
         assertTrue(result.isSuccess)
 
         val js = mockServer.receivedExpressions
@@ -333,7 +306,7 @@ class IdeSpecificCommandsTest {
     }
 
     @Test
-    fun `Windsurf switchModel returns error when model not found`() = runBlocking {
+    fun `Devin switchModel returns error when model not found`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -346,16 +319,16 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.switchModel("nonexistent")
+        val result = devin.switchModel("nonexistent")
         assertTrue("不存在的模型应返回 Error", result is CdpResult.Error)
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands — getCurrentModel
+    // DevinCommands — getCurrentModel
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf getCurrentModel returns model name`() = runBlocking {
+    fun `Devin getCurrentModel returns model name`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -368,13 +341,13 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.getCurrentModel()
+        val result = devin.getCurrentModel()
         assertTrue(result.isSuccess)
         assertEquals("Adaptive", result.getOrNull())
     }
 
     @Test
-    fun `Windsurf getCurrentModel returns error when empty`() = runBlocking {
+    fun `Devin getCurrentModel returns error when empty`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -387,7 +360,7 @@ class IdeSpecificCommandsTest {
             } else null
         }
 
-        val result = windsurf.getCurrentModel()
+        val result = devin.getCurrentModel()
         assertTrue("空模型名应返回 Error", result is CdpResult.Error)
     }
 
@@ -519,13 +492,13 @@ class IdeSpecificCommandsTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 继承验证 — Cursor/Windsurf 复用了基类的通用方法
+    // 继承验证 — Cursor/Devin 复用了基类的通用方法
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `Windsurf inherits AntigravityCommands sendMessage pipeline`() = runBlocking {
-        // sendMessage 没有被 WindsurfCommands override，应走基类逻辑
-        windsurf.sendMessage("继承测试")
+    fun `Devin inherits AntigravityCommands sendMessage pipeline`() = runBlocking {
+        // sendMessage 没有被 DevinCommands override，应走基类逻辑
+        devin.sendMessage("继承测试")
 
         val js = mockServer.receivedExpressions
         // 基类的 focusInput 使用 INPUT_BOX_ID

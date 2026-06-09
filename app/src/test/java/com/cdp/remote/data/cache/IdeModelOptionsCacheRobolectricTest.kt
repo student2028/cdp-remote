@@ -68,7 +68,7 @@ class IdeModelOptionsCacheRobolectricTest {
 
     @Test
     fun `getStale returns cached data regardless of TTL`() {
-        val key = IdeModelOptionsCache.cacheKey("Windsurf", "10.0.0.1", 19335, false)
+        val key = IdeModelOptionsCache.cacheKey("Devin", "10.0.0.1", 19335, false)
         val models = listOf("model-a", "model-b")
         IdeModelOptionsCache.put(context, key, models)
 
@@ -94,7 +94,7 @@ class IdeModelOptionsCacheRobolectricTest {
     @Test
     fun `clear does not affect other keys`() {
         val key1 = IdeModelOptionsCache.cacheKey("Antigravity", "10.0.0.1", 19335, false)
-        val key2 = IdeModelOptionsCache.cacheKey("Windsurf", "10.0.0.1", 19335, false)
+        val key2 = IdeModelOptionsCache.cacheKey("Devin", "10.0.0.1", 19335, false)
         IdeModelOptionsCache.put(context, key1, listOf("model-a"))
         IdeModelOptionsCache.put(context, key2, listOf("model-b"))
 
@@ -109,7 +109,7 @@ class IdeModelOptionsCacheRobolectricTest {
     @Test
     fun `different IDE names are isolated`() {
         val keyAnti = IdeModelOptionsCache.cacheKey("Antigravity", "10.0.0.1", 19335, false)
-        val keyWind = IdeModelOptionsCache.cacheKey("Windsurf", "10.0.0.1", 19335, false)
+        val keyWind = IdeModelOptionsCache.cacheKey("Devin", "10.0.0.1", 19335, false)
 
         IdeModelOptionsCache.put(context, keyAnti, listOf("anti-model"))
         IdeModelOptionsCache.put(context, keyWind, listOf("wind-model"))

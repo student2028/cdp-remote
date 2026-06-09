@@ -68,7 +68,7 @@ class ChatViewModel(
     private var isCodex: Boolean = false
     private var isAntigravity: Boolean = false
     private var isClaudeCode: Boolean = false
-    private var isWindsurf: Boolean = false
+    private var isDevin: Boolean = false
     private var isUitty: Boolean = false
     private var connectHost: HostInfo? = null
     private var connectWsUrl: String = ""
@@ -197,7 +197,7 @@ class ChatViewModel(
                 isCodex = appType == ElectronAppType.CODEX
                 isAntigravity = appType == ElectronAppType.ANTIGRAVITY
                 isClaudeCode = appType == ElectronAppType.CLAUDE_CODE
-                isWindsurf = appType == ElectronAppType.WINDSURF
+                isDevin = appType == ElectronAppType.DEVIN
                 isUitty = appType == ElectronAppType.UITTY
                 if (isClaudeCode) {
                     claudeCodeCommands = ClaudeCodeCommands(cdpClient)
@@ -209,8 +209,8 @@ class ChatViewModel(
                     commands = null
                     claudeCodeCommands = null
                     uittyCommands = null
-                } else if (isWindsurf) {
-                    commands = WindsurfCommands(cdpClient)
+                } else if (isDevin) {
+                    commands = DevinCommands(cdpClient)
                     codexCommands = null
                     claudeCodeCommands = null
                     uittyCommands = null
@@ -228,7 +228,7 @@ class ChatViewModel(
                     claudeCodeCommands = null
                     uittyCommands = null
                 }
-                uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null, isWindsurf = isWindsurf, isUitty = isUitty)
+                uiState = uiState.copy(connectionState = ConnectionState.CONNECTED, error = null, isDevin = isDevin, isUitty = isUitty)
                 reconnectAttempts = 0
                 addSystemMessage("已连接到 $appName")
                 fetchAvailableApps(host.ip, host.port)
@@ -617,7 +617,7 @@ class ChatViewModel(
                     }
 
                     // Antigravity 独有：每 5 次轮询主动检查服务器错误并自动重试
-                    if (!isCodex && !isWindsurf && !isClaudeCode && !isUitty && pollCount > 0 && pollCount % 5 == 0) {
+                    if (!isCodex && !isDevin && !isClaudeCode && !isUitty && pollCount > 0 && pollCount % 5 == 0) {
                         val midRetry = commands!!.checkAndRetryIfBusy()
                         if (midRetry is CdpResult.Success && midRetry.data) {
                             addSystemMessage("检测到错误，已自动重试 🔄")
@@ -653,7 +653,7 @@ class ChatViewModel(
                     if (!isStillGenerating) {
                         // Antigravity 独有：生成结束后最终错误检查
                         // 多次尝试，因为 Retry 按钮可能还没渲染出来
-                        if (!isCodex && !isWindsurf && !isClaudeCode && !isUitty) {
+                        if (!isCodex && !isDevin && !isClaudeCode && !isUitty) {
                             var retried = false
                             for (retryAttempt in 1..3) {
                                 val retryResult = commands!!.checkAndRetryIfBusy()
@@ -1472,18 +1472,18 @@ class ChatViewModel(
     }
 
     /**
-     * 查看 IDE 用量面板：Codex 打开 Rate limits，Windsurf 打开 Plan Info，
+     * 查看 IDE 用量面板：Codex 打开 Rate limits，Devin 打开 Plan Info，
      * Antigravity 打开 Settings → Models 并读取 quota target。
      */
     fun checkRateLimits() {
         if ((!isCodex || codexCommands == null) &&
-            (!isWindsurf || commands !is WindsurfCommands) &&
+            (!isDevin || commands !is DevinCommands) &&
             (!isAntigravity || commands == null)
         ) return
         viewModelScope.launch {
             val result = when {
                 isCodex -> codexCommands!!.showRateLimits()
-                isWindsurf -> (commands as WindsurfCommands).showUsagePanel()
+                isDevin -> (commands as DevinCommands).showUsagePanel()
                 isAntigravity -> showAntigravityUsagePanel()
                 else -> CdpResult.Error("当前 IDE 不支持查看用量")
             }
@@ -1577,21 +1577,21 @@ class ChatViewModel(
     }
 
     /**
-     * 取消 Windsurf 中正在运行的长时间任务（如 Step、Tool 执行）
-     * 仅在 Windsurf IDE 中有效
+     * 取消 Devin 中正在运行的长时间任务（如 Step、Tool 执行）
+     * 仅在 Devin IDE 中有效
      */
     fun cancelRunningTask() {
         viewModelScope.launch {
             val cmds = commands
-            if (cmds == null || !isWindsurf) {
-                addSystemMessage("取消任务仅在 Windsurf IDE 中可用")
+            if (cmds == null || !isDevin) {
+                addSystemMessage("取消任务仅在 Devin IDE 中可用")
                 return@launch
             }
             val result = cmds.cancelRunningTask()
             when (result) {
                 is CdpResult.Success -> {
                     addSystemMessage("已取消运行中的任务 ⛔")
-                    // 等待 Windsurf UI 响应取消操作
+                    // 等待 Devin UI 响应取消操作
                     delay(500)
                     // 取消后如果仍在生成状态，同步重置
                     if (uiState.isGenerating) {
@@ -2136,7 +2136,7 @@ class ChatViewModel(
             while (isActive) {
                 delay(8000)
                 // 只在非 Antigravity 连接中跳过
-                if (isCodex || isWindsurf) continue
+                if (isCodex || isDevin) continue
                 // 轮询已在管的时候跳过
                 if (uiState.isGenerating) continue
                 // 未连接时跳过

@@ -25,14 +25,22 @@ async function executePipelineStages(task, deps) {
             }
         }
 
+        const stageCdp = deps.resolveStageCdp ? deps.resolveStageCdp(stage) : { cdpPort: deps.cdpPort, targetPid: deps.targetPid };
+        const stageCdpPort = stageCdp.cdpPort;
+        const stageTargetPid = stageCdp.targetPid;
+
+        if (!stageCdpPort) {
+            throw new Error(`目标 IDE ${stage.targetIde || task.targetIde} 不在线`);
+        }
+
         const model = String(stage.model || '').trim();
         if (model) {
             await deps.switchModel({
                 task,
                 stage,
                 stageIndex,
-                cdpPort: deps.cdpPort,
-                targetPid: deps.targetPid,
+                cdpPort: stageCdpPort,
+                targetPid: stageTargetPid,
                 model
             });
         }
@@ -41,8 +49,8 @@ async function executePipelineStages(task, deps) {
             task,
             stage,
             stageIndex,
-            cdpPort: deps.cdpPort,
-            targetPid: deps.targetPid,
+            cdpPort: stageCdpPort,
+            targetPid: stageTargetPid,
             message: stage.prompt
         });
 
@@ -50,8 +58,8 @@ async function executePipelineStages(task, deps) {
             task,
             stage,
             stageIndex,
-            cdpPort: deps.cdpPort,
-            targetPid: deps.targetPid
+            cdpPort: stageCdpPort,
+            targetPid: stageTargetPid
         });
 
         completedStages += 1;

@@ -38,7 +38,7 @@ fun ActionToolbar(
     isGenerating: Boolean,
     tvMode: Boolean,
     currentModel: String,
-    isWindsurf: Boolean = false,
+    isDevin: Boolean = false,
     /** Codex 专用：隐藏上翻/下翻并显示项目管理按钮 */
     isCodex: Boolean = false,
     /** uitty 终端专用：显示终端操作按钮 */
@@ -55,10 +55,10 @@ fun ActionToolbar(
     onSessionList: () -> Unit = {},
     /** Codex 项目管理（合并自原悬浮按钮） */
     onProjectManagement: () -> Unit = {},
-    /** Codex/Windsurf/Antigravity：查看当前模型或账号用量 */
+    /** Codex/Devin/Antigravity：查看当前模型或账号用量 */
     onCheckUsage: () -> Unit = {},
     /** 当前 IDE 是否支持从工具栏打开用量面板 */
-    showUsageButton: Boolean = isCodex || isWindsurf,
+    showUsageButton: Boolean = isCodex || isDevin,
     /** 反重力系：打开「全局规则」弹窗，经 CDP 写入 Customizations → Global */
     showGlobalRuleButton: Boolean = false,
     onGlobalRule: () -> Unit = {},
@@ -230,9 +230,9 @@ fun ActionToolbar(
                         onClick = onCheckUsage
                     )
                 }
-                // Windsurf 专属：取消运行中任务按钮（放在"切换"之后，避免误触常用按钮）
+                // Devin 专属：取消运行中任务按钮（放在"切换"之后，避免误触常用按钮）
                 // 不依赖 isGenerating（任务可能从 IDE 直接发起，手机端状态未同步）
-                if (isWindsurf) {
+                if (isDevin) {
                     ToolbarBtn(
                         icon = Icons.Default.Close,
                         label = "取消任务",

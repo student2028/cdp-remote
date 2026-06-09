@@ -127,7 +127,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                         if (r2.bottom > vh(doc) * 0.32) {
                             var cls = e.className || '';
                             var parent = e.closest('[class*="chat"], [class*="composer"], [class*="interactive"], [class*="aichat"]');
-                            // Windsurf 用 min-h-[2rem] outline-none 的 contenteditable
+                            // Devin 用 min-h-[2rem] outline-none 的 contenteditable
                             if (parent || cls.indexOf('min-h-') >= 0 || cls.indexOf('outline-none') >= 0) {
                                 e.focus();
                                 return 'ok';
@@ -170,7 +170,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                         return 'ok';
                     }
                 }
-                // 2. Windsurf / 通用 contenteditable (role=textbox 或 min-h- 类名)
+                // 2. Devin / 通用 contenteditable (role=textbox 或 min-h- 类名)
                 var ces = document.querySelectorAll('div[contenteditable="true"]');
                 for (var i = 0; i < ces.length; i++) {
                     var el = ces[i];
@@ -238,6 +238,16 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
     open suspend fun clickSendButton(): CdpResult<Boolean> {
         val result = cdp.evaluate("""
             (function() {
+                function fullClick(el) {
+                    try {
+                        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+                    } catch (e) {}
+                    el.click();
+                }
+
                 var container = document.getElementById('$INPUT_BOX_ID');
                 if (container) {
                     // 1. 尝试找带有 send 或 发送 语义的按钮
@@ -248,7 +258,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                         if (aria.includes('send') || aria.includes('发送') || 
                             title.includes('send') || title.includes('发送')) {
                             btns[i].disabled = false;
-                            btns[i].click();
+                            fullClick(btns[i]);
                             return 'clicked';
                         }
                     }
@@ -257,15 +267,25 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                     var sendBtn = container.querySelector('[data-testid="send-button"]');
                     if (sendBtn) {
                         sendBtn.disabled = false;
-                        sendBtn.click();
+                        fullClick(sendBtn);
                         return 'clicked';
                     }
                 }
-                // 3. Windsurf: button[type=submit] (圆形发送按钮)
+                // 3. Devin: button[type=submit] (旧版圆形发送按钮)
                 var submitBtn = document.querySelector('button[type="submit"]');
                 if (submitBtn && submitBtn.offsetParent) {
-                    submitBtn.click();
+                    fullClick(submitBtn);
                     return 'clicked';
+                }
+                // 新版 Devin: 带有 bg-bg-accent-neutral 和 rounded-full 类名
+                var devinBtns = document.querySelectorAll('button');
+                for (var j = devinBtns.length - 1; j >= 0; j--) {
+                    var db = devinBtns[j];
+                    if (db.offsetParent && db.className && db.className.indexOf('bg-bg-accent-neutral') >= 0 && db.className.indexOf('rounded-full') >= 0) {
+                        db.disabled = false;
+                        fullClick(db);
+                        return 'clicked';
+                    }
                 }
                 return 'no-button';
             })()
@@ -346,14 +366,14 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                     if (container) {
                         editableDiv = container.querySelector('[contenteditable="true"]');
                     }
-                    // 2. Windsurf: #chat 内的 contenteditable
+                    // 2. Devin: #chat 内的 contenteditable
                     if (!editableDiv) {
                         var chatDiv = document.getElementById('chat');
                         if (chatDiv) editableDiv = chatDiv.querySelector('[contenteditable="true"]');
                     }
-                    // 3. Windsurf: #windsurf.cascadePanel
+                    // 3. Devin: #devin.cascadePanel
                     if (!editableDiv) {
-                        var panel = document.getElementById('windsurf.cascadePanel');
+                        var panel = document.getElementById('devin.cascadePanel');
                         if (panel) editableDiv = panel.querySelector('[contenteditable="true"]');
                     }
                     // 4. 通用: role=textbox 或 min-h- 类名的 contenteditable
@@ -513,14 +533,14 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                     if (container) {
                         editableDiv = container.querySelector('[contenteditable="true"]');
                     }
-                    // 2. Windsurf: #chat 内的 contenteditable
+                    // 2. Devin: #chat 内的 contenteditable
                     if (!editableDiv) {
                         var chatDiv = document.getElementById('chat');
                         if (chatDiv) editableDiv = chatDiv.querySelector('[contenteditable="true"]');
                     }
-                    // 3. Windsurf: #windsurf.cascadePanel
+                    // 3. Devin: #devin.cascadePanel
                     if (!editableDiv) {
-                        var panel = document.getElementById('windsurf.cascadePanel');
+                        var panel = document.getElementById('devin.cascadePanel');
                         if (panel) editableDiv = panel.querySelector('[contenteditable="true"]');
                     }
                     // 4. 通用: role=textbox 或 min-h- 类名的 contenteditable
@@ -1346,7 +1366,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                 
                 var all = docs(document);
                 
-                // 策略1: 通用明确匹配 (Cursor/VSCode/Windsurf 及其 iframe)
+                // 策略1: 通用明确匹配 (Cursor/VSCode/Devin 及其 iframe)
                 for (var di = 0; di < all.length; di++) {
                     var doc = all[di];
                     if (!doc || !doc.querySelectorAll) continue;
@@ -1359,7 +1379,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                         var title = (el.title || '').toLowerCase();
                         var text = (el.textContent || '').trim().toLowerCase();
                         
-                        // 过滤掉切换侧边栏的按钮 (Windsurf 中它在加号上方)
+                        // 过滤掉切换侧边栏的按钮 (Devin 中它在加号上方)
                         if (aria.includes('toggle') || title.includes('toggle') || 
                             aria.includes('hide') || title.includes('hide') || 
                             aria.includes('隐藏') || title.includes('隐藏') ||
@@ -1383,7 +1403,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                 }
 
                 // 策略2: a.opacity-100 > div.absolute (Puppeteer 录制路径 - Antigravity 专有)
-                // 放到最后，因为该选择器太泛，容易在 Windsurf 中误点到隐藏侧边栏的按钮
+                // 放到最后，因为该选择器太泛，容易在 Devin 中误点到隐藏侧边栏的按钮
                 var links = document.querySelectorAll('a');
                 for (var i = 0; i < links.length; i++) {
                     var a = links[i];
@@ -1412,10 +1432,10 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
 
         if (result.getOrNull() == "clicked") return CdpResult.Success(Unit)
 
-        val isWindsurf = appName.contains("windsurf", ignoreCase = true)
+        val isDevin = appName.contains("devin", ignoreCase = true)
 
-        if (isWindsurf) {
-            Log.d(TAG, "未找到新建按钮，Windsurf 使用 Option+Cmd+B 切换侧边栏")
+        if (isDevin) {
+            Log.d(TAG, "未找到新建按钮，Devin 使用 Option+Cmd+B 切换侧边栏")
             cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
                 addProperty("type", "keyDown")
                 addProperty("key", "b")
@@ -1852,7 +1872,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
 
     /**
      * 取消正在运行的任务（如长时间运行的 Step/Tool）
-     * 默认实现：返回不支持的错误，子类（如 WindsurfCommands）应覆盖此方法
+     * 默认实现：返回不支持的错误，子类（如 DevinCommands）应覆盖此方法
      */
     open suspend fun cancelRunningTask(): CdpResult<Unit> {
         return CdpResult.Error("当前 IDE 不支持取消任务功能")
@@ -2135,7 +2155,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                     );
                     if (xr.singleNodeValue) return xr.singleNodeValue.textContent.trim();
                 } catch(e) {}
-                // 方法3: Windsurf - 找包含模型名关键词的按钮
+                // 方法3: Devin - 找包含模型名关键词的按钮
                 var keywords = ['claude', 'gpt', 'gemini', 'opus', 'sonnet', 'haiku', 'o1', 'o3', 'deepseek', 'swe', 'kimi'];
                 var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
@@ -2395,7 +2415,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
 
     /**
      * 将 [text] 写入侧栏 **Customization → Rules → Global** 编辑框，并触发 input/change 以便 IDE 持久化。
-     * 依赖 Antigravity / Windsurf 系侧栏 DOM；若反重力更新 UI，需按报错调整选择器。
+     * 依赖 Antigravity / Devin 系侧栏 DOM；若反重力更新 UI，需按报错调整选择器。
      */
     open suspend fun setGlobalAgentRule(text: String): CdpResult<Unit> {
         val ruleLiteral = com.google.gson.JsonPrimitive(text).toString()
@@ -2415,7 +2435,7 @@ open class AntigravityCommands(protected val cdp: ICdpClient, private val appNam
                             }
                             return document.querySelector('.antigravity-agent-side-panel')
                                 || document.querySelector('[class*="antigravity-agent"]')
-                                || document.getElementById('windsurf.cascadePanel');
+                                || document.getElementById('devin.cascadePanel');
                         }
 
                         function clickElement(el) {

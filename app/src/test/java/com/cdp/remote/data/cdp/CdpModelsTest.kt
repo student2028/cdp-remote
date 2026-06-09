@@ -108,7 +108,7 @@ class CdpModelsTest {
     fun `fromAppName maps known names to enum values`() {
         assertEquals(ElectronAppType.ANTIGRAVITY, ElectronAppType.fromAppName("Antigravity"))
         assertEquals(ElectronAppType.CURSOR, ElectronAppType.fromAppName("Cursor"))
-        assertEquals(ElectronAppType.WINDSURF, ElectronAppType.fromAppName("Windsurf"))
+        assertEquals(ElectronAppType.DEVIN, ElectronAppType.fromAppName("Devin"))
         assertEquals(ElectronAppType.CODEX, ElectronAppType.fromAppName("Codex"))
         assertEquals(ElectronAppType.DSME, ElectronAppType.fromAppName("DSME"))
         assertEquals(ElectronAppType.UITTY, ElectronAppType.fromAppName("uitty"))
@@ -135,11 +135,11 @@ class CdpModelsTest {
     @Test
     fun `CdpPage stores appType verbatim - never inspects url or title`() {
         // 反复证明：哪怕 url/title 强烈暗示别的 IDE，CdpPage 也只信构造方给的 appType。
-        // title 里写"Cursor"、url 里写"Windsurf.app"，构造方说 Antigravity 就是 Antigravity。
+        // title 里写"Cursor"、url 里写"Devin.app"，构造方说 Antigravity 就是 Antigravity。
         val page = CdpPage(
             id = "1", type = "page",
             title = "CursorPresetModelsTest.kt — voice7",
-            url = "file:///Applications/Windsurf.app/Contents/.../workbench.html",
+            url = "file:///Applications/Devin.app/Contents/.../workbench.html",
             webSocketDebuggerUrl = "",
             appType = ElectronAppType.ANTIGRAVITY
         )
@@ -166,26 +166,26 @@ class CdpModelsTest {
         val page = CdpPage(
             id = "1", type = "page",
             title = "CursorPresetModelsTest.kt — voice7",
-            url = "file:///Applications/Windsurf.app/Contents/.../workbench.html",
+            url = "file:///Applications/Devin.app/Contents/.../workbench.html",
             webSocketDebuggerUrl = ""
         )
         assertEquals(ElectronAppType.UNKNOWN, page.appType)
     }
 
     @Test
-    fun `regression 9444 - Windsurf target with Cursor-named file is identified as Windsurf`() {
-        // 2026-04 的 9444 事故还原：中继 /targets 给的权威 appName 是 "Windsurf"，
+    fun `regression 9444 - Devin target with Cursor-named file is identified as Devin`() {
+        // 2026-04 的 9444 事故还原：中继 /targets 给的权威 appName 是 "Devin"，
         // 但 page.title 因为用户打开了 CursorPresetModelsTest.kt 而含 "Cursor" 字样。
-        // 数据入口走 ElectronAppType.fromAppName，下游 CdpPage.appType 一锤定音 → Windsurf。
-        val targetAppName = "Windsurf"  // 中继按端口映射来的权威字段
+        // 数据入口走 ElectronAppType.fromAppName，下游 CdpPage.appType 一锤定音 → Devin。
+        val targetAppName = "Devin"  // 中继按端口映射来的权威字段
         val page = CdpPage(
             id = "1", type = "page",
             title = "CursorPresetModelsTest.kt — voice7",
-            url = "file:///Applications/Windsurf.app/Contents/.../workbench.html",
+            url = "file:///Applications/Devin.app/Contents/.../workbench.html",
             webSocketDebuggerUrl = "",
             appType = ElectronAppType.fromAppName(targetAppName)
         )
-        assertEquals(ElectronAppType.WINDSURF, page.appType)
+        assertEquals(ElectronAppType.DEVIN, page.appType)
     }
 
     // ─── HostInfo ────────────────────────────────────────────────────

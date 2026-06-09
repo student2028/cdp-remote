@@ -9,7 +9,7 @@
 
 ---
 
-**CDP Remote** 是一个专为极客开发者打造的远程操控解决方案。它通过 Chrome DevTools Protocol (CDP)，将你电脑上运行的 **Cursor**, **Windsurf**, 或 **Codex** 的画面实时无损地串流到安卓手机上，并提供深度定制的触控与键盘输入层。
+**CDP Remote** 是一个专为极客开发者打造的远程操控解决方案。它通过 Chrome DevTools Protocol (CDP)，将你电脑上运行的 **Cursor**, **Devin**, 或 **Codex** 的画面实时无损地串流到安卓手机上，并提供深度定制的触控与键盘输入层。
 
 去哪儿都能改 Bug，不在电脑旁也能写代码！
 

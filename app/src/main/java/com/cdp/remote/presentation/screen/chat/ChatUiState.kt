@@ -52,8 +52,8 @@ data class ChatUiState(
     // Keep legacy fields for backward compat during transition
     val pendingImageBase64: String? = null,
     val pendingImageMimeType: String? = null,
-    /** 当前是否为 Windsurf IDE，用于显示专属功能（如取消任务按钮） */
-    val isWindsurf: Boolean = false,
+    /** 当前是否为 Devin IDE，用于显示专属功能（如取消任务按钮） */
+    val isDevin: Boolean = false,
     /** 当前是否为 uitty 终端，用于显示终端专属工具栏 */
     val isUitty: Boolean = false,
     /** TV 模式下是否处于操控模式（true=可点击操控 IDE, false=默认观影模式可缩放平移） */

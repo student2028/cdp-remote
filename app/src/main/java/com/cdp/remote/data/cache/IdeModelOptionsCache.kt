@@ -7,7 +7,7 @@ import org.json.JSONObject
 /**
  * IDE 模型下拉枚举结果缓存，降低 CDP `listModelOptions` 调用频率。
  *
- * **适用范围**：反重力（Antigravity）、Windsurf、Codex 等非 Cursor 连接；与桌面 **appName + 主机 IP + 中继/CDP 端口** 分桶，
+ * **适用范围**：反重力（Antigravity）、Devin、Codex 等非 Cursor 连接；与桌面 **appName + 主机 IP + 中继/CDP 端口** 分桶，
  * 桌面端模型列表有更新时，**最长 24 小时内**会在下次打开「切换模型」时重新拉取并更新缓存。
  *
  * Cursor 不走枚举，不使用此缓存。

@@ -731,7 +731,7 @@ class WorkflowViewModel(application: Application) : AndroidViewModel(application
         private val workflowDefaultIdes = listOf(
             IdeInfo("Antigravity", 9333, "可自动启动", emoji = "🚀"),
             IdeInfo("Cursor", 9555, "可自动启动", emoji = "🖱️"),
-            IdeInfo("Windsurf", 9444, "可自动启动", emoji = "🏄"),
+            IdeInfo("Devin", 9444, "可自动启动", emoji = "🏄"),
             IdeInfo("Codex", 9666, "可自动启动", emoji = "📦"),
         )
 

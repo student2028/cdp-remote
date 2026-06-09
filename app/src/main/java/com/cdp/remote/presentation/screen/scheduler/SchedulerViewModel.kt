@@ -80,11 +80,12 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun openNewTaskDialog() {
-        uiState = uiState.copy(editing = TaskDraft())
+    fun openNewTaskDialog(isPipeline: Boolean, isHeterogeneous: Boolean = false) {
+        uiState = uiState.copy(editing = TaskDraft(isPipeline = isPipeline, isHeterogeneous = isHeterogeneous))
     }
 
     fun editTask(task: ScheduledTaskUi) {
+        val isPipelineTask = task.pipeline.isNotEmpty() || task.isHeterogeneous
         uiState = uiState.copy(editing = TaskDraft(
             id = task.id,
             targetIde = task.targetIde,
@@ -92,15 +93,26 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
             prompt = task.prompt,
             scheduleType = task.scheduleType,
             intervalMinutes = task.intervalMinutes,
+            sessionMode = task.sessionMode,
             fixedSessionTitle = task.fixedSessionTitle,
+            model = task.model,
             cronExpression = task.cronExpression,
             maxRuns = task.maxRuns,
-            pipelineEnabled = task.pipeline.isNotEmpty(),
-            pipeline = if (task.pipeline.isNotEmpty()) task.pipeline else listOf(
+            isPipeline = isPipelineTask,
+            isHeterogeneous = task.isHeterogeneous,
+            projectName = task.projectName,
+            pipeline = if (isPipelineTask) task.pipeline else listOf(
                 PipelineStage(prompt = "", model = "", delayMinutes = 0),
                 PipelineStage(prompt = "", model = "", delayMinutes = 5)
             )
         ))
+        if (isPipelineTask && !task.isHeterogeneous) {
+            loadModelOptionsForIde(task.targetIde, task.targetPort)
+        }
+        val targetLower = task.targetIde.lowercase()
+        if (targetLower.contains("codex") || targetLower.contains("antigravity")) {
+            loadProjectOptionsForIde(task.targetIde, task.targetPort)
+        }
     }
 
     fun closeDialog() {
@@ -113,20 +125,65 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun loadModelOptionsForIde(ideName: String, port: Int) {
         if (relayBase.isBlank() || ideName.isBlank() || port <= 0) return
-        if (uiState.modelOptionsByPort.containsKey(port) || uiState.loadingModelOptionsPort == port) return
+        if (uiState.modelOptionsByPort.containsKey(port) || uiState.loadingModelOptionsPorts.contains(port)) return
 
-        uiState = uiState.copy(loadingModelOptionsPort = port)
+        uiState = uiState.copy(loadingModelOptionsPorts = uiState.loadingModelOptionsPorts + port)
         viewModelScope.launch {
             try {
                 val models = fetchModelOptions(ideName, port)
                 uiState = uiState.copy(
                     modelOptionsByPort = uiState.modelOptionsByPort + (port to models),
-                    loadingModelOptionsPort = null
+                    loadingModelOptionsPorts = uiState.loadingModelOptionsPorts - port
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "拉取 IDE 模型列表失败: ${e.message}")
                 uiState = uiState.copy(
-                    loadingModelOptionsPort = null
+                    loadingModelOptionsPorts = uiState.loadingModelOptionsPorts - port
+                )
+            }
+        }
+    }
+
+    fun loadProjectOptionsForIde(ideName: String, port: Int) {
+        if (relayBase.isBlank() || ideName.isBlank() || port <= 0) return
+        val targetLower = ideName.lowercase()
+        if (!targetLower.contains("codex") && !targetLower.contains("antigravity")) return
+        if (uiState.projectOptionsByPort.containsKey(port) || uiState.loadingProjectsPorts.contains(port)) return
+
+        uiState = uiState.copy(loadingProjectsPorts = uiState.loadingProjectsPorts + port)
+        viewModelScope.launch {
+            try {
+                val projects = fetchProjectOptions(ideName, port)
+                uiState = uiState.copy(
+                    projectOptionsByPort = uiState.projectOptionsByPort + (port to projects),
+                    loadingProjectsPorts = uiState.loadingProjectsPorts - port
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "拉取 IDE 项目列表失败: ${e.message}")
+                uiState = uiState.copy(
+                    loadingProjectsPorts = uiState.loadingProjectsPorts - port
+                )
+            }
+        }
+    }
+
+    fun loadSessionOptionsForIde(ideName: String, port: Int, projectName: String) {
+        if (relayBase.isBlank() || ideName.isBlank() || port <= 0) return
+        val cacheKey = "${port}:${projectName}"
+        if (uiState.loadingSessionsKeys.contains(cacheKey)) return
+
+        uiState = uiState.copy(loadingSessionsKeys = uiState.loadingSessionsKeys + cacheKey)
+        viewModelScope.launch {
+            try {
+                val sessions = fetchSessionOptions(ideName, port, projectName)
+                uiState = uiState.copy(
+                    sessionOptionsByKey = uiState.sessionOptionsByKey + (cacheKey to sessions),
+                    loadingSessionsKeys = uiState.loadingSessionsKeys - cacheKey
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "拉取 IDE 会话列表失败: ${e.message}")
+                uiState = uiState.copy(
+                    loadingSessionsKeys = uiState.loadingSessionsKeys - cacheKey
                 )
             }
         }
@@ -136,10 +193,15 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
         val draft = uiState.editing ?: return
 
         // 流水线有效阶段（提前计算，避免重复 filter）
-        val validStages = if (draft.pipelineEnabled) draft.pipeline.filter { it.prompt.isNotBlank() } else emptyList()
+        val validStages = if (draft.isPipeline) draft.pipeline.filter { it.prompt.isNotBlank() } else emptyList()
 
         // 流水线模式校验
-        if (draft.pipelineEnabled) {
+        if (draft.isHeterogeneous) {
+            if (validStages.size < 2 || validStages.any { it.targetIde.isBlank() }) {
+                uiState = uiState.copy(toastMessage = "请填写至少两个阶段的提示词并为它们选择目标 IDE")
+                return
+            }
+        } else if (draft.isPipeline) {
             if (draft.targetIde.isBlank() || validStages.size < 2) {
                 uiState = uiState.copy(toastMessage = "请填写目标 IDE 和至少两个阶段的提示词")
                 return
@@ -163,9 +225,13 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     put("intervalMinutes", draft.intervalMinutes)
                     put("cronExpression", draft.cronExpression)
                     put("fixedSessionTitle", draft.fixedSessionTitle)
+                    put("sessionMode", draft.sessionMode.name)
+                    put("model", draft.model)
                     put("maxRuns", draft.maxRuns)
+                    put("isHeterogeneous", draft.isHeterogeneous)
+                    put("projectName", draft.projectName)
 
-                    if (draft.pipelineEnabled) {
+                    if (draft.isPipeline) {
                         // 流水线模式：prompt 用第一个阶段的（向后兼容），pipeline 传完整阶段列表
                         put("prompt", validStages.firstOrNull()?.prompt ?: "")
                         val pipelineArr = org.json.JSONArray()
@@ -174,6 +240,8 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                                 put("prompt", stage.prompt)
                                 put("model", stage.model)
                                 put("delayMinutes", stage.delayMinutes)
+                                put("targetIde", stage.targetIde)
+                                put("targetPort", stage.targetPort)
                             })
                         }
                         put("pipeline", pipelineArr)
@@ -310,6 +378,30 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private suspend fun fetchProjectOptions(ideName: String, port: Int): List<String> = withContext(Dispatchers.IO) {
+        val url = "$relayBase/codex/projects?port=$port&ide=${java.net.URLEncoder.encode(ideName, "UTF-8")}"
+        val request = Request.Builder().url(url).build()
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string() ?: "{}"
+            if (!response.isSuccessful) {
+                throw IllegalStateException(extractErrorMessage(body, "HTTP ${response.code}"))
+            }
+            parseProjectOptionsJson(body)
+        }
+    }
+
+    private suspend fun fetchSessionOptions(ideName: String, port: Int, projectName: String): List<String> = withContext(Dispatchers.IO) {
+        val url = "$relayBase/codex/sessions?port=$port&ide=${java.net.URLEncoder.encode(ideName, "UTF-8")}&project=${java.net.URLEncoder.encode(projectName, "UTF-8")}"
+        val request = Request.Builder().url(url).build()
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string() ?: "{}"
+            if (!response.isSuccessful) {
+                throw IllegalStateException(extractErrorMessage(body, "HTTP ${response.code}"))
+            }
+            parseSessionOptionsJson(body)
+        }
+    }
+
     companion object {
         private const val TAG = "SchedulerVM"
 
@@ -333,6 +425,8 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                 val intervalMin = obj.get("intervalMinutes")?.asInt ?: 5
                 val cronExpr = obj.get("cronExpression")?.asString ?: ""
                 val ruleLabel = if (schedType == "CRON") "cron: $cronExpr" else "每 $intervalMin 分钟"
+                val projectName = obj.get("projectName")?.asString ?: ""
+                val isHeterogeneous = obj.get("isHeterogeneous")?.asBoolean ?: false
 
                 // 解析 pipeline 阶段
                 val pipelineArr = obj.getAsJsonArray("pipeline")
@@ -342,7 +436,9 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                         PipelineStage(
                             prompt = stageObj.get("prompt")?.asString ?: "",
                             model = stageObj.get("model")?.asString ?: "",
-                            delayMinutes = stageObj.get("delayMinutes")?.asInt ?: 0
+                            delayMinutes = stageObj.get("delayMinutes")?.asInt ?: 0,
+                            targetIde = stageObj.get("targetIde")?.asString ?: "",
+                            targetPort = stageObj.get("targetPort")?.asInt ?: 0
                         )
                     } catch (_: Exception) { null }
                 } ?: emptyList()
@@ -356,11 +452,15 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                     intervalMinutes = intervalMin,
                     cronExpression = cronExpr,
                     fixedSessionTitle = obj.get("fixedSessionTitle")?.asString ?: "",
+                    sessionMode = try { SessionMode.valueOf(obj.get("sessionMode")?.asString ?: "NEW_EACH_TIME") } catch (_: Exception) { SessionMode.NEW_EACH_TIME },
+                    model = obj.get("model")?.asString ?: "",
+                    projectName = projectName,
                     scheduleType = if (schedType == "CRON") ScheduleType.CRON else ScheduleType.INTERVAL,
                     isRunning = obj.get("isRunning")?.asBoolean ?: false,
                     paused = obj.get("paused")?.asBoolean ?: false,
                     executionCount = obj.get("executionCount")?.asInt ?: 0,
                     maxRuns = obj.get("maxRuns")?.asInt ?: 0,
+                    isHeterogeneous = isHeterogeneous,
                     pipeline = pipeline,
                     currentStage = obj.get("currentStage")?.asInt ?: -1
                 )
@@ -385,6 +485,36 @@ class SchedulerViewModel(application: Application) : AndroidViewModel(applicatio
                 val root = JsonParser.parseString(json).asJsonObject
                 if (root.has("success") && !root.get("success").asBoolean) return emptyList()
                 val arr = root.getAsJsonArray("models") ?: return emptyList()
+                arr.mapNotNull { el ->
+                    el.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotEmpty() }
+                }.distinct()
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
+        internal fun parseProjectOptionsJson(json: String): List<String> {
+            return try {
+                val root = JsonParser.parseString(json).asJsonObject
+                if (root.has("success") && !root.get("success").asBoolean) return emptyList()
+                val arr = root.getAsJsonArray("projects") ?: return emptyList()
+                arr.mapNotNull { el ->
+                    when {
+                        el.isJsonPrimitive -> el.asString.trim().takeIf { it.isNotEmpty() }
+                        el.isJsonObject -> el.asJsonObject.get("name")?.asString?.trim()?.takeIf { it.isNotEmpty() }
+                        else -> null
+                    }
+                }.distinct()
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
+        internal fun parseSessionOptionsJson(json: String): List<String> {
+            return try {
+                val root = JsonParser.parseString(json).asJsonObject
+                if (root.has("success") && !root.get("success").asBoolean) return emptyList()
+                val arr = root.getAsJsonArray("sessions") ?: return emptyList()
                 arr.mapNotNull { el ->
                     el.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotEmpty() }
                 }.distinct()

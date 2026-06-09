@@ -592,11 +592,11 @@ const ELECTRON_APPS = [
     { name: 'Antigravity', bundleId: 'com.google.antigravity', appPath: '/Applications/Antigravity.app', binPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity', directBin: true },
     { name: 'Codex', bundleId: 'com.openai.codex', appPath: '/Applications/Codex.app', binPath: '/Applications/Codex.app/Contents/MacOS/Codex' },
     { name: 'Cursor', bundleId: 'com.todesktop.230313mzl4w4u92', appPath: '/Applications/Cursor.app', binPath: '/Applications/Cursor.app/Contents/MacOS/Cursor' },
-    { name: 'Windsurf', bundleId: 'com.codeium.windsurf', appPath: '/Applications/Windsurf.app', binPath: '/Applications/Windsurf.app/Contents/MacOS/Windsurf' }
+    { name: 'Devin', bundleId: 'com.cognition.devin', appPath: '/Applications/Devin.app', binPath: '/Applications/Devin.app/Contents/MacOS/Devin' }
 ];
 const DEFAULT_WORKFLOW_IDE_PORTS = {
     Antigravity: 9333,
-    Windsurf: 9444,
+    Devin: 9444,
     Cursor: 9555,
     Codex: 9666,
 };
@@ -949,7 +949,7 @@ const BRAIN_REPLY_MIN_WAIT_MS = 30_000;
 // 超时降级阈值：超过此时间未解析到标记，启用 fallback 模式
 const BRAIN_PLAN_FALLBACK_MS = 3 * 60 * 1000;   // BRAIN_PLAN 3 分钟后降级
 const BRAIN_REVIEW_FALLBACK_MS = 5 * 60 * 1000;  // BRAIN_REVIEW 5 分钟后降级
-// WORKER_CODE 自动 commit：Worker IDE 修改文件后可能不自动 commit（如 Windsurf 等待 Accept）
+// WORKER_CODE 自动 commit：Worker IDE 修改文件后可能不自动 commit（如 Devin 等待 Accept）
 // 当检测到 uncommitted changes 持续超过此阈值时，watchdog 自动 git add + commit
 const WORKER_AUTO_COMMIT_DELAY_MS = 60_000;  // 60s 持续有 dirty files → 自动 commit
 // 上次处理的 commit hash 追踪（已移入 currentPipeline 持久化）
@@ -1052,7 +1052,7 @@ async function readBrainLastReply(cdpPort, cwdHint) {
         } catch (e) { return ''; }
     })()`;
 
-    // Antigravity / Windsurf 通用的 getLastReply（移植自 AntigravityCommands.kt）
+    // Antigravity / Devin 通用的 getLastReply（移植自 AntigravityCommands.kt）
     const GENERIC_LAST_REPLY_EXPR = `(function(){
         try {
             function visible(el) {
@@ -2679,8 +2679,143 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ── /codex/projects — 返回 Codex/Antigravity 可用项目列表 ──
+    if (req.url.startsWith('/codex/projects')) {
+        const parsed = urlModule.parse(req.url, true);
+        const ide = String(parsed.query.ide || '').toLowerCase();
+        const port = parsed.query.port ? parseInt(parsed.query.port) : null;
+        res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+        (async () => {
+            try {
+                let projects = [];
+                if (ide.includes('antigravity')) {
+                    // Antigravity: 通过 CDP DOM 读取侧边栏真实的 Projects 列表
+                    // 与 inspect_sidebar.js 相同的方式：查询 div[class*="group/section"]
+                    const cdpPort = port || 9333;
+                    const expr = `(function(){
+                        try {
+                            var sections = document.querySelectorAll('div[class*="group/section"]');
+                            var result = [];
+                            for (var i = 0; i < sections.length; i++) {
+                                var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0, h2');
+                                var name = nameEl ? nameEl.textContent.trim() : '';
+                                if (name) result.push(name);
+                            }
+                            return JSON.stringify({ ok: true, projects: result });
+                        } catch(e) {
+                            return JSON.stringify({ ok: false, error: e.message });
+                        }
+                    })()`;
+                    try {
+                        const rawStr = await evaluateOnCdpPage(cdpPort, expr, { timeoutMs: 5000 });
+                        const raw = typeof rawStr === 'string' ? JSON.parse(rawStr) : rawStr;
+                        if (raw && raw.ok && Array.isArray(raw.projects)) {
+                            projects = raw.projects
+                                .filter(name => !!name)
+                                .map(name => ({ name, path: '' }));
+                        }
+                    } catch (e) {
+                        log(`⚠️ /codex/projects Antigravity CDP 查询失败: ${e.message}`);
+                    }
+                } else {
+                    // Codex: 读 .codex-global-state.json 里的 electron-saved-workspace-roots
+                    const state = readCodexGlobalState();
+                    const roots = ensureArray(state['electron-saved-workspace-roots']);
+                    projects = roots
+                        .filter(p => fs.existsSync(p))
+                        .map(p => ({ name: path.basename(p), path: p }));
+                }
+                // 去重（按 name）
+                const seen = new Set();
+                projects = projects.filter(p => { if (seen.has(p.name)) return false; seen.add(p.name); return true; });
+                res.end(JSON.stringify({ success: true, projects }));
+            } catch (e) {
+                res.end(JSON.stringify({ success: false, projects: [], error: e.message }));
+            }
+        })();
+        return;
+    }
+
+
+    // ── /codex/sessions — 返回 IDE 指定项目下的会话列表 ──
+    if (req.url.startsWith('/codex/sessions')) {
+        const parsed = urlModule.parse(req.url, true);
+        const ide = String(parsed.query.ide || '').toLowerCase();
+        const port = parsed.query.port ? parseInt(parsed.query.port) : null;
+        const projectName = decodeURIComponent(parsed.query.project || '');
+        res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+        (async () => {
+            try {
+                const cdpPort = port || 9333;
+                const projectLit = JSON.stringify(projectName.toLowerCase().trim());
+                const expr = `(function(){
+                    try {
+                        var sections = document.querySelectorAll('div[class*="group/section"]');
+                        var targetSection = null;
+                        var targetProject = ${projectLit};
+
+                        for (var i = 0; i < sections.length; i++) {
+                            var nameEl = sections[i].querySelector('div.text-sm.font-medium.truncate.m-0, h2');
+                            var name = nameEl ? nameEl.textContent.trim().toLowerCase() : '';
+                            if (targetProject && name === targetProject) {
+                                targetSection = sections[i]; break;
+                            }
+                        }
+                        // 没找到指定项目则回退到当前活跃 section
+                        if (!targetSection) {
+                            for (var i = 0; i < sections.length; i++) {
+                                var pills = sections[i].querySelectorAll('[data-testid^="convo-pill"]');
+                                for (var j = 0; j < pills.length; j++) {
+                                    var row = pills[j];
+                                    for (var k = 0; k < 5 && row; k++) {
+                                        row = row.parentElement;
+                                        if (row && row.className && row.className.toString().includes('bg-sidebar-secondary')) {
+                                            targetSection = sections[i]; break;
+                                        }
+                                    }
+                                    if (targetSection) break;
+                                }
+                                if (targetSection) break;
+                            }
+                        }
+                        if (!targetSection) return JSON.stringify({ ok: true, sessions: [] });
+
+                        // 需要先展开项目才能看到会话 pill
+                        var card = targetSection.querySelector('[data-project-card]');
+                        if (card && card.getAttribute('aria-expanded') === 'false') {
+                            card.click();
+                            // 等 DOM 更新
+                        }
+
+                        var pills = targetSection.querySelectorAll('[data-testid^="convo-pill"]');
+                        var sessions = [];
+                        for (var p = 0; p < pills.length; p++) {
+                            var text = (pills[p].textContent || '').trim();
+                            if (text.length > 60) text = text.substring(0, 60) + '...';
+                            if (text) sessions.push(text);
+                        }
+                        return JSON.stringify({ ok: true, sessions: sessions });
+                    } catch(e) {
+                        return JSON.stringify({ ok: false, error: e.message });
+                    }
+                })()`;
+                const rawStr = await evaluateOnCdpPage(cdpPort, expr, { timeoutMs: 5000 });
+                const raw = typeof rawStr === 'string' ? JSON.parse(rawStr) : rawStr;
+                if (raw && raw.ok) {
+                    res.end(JSON.stringify({ success: true, sessions: raw.sessions || [] }));
+                } else {
+                    res.end(JSON.stringify({ success: false, sessions: [], error: raw?.error || 'unknown' }));
+                }
+            } catch (e) {
+                res.end(JSON.stringify({ success: false, sessions: [], error: e.message }));
+            }
+        })();
+        return;
+    }
+
     // ── Codex 项目管理：显式添加/激活 workspace root ──
     if (req.url.startsWith('/codex/workspace/add')) {
+
         const parsed = urlModule.parse(req.url, true);
         const reqPort = parsed.query.port ? parseInt(parsed.query.port) : 9666;
         const reqCwd = String(parsed.query.cwd || '').trim();
@@ -3988,9 +4123,9 @@ setInterval(() => {
 const CDP_TIMEOUT_MS = 8000;
 
 /** 查找输入框并聚焦的 JS 表达式（各 IDE 通用） */
-const FOCUS_INPUT_EXPR = `(function(){var ed=null;var ch=document.getElementById('chat');if(ch)ed=ch.querySelector('[contenteditable="true"]');if(!ed){var p=document.getElementById('windsurf.cascadePanel');if(p)ed=p.querySelector('[contenteditable="true"]');}if(!ed){var ces=document.querySelectorAll('div[contenteditable="true"]');for(var i=0;i<ces.length;i++){var e=ces[i];if(!e.offsetParent)continue;var c=e.className||'';var ro=e.getAttribute('role')||'';if(ro==='textbox'||c.indexOf('min-h-')>=0||c.indexOf('outline-none')>=0||c.indexOf('ProseMirror')>=0){ed=e;break;}}}if(!ed)return'no-input';ed.focus();ed.textContent='';return'ok';})()`;
+const FOCUS_INPUT_EXPR = `(function(){var ed=null;var ch=document.getElementById('chat');if(ch)ed=ch.querySelector('[contenteditable="true"]');if(!ed){var p=document.getElementById('devin.cascadePanel');if(p)ed=p.querySelector('[contenteditable="true"]');}if(!ed){var ces=document.querySelectorAll('div[contenteditable="true"]');for(var i=0;i<ces.length;i++){var e=ces[i];if(!e.offsetParent)continue;var c=e.className||'';var ro=e.getAttribute('role')||'';if(ro==='textbox'||c.indexOf('min-h-')>=0||c.indexOf('outline-none')>=0||c.indexOf('ProseMirror')>=0){ed=e;break;}}}if(!ed)return'no-input';ed.focus();ed.textContent='';return'ok';})()`;
 
-function windsurfSendExpression(message) {
+function devinSendExpression(message) {
     return `
         (async function() {
             const text = ${JSON.stringify(message)};
@@ -3998,7 +4133,7 @@ function windsurfSendExpression(message) {
             function findEditor() {
                 var el = document.querySelector('[data-lexical-editor="true"]');
                 if (el && el.offsetParent) return el;
-                var panel = document.getElementById('windsurf.cascadePanel') || document;
+                var panel = document.getElementById('devin.cascadePanel') || document;
                 var editors = panel.querySelectorAll('[contenteditable="true"]');
                 for (var i = 0; i < editors.length; i++) {
                     if (editors[i].offsetParent) return editors[i];
@@ -4081,12 +4216,12 @@ function windsurfSendExpression(message) {
     `;
 }
 
-const WINDSURF_EDITOR_INFO_EXPR = `
+const DEVIN_EDITOR_INFO_EXPR = `
     (function() {
         function findEditor() {
             var el = document.querySelector('[data-lexical-editor="true"]');
             if (el && el.offsetParent) return el;
-            var panel = document.getElementById('windsurf.cascadePanel') || document;
+            var panel = document.getElementById('devin.cascadePanel') || document;
             var editors = panel.querySelectorAll('[contenteditable="true"]');
             for (var i = 0; i < editors.length; i++) {
                 if (editors[i].offsetParent) return editors[i];
@@ -4120,7 +4255,7 @@ const WINDSURF_EDITOR_INFO_EXPR = `
     })()
 `;
 
-const WINDSURF_SUBMIT_EXPR = `
+const DEVIN_SUBMIT_EXPR = `
     (function() {
         var el = document.querySelector('[data-lexical-editor="true"]');
         if (!el) return 'no-lexical';
@@ -4233,7 +4368,7 @@ function schedulerAppKey(appName) {
     const lower = String(appName || '').toLowerCase();
     if (lower.startsWith('uitty:') || lower.includes('uitty')) return 'uitty';
     if (lower.includes('cursor')) return 'cursor';
-    if (lower.includes('windsurf')) return 'windsurf';
+    if (lower.includes('devin')) return 'devin';
     if (lower.includes('codex')) return 'codex';
     if (lower.includes('claude')) return 'claude';
     if (lower.includes('dsme') || lower.includes('deepseek')) return 'dsme';
@@ -4348,14 +4483,14 @@ async function switchAntigravityLikeModel(cdpPort, modelName) {
     return parsed.info || modelName;
 }
 
-async function switchWindsurfModel(cdpPort, modelName) {
+async function switchDevinModel(cdpPort, modelName) {
     const input = String(modelName || '').toLowerCase().trim();
     const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
         expression: `
             (async function() {
                 try {
                     var input = ${JSON.stringify(input)};
-                    var panel = document.getElementById('windsurf.cascadePanel');
+                    var panel = document.getElementById('devin.cascadePanel');
                     if (!panel) return JSON.stringify({ ok:false, err:'找不到 cascadePanel' });
                     var modelBtn = null;
                     var precBtns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
@@ -4452,7 +4587,7 @@ async function switchWindsurfModel(cdpPort, modelName) {
         timeout: 60000
     }, 60_000));
     const parsed = parseJsonEvalValue(result);
-    if (!parsed.ok) throw new Error(parsed.err || 'Windsurf 模型切换失败');
+    if (!parsed.ok) throw new Error(parsed.err || 'Devin 模型切换失败');
     return parsed.info || modelName;
 }
 
@@ -4769,12 +4904,12 @@ async function listAntigravitySettingsModels(cdpPort) {
     return Array.isArray(models) ? models : [];
 }
 
-async function listWindsurfModels(cdpPort) {
+async function listDevinModels(cdpPort) {
     const result = await withIdeCdp(cdpPort, (cdpCall) => cdpCall('Runtime.evaluate', {
         expression: `
             (async function() {
                 try {
-                    var panel = document.getElementById('windsurf.cascadePanel');
+                    var panel = document.getElementById('devin.cascadePanel');
                     if (!panel) return JSON.stringify({ ok:false, err:'找不到 cascadePanel' });
                     function visible(el) {
                         if (!el || !el.getBoundingClientRect) return false;
@@ -4824,7 +4959,7 @@ async function listWindsurfModels(cdpPort) {
         timeout: 15000
     }, 15_000));
     const parsed = parseJsonEvalValue(result);
-    if (!parsed.ok) throw new Error(parsed.err || 'Windsurf 模型列表读取失败');
+    if (!parsed.ok) throw new Error(parsed.err || 'Devin 模型列表读取失败');
     return parsed.models || [];
 }
 
@@ -4937,7 +5072,7 @@ async function listSchedulerModels(cdpPort, appName) {
         const menuModels = await listAntigravityLikeModels(cdpPort).catch(() => []);
         return [...settingsModels, ...menuModels];
     }
-    if (appKey === 'windsurf') return listWindsurfModels(cdpPort);
+    if (appKey === 'devin') return listDevinModels(cdpPort);
     if (appKey === 'codex') return listCodexModels(cdpPort);
     if (appKey === 'claude') return defaultSchedulerModelOptions(appName);
     if (appKey === 'uitty') return [];
@@ -4956,8 +5091,8 @@ async function schedulerSwitchModel(cdpPort, task, modelName) {
         picked = await runModelSwitchScript(script, cdpPort, modelName, { CURSOR_CDP_PORT: String(cdpPort) }) || modelName;
     } else if (appKey === 'antigravity' || appKey === 'dsme') {
         picked = await switchAntigravityLikeModel(cdpPort, modelName);
-    } else if (appKey === 'windsurf') {
-        picked = await switchWindsurfModel(cdpPort, modelName);
+    } else if (appKey === 'devin') {
+        picked = await switchDevinModel(cdpPort, modelName);
     } else if (appKey === 'codex') {
         picked = await switchCodexModel(cdpPort, modelName);
     } else if (appKey === 'claude') {
@@ -5095,7 +5230,7 @@ async function waitForSchedulerStageCompletion(cdpPort, task, stageIndex) {
  * @param {string} message - 要发送的消息文本
  * @throws {Error} 当目标不可用、无 workbench、或 CDP 操作失败时抛出
  */
-async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targetPid = null) {
+async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targetPid = null, projectName = '', isFirstStage = true) {
     const targetAppName = activeCdpTargets.get(cdpPort)?.appName || '';
     // 1. 获取 workbench 页面列表
     const pages = await new Promise((resolve, reject) => {
@@ -5112,7 +5247,11 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
     if (!wb && targetAppName.toLowerCase() === 'uitty') {
         wb = pages.find(p => p.type === 'page' && p.url && (p.title === 'uitty' || p.url.includes('uitty')));
     }
-    if (!wb) throw new Error('未找到 workbench 或 uitty 页面');
+    // Antigravity 页面不包含 workbench，回退到第一个可用的 page
+    if (!wb) {
+        wb = pages.find(p => p.type === 'page' && p.webSocketDebuggerUrl);
+    }
+    if (!wb) throw new Error('未找到 workbench 或可用页面');
 
     // 2. 建立 WebSocket 并发送消息
     const wsUrl = wb.webSocketDebuggerUrl;
@@ -5176,7 +5315,35 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
                     return;
                 }
 
-                if (fixedSessionTitle) {
+                if (fixedSessionTitle && isFirstStage) {
+                    const appKey = schedulerAppKey(targetAppName);
+                    if (appKey === 'antigravity' || appKey === 'codex') {
+                        // Antigravity/Codex: 直接点击侧边栏的 convo-pill
+                        const agySwitchScript = `
+                            (function() {
+                                try {
+                                    var target = ${JSON.stringify(fixedSessionTitle)}.toLowerCase().trim();
+                                    var pills = document.querySelectorAll('[data-testid^="convo-pill"]');
+                                    for (var i = 0; i < pills.length; i++) {
+                                        var text = (pills[i].textContent || '').trim().toLowerCase();
+                                        if (text === target || text.startsWith(target) || target.startsWith(text)) {
+                                            pills[i].click();
+                                            return 'ok';
+                                        }
+                                    }
+                                    return 'not-found: ' + pills.length + ' pills checked';
+                                } catch(e) {
+                                    return 'error: ' + e.message;
+                                }
+                            })()
+                        `;
+                        let switchRes = await cdpCall('Runtime.evaluate', { expression: agySwitchScript, returnByValue: true });
+                        if (!switchRes || !switchRes.result || switchRes.result.value !== 'ok') {
+                            throw new Error(`固定会话切换失败: ${switchRes?.result?.value || '无返回结果'}`);
+                        }
+                        await new Promise(r => setTimeout(r, 1000));
+                    } else {
+                    // Cursor/Devin: 通过 history panel 切换
                     const switchScript = `
                         (async function() {
                             try {
@@ -5212,7 +5379,7 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
                                 }
 
                                 if (items.length === 0) {
-                                    var panel = document.getElementById('windsurf.cascadePanel');
+                                    var panel = document.getElementById('devin.cascadePanel');
                                     if (panel) items = Array.from(panel.querySelectorAll('[class*="cursor-pointer"]'));
                                 }
 
@@ -5236,27 +5403,38 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
                     if (!switchRes || !switchRes.result || switchRes.result.value !== 'ok') {
                         throw new Error(`固定会话切换失败: ${switchRes?.result?.value || '无返回结果'}`);
                     }
+                    }
                 }
 
-                if (targetAppName.toLowerCase() === 'windsurf') {
+                if (targetAppName.toLowerCase() === 'devin') {
                     let infoRes = await cdpCall('Runtime.evaluate', {
-                        expression: WINDSURF_EDITOR_INFO_EXPR,
+                        expression: DEVIN_EDITOR_INFO_EXPR,
                         returnByValue: true,
                     });
                     let info = {};
                     try { info = JSON.parse(infoRes?.result?.value || '{}'); } catch (_) {}
                     if (info.error === 'no-lexical') {
-                        log('📨 Windsurf 未找到输入框，尝试 Cmd+L 打开 Cascade 后重试');
-                        await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'l', code: 'KeyL', modifiers: 4, windowsVirtualKeyCode: 76 });
-                        await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'l', code: 'KeyL', modifiers: 4, windowsVirtualKeyCode: 76 });
+                        log('📨 Devin 未找到输入框，尝试点击右上角 + 号打开或新建 Cascade');
+                        await cdpCall('Runtime.evaluate', {
+                            expression: `(function(){
+                                var btns=document.querySelectorAll('button');
+                                for(var i=0;i<btns.length;i++){
+                                    var svg=btns[i].querySelector('svg');
+                                    if(svg && svg.outerHTML.includes('plus') && btns[i].getBoundingClientRect().y<100){
+                                        btns[i].click();return;
+                                    }
+                                }
+                            })()`,
+                            returnByValue: true
+                        });
                         await new Promise(r => setTimeout(r, 1500));
                         infoRes = await cdpCall('Runtime.evaluate', {
-                            expression: WINDSURF_EDITOR_INFO_EXPR,
+                            expression: DEVIN_EDITOR_INFO_EXPR,
                             returnByValue: true,
                         });
                         try { info = JSON.parse(infoRes?.result?.value || '{}'); } catch (_) { info = {}; }
                     }
-                    if (!info.ok) throw new Error(`Windsurf 发送失败: ${info.error || 'no-editor-info'}`);
+                    if (!info.ok) throw new Error(`Devin 发送失败: ${info.error || 'no-editor-info'}`);
 
                     await cdpCall('Input.dispatchMouseEvent', {
                         type: 'mousePressed', x: info.x, y: info.y, button: 'left', clickCount: 1,
@@ -5274,13 +5452,13 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
                     await new Promise(r => setTimeout(r, 300));
 
                     const sendRes = await cdpCall('Runtime.evaluate', {
-                        expression: WINDSURF_SUBMIT_EXPR,
+                        expression: DEVIN_SUBMIT_EXPR,
                         returnByValue: true,
                     });
                     const sendValue = sendRes?.result?.value || '';
-                    log(`📨 Windsurf send result: ${sendValue}`);
+                    log(`📨 Devin send result: ${sendValue}`);
                     if (sendValue !== 'sent' && sendValue !== 'clicked-send') {
-                        throw new Error(`Windsurf 发送失败: ${sendValue || '无返回结果'}`);
+                        throw new Error(`Devin 发送失败: ${sendValue || '无返回结果'}`);
                     }
                     clearTimeout(globalTimer);
                     ws.close();
@@ -5290,9 +5468,19 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
 
                 let r = await cdpCall('Runtime.evaluate', { expression: FOCUS_INPUT_EXPR, returnByValue: true });
                 if (r.result?.value === 'no-input') {
-                    // Cmd+L 打开聊天面板
-                    await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'l', code: 'KeyL', modifiers: 4, windowsVirtualKeyCode: 76 });
-                    await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'l', code: 'KeyL', modifiers: 4, windowsVirtualKeyCode: 76 });
+                    // 点击加号（New Chat）或相关按钮而不是 Cmd+L
+                    await cdpCall('Runtime.evaluate', {
+                        expression: `(function(){
+                            var svgs=document.querySelectorAll('svg');
+                            for(var i=0;i<svgs.length;i++){
+                                var html=svgs[i].innerHTML;var cls=svgs[i].getAttribute('class')||'';
+                                if(html.includes('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z') || cls.includes('plus') || cls.includes('codicon-add')){
+                                    var btn=svgs[i].closest('a, button, [role="button"], .action-item');
+                                    if(btn && btn.offsetParent && btn.getBoundingClientRect().y<100){ btn.click(); return; }
+                                }
+                            }
+                        })()`, returnByValue: true
+                    });
                     await new Promise(r => setTimeout(r, 1500));
                     await cdpCall('Runtime.evaluate', { expression: FOCUS_INPUT_EXPR, returnByValue: true });
                 }
@@ -5309,6 +5497,23 @@ async function sendMessageToIde(cdpPort, message, fixedSessionTitle = null, targ
                 // 发送 Cmd+Enter 以确保支持 Cursor Composer等多行输入框提交 (Modifiers: 4 代表 Meta/Command)
                 await cdpCall('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', modifiers: 4, windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
                 await cdpCall('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', modifiers: 4, windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+                
+                // 显式点击发送按钮，防止快捷键不生效
+                await cdpCall('Runtime.evaluate', {
+                    expression: `(function(){
+                        var svgs=document.querySelectorAll('svg');
+                        for(var i=0;i<svgs.length;i++){
+                            var c=(svgs[i].getAttribute('class')||'').toLowerCase();
+                            var a=(svgs[i].getAttribute('aria-label')||'').toLowerCase();
+                            var pa=svgs[i].parentElement?((svgs[i].parentElement.getAttribute('aria-label')||'').toLowerCase()):'';
+                            if(c.includes('send')||a.includes('send')||pa.includes('send')||svgs[i].innerHTML.includes('paper-plane')){
+                                var p=svgs[i].closest('button, a, [role="button"], .action-item');
+                                if(p && p.offsetParent && !p.disabled) { p.click(); return 'clicked'; }
+                            }
+                        }
+                    })()`, returnByValue: true
+                });
+                
                 clearTimeout(globalTimer);
                 ws.close();
                 resolve();
@@ -5346,6 +5551,16 @@ function schedulerSaveTasks(tasks) {
     } catch (e) { log(`⚠️ 保存调度任务失败: ${e.message}`); }
 }
 
+/** 更新单个任务的某个字段并持久化 */
+function schedulerUpdateTaskField(taskId, field, value) {
+    const tasks = schedulerLoadTasks();
+    const idx = tasks.findIndex(t => t.id === taskId);
+    if (idx >= 0) {
+        tasks[idx][field] = value;
+        schedulerSaveTasks(tasks);
+    }
+}
+
 /** 列出所有任务（含运行时信息） */
 function schedulerListTasks() {
     const saved = schedulerLoadTasks();
@@ -5365,7 +5580,8 @@ function schedulerListTasks() {
 
 /** 创建或更新任务 */
 function schedulerUpsertTask(task) {
-    if (!task.targetIde || !task.prompt) throw new Error('缺少 targetIde 或 prompt');
+    if (!task.isHeterogeneous && (!task.targetIde || !task.prompt)) throw new Error('缺少 targetIde 或 prompt');
+    if (task.isHeterogeneous && !task.prompt) throw new Error('缺少 prompt');
     if (!task.id) task.id = `task-${Date.now()}`;
     if (!task.scheduleType) task.scheduleType = 'INTERVAL';
     if (!task.intervalMinutes) task.intervalMinutes = 5;
@@ -5385,6 +5601,10 @@ function schedulerUpsertTask(task) {
         targetIde: task.targetIde,
         targetPort: task.targetPort || 0,
         fixedSessionTitle: task.fixedSessionTitle || '',
+        sessionMode: task.sessionMode || 'NEW_EACH_TIME',
+        model: task.model || '',
+        projectName: task.projectName || '',
+        isHeterogeneous: task.isHeterogeneous || false,
         prompt: task.prompt,
         scheduleType: task.scheduleType,
         intervalMinutes: task.intervalMinutes,
@@ -5393,6 +5613,7 @@ function schedulerUpsertTask(task) {
         executionCount,
         pipeline: Array.isArray(task.pipeline) && task.pipeline.length > 0 ? task.pipeline : [],
         paused: reachedMaxRuns,
+        sharedSessionTitle: task.sharedSessionTitle || existing?.sharedSessionTitle || '',
         createdAt: task.createdAt || existing?.createdAt || new Date().toISOString()
     };
     tasks.push(savedTask);
@@ -5579,33 +5800,54 @@ async function schedulerExecuteTask(task) {
             return;
         }
 
-        log(`📅 [${task.id}] 流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段) → ${task.targetIde}:${task.targetPort || '?'}`);
-
-        const cdpPort = schedulerFindCdpPort(task);
-        if (!cdpPort) {
-            taskCurrentStage.set(task.id, -1);
-            return;
+        let cdpPort = null;
+        let targetPid = null;
+        if (!task.isHeterogeneous) {
+            const parsed = parseTargetIde(task.targetIde);
+            targetPid = parsed.pid;
+            cdpPort = schedulerFindCdpPort(task);
+            if (!cdpPort) {
+                taskCurrentStage.set(task.id, -1);
+                return;
+            }
+            log(`📅 [${task.id}] 流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段) → ${task.targetIde}:${task.targetPort || '?'}`);
+        } else {
+            log(`📅 [${task.id}] 异构流水线执行第 ${count} 轮 (${task.pipeline.length} 阶段)`);
         }
 
         try {
             const result = await executePipelineStages(task, {
                 cdpPort,
                 targetPid,
+                resolveStageCdp: (stage) => {
+                    if (task.isHeterogeneous && stage.targetIde) {
+                        const sPort = schedulerFindCdpPort({
+                            targetIde: stage.targetIde,
+                            targetPort: stage.targetPort
+                        });
+                        if (!sPort) {
+                            throw new Error(`IDE ${stage.targetIde}:${stage.targetPort || '?'} 不在线`);
+                        }
+                        const p = parseTargetIde(stage.targetIde);
+                        return { cdpPort: sPort, targetPid: p.pid };
+                    }
+                    return { cdpPort, targetPid };
+                },
                 isActive: () => task.__manualTrigger
                     ? schedulerLoadTasks().some(t => t.id === task.id)
                     : activeTimers.has(task.id),
                 onStageChange: (idx) => taskCurrentStage.set(task.id, idx),
                 log,
-                switchModel: async ({ model, stageIndex }) => {
-                    await schedulerSwitchModel(cdpPort, task, model);
+                switchModel: async ({ model, stageIndex, cdpPort: stagePort }) => {
+                    await schedulerSwitchModel(stagePort, task, model);
                     log(`✅ [${task.id}] 阶段 ${stageIndex + 1}: 模型就绪 → ${model}`);
                 },
-                sendMessage: async ({ message, stage, stageIndex }) => {
+                sendMessage: async ({ message, stage, stageIndex, cdpPort: stagePort, targetPid: stagePid }) => {
                     log(`📅 [${task.id}] 执行阶段 ${stageIndex + 1}/${task.pipeline.length}${stage.model ? ` (模型: ${stage.model})` : ''}: ${String(message || '').substring(0, 50)}...`);
-                    await sendMessageToIde(cdpPort, message, task.fixedSessionTitle, targetPid);
+                    await sendMessageToIde(stagePort, message, task.fixedSessionTitle, stagePid, task.projectName, stageIndex === 0);
                 },
-                waitForCompletion: async ({ stageIndex }) => {
-                    await waitForSchedulerStageCompletion(cdpPort, task, stageIndex);
+                waitForCompletion: async ({ stageIndex, cdpPort: stagePort }) => {
+                    await waitForSchedulerStageCompletion(stagePort, task, stageIndex);
                     log(`✅ [${task.id}] 阶段 ${stageIndex + 1} 已完成`);
                 }
             });
@@ -5632,13 +5874,112 @@ async function schedulerExecuteTask(task) {
     }
 
     // 单任务模式（原逻辑）
+    // targetPid already declared at the top of the function
     log(`📅 [${task.id}] 执行第 ${count} 次 → ${task.targetIde}:${task.targetPort || '?'}: ${task.prompt.substring(0, 50)}...`);
 
     try {
         const cdpPort = schedulerFindCdpPort(task);
         if (!cdpPort) return;
 
-        await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle, targetPid);
+        // 切换模型（如果指定了）
+        if (task.model) {
+            try {
+                await sendMessageToIde(cdpPort, `/model ${task.model}`, null, null);
+                await new Promise(r => setTimeout(r, 500));
+                log(`🔄 [${task.id}] 已切换模型: ${task.model}`);
+            } catch (e) {
+                log(`⚠️ [${task.id}] 切换模型失败: ${e.message}`);
+            }
+        }
+
+        const sessionMode = task.sessionMode || 'NEW_EACH_TIME';
+        if (sessionMode === 'NEW_EACH_TIME') {
+            // 每次新建会话：先点新建按钮
+            log(`📅 [${task.id}] sessionMode=NEW_EACH_TIME，新建会话后发送`);
+            try {
+                await evaluateOnCdpPage(cdpPort, `(function(){
+                    var btn = document.querySelector('[data-testid="new-chat-button"]');
+                    if (!btn) {
+                        var btns = document.querySelectorAll('button, a, [role="button"]');
+                        for (var i = 0; i < btns.length; i++) {
+                            var aria = (btns[i].getAttribute('aria-label') || '').toLowerCase();
+                            var title = (btns[i].getAttribute('title') || '').toLowerCase();
+                            if (aria.includes('new') || title.includes('new') || aria.includes('新') || title.includes('新')) {
+                                btn = btns[i]; break;
+                            }
+                        }
+                    }
+                    if (btn) { btn.click(); return 'ok'; }
+                    document.dispatchEvent(new KeyboardEvent('keydown', {key:'l', code:'KeyL', metaKey:true, bubbles:true}));
+                    return 'keyboard';
+                })()`, { timeoutMs: 5000 });
+                await new Promise(r => setTimeout(r, 1000));
+            } catch (e) {
+                log(`⚠️ [${task.id}] 新建会话失败，继续在当前会话发送: ${e.message}`);
+            }
+            await sendMessageToIde(cdpPort, task.prompt, null, targetPid);
+        } else if (sessionMode === 'SPECIFIED' && task.fixedSessionTitle) {
+            // 指定会话：使用原有 fixedSessionTitle 逻辑
+            await sendMessageToIde(cdpPort, task.prompt, task.fixedSessionTitle, targetPid);
+        } else if (sessionMode === 'SHARED') {
+            // 共用会话：首次新建，后续复用同一个会话
+            const storedTitle = task.sharedSessionTitle || '';
+            if (storedTitle) {
+                // 后续执行：切换到已记录的会话
+                log(`📅 [${task.id}] sessionMode=SHARED，复用会话: ${storedTitle}`);
+                await sendMessageToIde(cdpPort, task.prompt, storedTitle, targetPid);
+            } else {
+                // 首次执行：直接在当前会话发送，然后捕获会话标题并持久化
+                log(`📅 [${task.id}] sessionMode=SHARED 首次执行，发送后记录会话标题`);
+                await sendMessageToIde(cdpPort, task.prompt, null, targetPid);
+                // 等待 IDE 处理后读取当前活跃的会话标题
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                    const titleRaw = await evaluateOnCdpPage(cdpPort, `(function(){
+                        try {
+                            // 查找当前高亮（活跃）的会话 pill
+                            var activePill = document.querySelector('[data-testid^="convo-pill"][class*="bg-sidebar-secondary"]');
+                            if (!activePill) {
+                                // 备用：找 aria-selected 或 data-active
+                                var pills = document.querySelectorAll('[data-testid^="convo-pill"]');
+                                for (var i = 0; i < pills.length; i++) {
+                                    var parent = pills[i].parentElement;
+                                    for (var k = 0; k < 3 && parent; k++) {
+                                        var cls = (typeof parent.className === 'string') ? parent.className : '';
+                                        if (cls.includes('bg-sidebar-secondary') || cls.includes('bg-accent')) {
+                                            activePill = pills[i]; break;
+                                        }
+                                        parent = parent.parentElement;
+                                    }
+                                    if (activePill) break;
+                                }
+                            }
+                            if (activePill) {
+                                return JSON.stringify({ ok: true, title: activePill.textContent.trim() });
+                            }
+                            return JSON.stringify({ ok: false, error: 'no active pill found' });
+                        } catch(e) {
+                            return JSON.stringify({ ok: false, error: e.message });
+                        }
+                    })()`, { timeoutMs: 5000 });
+                    const titleResult = typeof titleRaw === 'string' ? JSON.parse(titleRaw) : titleRaw;
+                    if (titleResult && titleResult.ok && titleResult.title) {
+                        // 持久化到任务
+                        task.sharedSessionTitle = titleResult.title;
+                        schedulerUpdateTaskField(task.id, 'sharedSessionTitle', titleResult.title);
+                        log(`📌 [${task.id}] 已记录共用会话标题: ${titleResult.title}`);
+                    } else {
+                        log(`⚠️ [${task.id}] 无法捕获会话标题: ${titleResult?.error || 'unknown'}`);
+                    }
+                } catch (e) {
+                    log(`⚠️ [${task.id}] 捕获会话标题失败: ${e.message}`);
+                }
+            }
+        } else {
+            // 其他 fallback：直接在当前对话发送
+            await sendMessageToIde(cdpPort, task.prompt, null, targetPid);
+        }
+
         const done = schedulerPersistRunCompletion(task);
         log(`✅ [${task.id}] 执行成功 (第 ${done.completedRuns} 次)`);
     } catch (e) {

@@ -2,7 +2,7 @@ function schedulerAppKey(appName) {
     const lower = String(appName || '').toLowerCase();
     if (lower.startsWith('uitty:') || lower.includes('uitty')) return 'uitty';
     if (lower.includes('cursor')) return 'cursor';
-    if (lower.includes('windsurf')) return 'windsurf';
+    if (lower.includes('devin')) return 'devin';
     if (lower.includes('codex')) return 'codex';
     if (lower.includes('claude')) return 'claude';
     if (lower.includes('dsme') || lower.includes('deepseek')) return 'dsme';
@@ -30,7 +30,7 @@ function defaultSchedulerModelOptions(appName) {
     if (appKey === 'cursor') {
         return ['Auto', 'Premium', 'Composer 2', 'Composer 1.5', 'GPT', 'Codex', 'Sonnet', 'Opus'];
     }
-    if (appKey === 'windsurf') {
+    if (appKey === 'devin') {
         return [
             'Claude Opus 4.7',
             'Claude Opus 4.6',

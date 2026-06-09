@@ -56,6 +56,43 @@ const { executePipelineStages } = require('./scheduler_pipeline');
     assert.deepStrictEqual(cancelled, { ok: false, cancelled: true, completedStages: 1 });
     assert.ok(!cancelledEvents.includes('switch:GPT-5.5'));
 
+    // Test resolveStageCdp for heterogeneous pipeline
+    const heteroEvents = [];
+    const heteroTask = {
+        id: 'task-hetero',
+        isHeterogeneous: true,
+        pipeline: [
+            { targetIde: 'Cursor', targetPort: 9555, prompt: 'cursor prompt', delayMinutes: 0 },
+            { targetIde: 'Devin', targetPort: 9444, prompt: 'devin prompt', delayMinutes: 0 }
+        ]
+    };
+
+    const heteroResult = await executePipelineStages(heteroTask, {
+        cdpPort: null,
+        targetPid: null,
+        resolveStageCdp: (stage) => {
+            return { cdpPort: stage.targetPort, targetPid: stage.targetPort === 9444 ? 123 : null };
+        },
+        isActive: () => true,
+        onStageChange: (idx) => heteroEvents.push(`stage:${idx}`),
+        sleep: async () => {},
+        switchModel: async () => {},
+        sendMessage: async ({ message, cdpPort, targetPid }) => heteroEvents.push(`send:${message} to ${cdpPort} pid:${targetPid}`),
+        waitForCompletion: async ({ stageIndex }) => heteroEvents.push(`wait:${stageIndex}`),
+        log: () => {}
+    });
+
+    assert.deepStrictEqual(heteroResult, { ok: true, completedStages: 2 });
+    assert.deepStrictEqual(heteroEvents, [
+        'stage:0',
+        'send:cursor prompt to 9555 pid:null',
+        'wait:0',
+        'stage:1',
+        'send:devin prompt to 9444 pid:123',
+        'wait:1',
+        'stage:-1'
+    ]);
+
     console.log('scheduler_pipeline tests passed');
 })().catch((err) => {
     console.error(err);

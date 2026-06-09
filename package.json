@@ -1,7 +1,7 @@
 {
   "name": "cdp-relay-server",
   "version": "1.0.0",
-  "description": "CDP Relay Server — 将本地 Electron IDE (Cursor/Windsurf/Codex) 通过 WebSocket 中继转发到安卓手机，实现远程查看和操控。",
+  "description": "CDP Relay Server — 将本地 Electron IDE (Cursor/Devin/Codex) 通过 WebSocket 中继转发到安卓手机，实现远程查看和操控。",
   "main": "relay-dev/cdp_relay.js",
   "bin": {
     "cdp-relay": "./relay-dev/cdp_relay.js"
@@ -16,7 +16,7 @@
     "remote",
     "ide",
     "cursor",
-    "windsurf"
+    "devin"
   ],
   "author": "student2028",
   "license": "MIT",

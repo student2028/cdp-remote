@@ -5,7 +5,7 @@ const { parseTargetIde } = require('./parse_target_ide');
 assert.deepStrictEqual(parseTargetIde('Cursor'),       { ideName: 'Cursor', pid: null });
 assert.deepStrictEqual(parseTargetIde('Antigravity'),  { ideName: 'Antigravity', pid: null });
 assert.deepStrictEqual(parseTargetIde('Codex'),        { ideName: 'Codex', pid: null });
-assert.deepStrictEqual(parseTargetIde('Windsurf'),     { ideName: 'Windsurf', pid: null });
+assert.deepStrictEqual(parseTargetIde('Devin'),     { ideName: 'Devin', pid: null });
 
 // ─── uitty:pid 格式 ────────────────────────────────────────────
 assert.deepStrictEqual(parseTargetIde('uitty:12345'),  { ideName: 'uitty', pid: 12345 });

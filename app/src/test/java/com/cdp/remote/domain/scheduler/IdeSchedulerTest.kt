@@ -26,7 +26,7 @@ class IdeSchedulerTest {
         scheduler.schedule(
             TaskConfig(
                 id = "task-1",
-                targetIde = "Windsurf",
+                targetIde = "Devin",
                 scheduleRule = ScheduleRule.Interval(1000.milliseconds),
                 prompt = "prompt"
             )
@@ -39,7 +39,7 @@ class IdeSchedulerTest {
         scheduler.schedule(
             TaskConfig(
                 id = "task-1",
-                targetIde = "Windsurf",
+                targetIde = "Devin",
                 scheduleRule = ScheduleRule.Interval(2000.milliseconds),
                 prompt = "prompt"
             )

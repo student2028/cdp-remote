@@ -223,7 +223,7 @@ class CommandsBusinessLogicTest {
     @Test
     fun `pasteImage sends chunks for large base64`() = runBlocking {
         // 生成一个 >50000 字符的 base64（模拟大图片）
-        val largeBase64 = "A".repeat(120000)
+        val largeBase64 = "A".repeat(600000)
 
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
@@ -440,11 +440,11 @@ class CommandsBusinessLogicTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // WindsurfCommands startNewSession — Cmd+L 快捷键
+    // DevinCommands startNewSession — Cmd+L 快捷键
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    fun `WindsurfCommands startNewSession sends Cmd+L keyboard shortcut`() = runBlocking {
+    fun `DevinCommands startNewSession sends Cmd+L keyboard shortcut`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             when (method) {
@@ -459,8 +459,8 @@ class CommandsBusinessLogicTest {
             }
         }
 
-        val windsurf = WindsurfCommands(cdpClient)
-        windsurf.startNewSession()
+        val devin = DevinCommands(cdpClient)
+        devin.startNewSession()
 
         // 应发送键盘事件
         val keyEvents = mockServer.receivedMessages.filter {

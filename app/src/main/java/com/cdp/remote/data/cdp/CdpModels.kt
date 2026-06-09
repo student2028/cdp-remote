@@ -18,7 +18,7 @@ object AutoApprovePolicy {
 enum class ElectronAppType(val displayName: String, val emoji: String) {
     ANTIGRAVITY("Antigravity", "🚀"),
     CURSOR("Cursor", "🖱️"),
-    WINDSURF("Windsurf", "🏄"),
+    DEVIN("Devin", "🏄"),
     CODEX("Codex", "📦"),
     CLAUDE_CODE("Claude Code", "🤖"),
     VSCODE_LIKE("VS Code", "💻"),
@@ -34,7 +34,7 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
          * **这是项目里唯一允许「字符串 → IDE 类型」转换的地方**。其它地方一律
          * 直接拿 [ElectronAppType] 用 `when` 分发，禁止再写 `name.contains("cursor")`
          * 这种启发式 —— 那种写法在 2026-04 的 9444 事故里已经栽过一次
-         * （把 Windsurf 里打开的 `CursorPresetModelsTest.kt` 误识别成 Cursor）。
+         * （把 Devin 里打开的 `CursorPresetModelsTest.kt` 误识别成 Cursor）。
          *
          * 不区分大小写，首尾空白会被去除；不认识的名字（包括 null/空串）一律落到 [UNKNOWN]。
          */
@@ -44,12 +44,12 @@ enum class ElectronAppType(val displayName: String, val emoji: String) {
             // 优先精确匹配
             val exact = values().firstOrNull { it.displayName.equals(n, ignoreCase = true) }
             if (exact != null) return exact
-            // 降级：包含匹配（appName 可能带端口后缀如 "Windsurf (9443)"）
+            // 降级：包含匹配（appName 可能带端口后缀如 "Devin (9443)"）
             val nl = n.lowercase()
             return when {
                 nl.contains("codex") -> CODEX
                 nl.contains("cursor") -> CURSOR
-                nl.contains("windsurf") -> WINDSURF
+                nl.contains("devin") -> DEVIN
                 nl.contains("antigravity") -> ANTIGRAVITY
                 nl.contains("claude") -> CLAUDE_CODE
                 nl.contains("dsme") || nl.contains("deepseek") -> DSME
@@ -119,7 +119,7 @@ data class CdpPage(
      * [ElectronAppType.UNKNOWN]，绝不"猜"。
      *
      * 历史上这里是个 computed property，先看 title.contains 再看 URL 里的 .app
-     * bundle —— 结果是用户在 Windsurf 里打开 `CursorPresetModelsTest.kt` 就被误判成
+     * bundle —— 结果是用户在 Devin 里打开 `CursorPresetModelsTest.kt` 就被误判成
      * Cursor（2026-04 的 9444 事故）。教训：身份是上游告诉我们的事实，不是从 page 的
      * url/title 里反推的猜测。
      */

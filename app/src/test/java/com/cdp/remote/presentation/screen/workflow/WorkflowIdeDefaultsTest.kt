@@ -15,7 +15,7 @@ class WorkflowIdeDefaultsTest {
             listOf(
                 "Antigravity" to 9333,
                 "Cursor" to 9555,
-                "Windsurf" to 9444,
+                "Devin" to 9444,
                 "Codex" to 9666,
             ),
             ides.map { it.name to it.port }

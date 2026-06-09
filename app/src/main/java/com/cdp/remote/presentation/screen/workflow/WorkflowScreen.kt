@@ -85,7 +85,7 @@ private fun compactTextFieldColors() = OutlinedTextFieldDefaults.colors(
 
 private val ideStyles = mapOf(
     "Antigravity" to IdeStyle(Icons.Default.AutoAwesome, Color(0xFF6C5CE7), Color(0xFFF3F0FF)),
-    "Windsurf"    to IdeStyle(Icons.Default.Air,         Color(0xFF00B894), Color(0xFFECFDF5)),
+    "Devin"    to IdeStyle(Icons.Default.Air,         Color(0xFF00B894), Color(0xFFECFDF5)),
     "Cursor"      to IdeStyle(Icons.Default.Mouse,       Color(0xFF00CEC9), Color(0xFFE0F7FA)),
     "Codex"       to IdeStyle(Icons.Default.Code,        Color(0xFFE17055), Color(0xFFFFF0ED)),
     "DSME"        to IdeStyle(Icons.Default.Terminal,    Color(0xFF636E72), Color(0xFFF1F2F6)),

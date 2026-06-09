@@ -30,7 +30,7 @@ async function main() {
             expression: `
             (function() {
                 // Return all div texts in the side panel
-                var panel = document.getElementById('windsurf.cascadePanel') || document.querySelector('.antigravity-agent-side-panel') || document.body;
+                var panel = document.getElementById('devin.cascadePanel') || document.querySelector('.antigravity-agent-side-panel') || document.body;
                 var els = panel.querySelectorAll('div, a');
                 var texts = [];
                 for(var i=0; i<els.length; i++) {

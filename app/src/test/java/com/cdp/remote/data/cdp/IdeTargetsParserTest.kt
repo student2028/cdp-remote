@@ -8,8 +8,8 @@ class IdeTargetsParserTest {
     @Test
     fun `parsePages preserves page app type from target appName`() {
         val json = """{"targets":[
-            {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[
-                {"id":"p1","type":"page","url":"vscode-file://workbench/workbench.html","title":"CursorPresetModelsTest.kt","webSocketDebuggerUrl":"ws://t/windsurf","devtoolsFrontendUrl":""}
+            {"cdpPort":9444,"appName":"Devin","appEmoji":"🏄","pages":[
+                {"id":"p1","type":"page","url":"vscode-file://workbench/workbench.html","title":"CursorPresetModelsTest.kt","webSocketDebuggerUrl":"ws://t/devin","devtoolsFrontendUrl":""}
             ]},
             {"cdpPort":9666,"appName":"Codex","appEmoji":"📦","pages":[
                 {"id":"p2","type":"page","url":"app://-/index.html","title":"Codex","webSocketDebuggerUrl":"ws://t/codex","devtoolsFrontendUrl":""}
@@ -19,7 +19,7 @@ class IdeTargetsParserTest {
         val pages = IdeTargetsParser.parsePages(json)
 
         assertEquals(2, pages.size)
-        assertEquals(ElectronAppType.WINDSURF, pages[0].appType)
+        assertEquals(ElectronAppType.DEVIN, pages[0].appType)
         assertEquals("CursorPresetModelsTest.kt", pages[0].title)
         assertEquals(ElectronAppType.CODEX, pages[1].appType)
     }
@@ -35,8 +35,8 @@ class IdeTargetsParserTest {
                 {"type":"page","url":"vscode-file://workbench/workbench-jetski-agent.html","title":"Settings","webSocketDebuggerUrl":"ws://t/settings2"},
                 {"type":"page","url":"vscode-file://workbench/workbench.html","title":"mychat - Review Changes","webSocketDebuggerUrl":"ws://t/main2"}
             ]},
-            {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[
-                {"type":"page","url":"vscode-file://workbench/workbench.html","title":"tools1 - .env","webSocketDebuggerUrl":"ws://t/windsurf"}
+            {"cdpPort":9444,"appName":"Devin","appEmoji":"🏄","pages":[
+                {"type":"page","url":"vscode-file://workbench/workbench.html","title":"tools1 - .env","webSocketDebuggerUrl":"ws://t/devin"}
             ]}
         ]}"""
 
@@ -100,16 +100,16 @@ class IdeTargetsParserTest {
     @Test
     fun `parseInstances filters Launchpad pages when workbench is present`() {
         val json = """{"targets":[
-            {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[
-                {"type":"page","url":"file:///launchpad.html","title":"Windsurf Launchpad","webSocketDebuggerUrl":"ws://t/launchpad"},
-                {"type":"page","url":"file:///workbench.html","title":"Windsurf","webSocketDebuggerUrl":"ws://t/workbench"}
+            {"cdpPort":9444,"appName":"Devin","appEmoji":"🏄","pages":[
+                {"type":"page","url":"file:///launchpad.html","title":"Devin Launchpad","webSocketDebuggerUrl":"ws://t/launchpad"},
+                {"type":"page","url":"file:///workbench.html","title":"Devin","webSocketDebuggerUrl":"ws://t/workbench"}
             ]}
         ]}"""
 
         val instances = IdeTargetsParser.parseInstances(json)
 
         assertEquals(1, instances.size)
-        assertEquals("Windsurf", instances[0].title)
+        assertEquals("Devin", instances[0].title)
         assertEquals("ws://t/workbench", instances[0].wsUrl)
     }
 }

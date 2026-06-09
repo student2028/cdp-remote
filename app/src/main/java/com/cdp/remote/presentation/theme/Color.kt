@@ -42,7 +42,7 @@ val AssistantBubbleTextLight = Color(0xFF1F2328)
 // ─── IDE Brand Colors ───
 val AntigravityColor = Color(0xFF6C5CE7)
 val CursorColor = Color(0xFF00B4D8)
-val WindsurfColor = Color(0xFF06D6A0)
+val DevinColor = Color(0xFF06D6A0)
 val CodexColor = Color(0xFFFF6B6B)
 
 // ─── Legacy aliases for compatibility ───

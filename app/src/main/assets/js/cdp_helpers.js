@@ -211,7 +211,7 @@
         },
 
         /**
-         * 获取面板节点（Antigravity / Cursor / Windsurf 通用）
+         * 获取面板节点（Antigravity / Cursor / Devin 通用）
          */
         findPanelNode: function (doc) {
             return doc.querySelector('.antigravity-agent-side-panel')

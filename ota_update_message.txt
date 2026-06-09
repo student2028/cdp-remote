@@ -1,4 +1,6 @@
-1. 修复 Antigravity 无法通过 cdp-remote 启动的问题：open -n -a --args 不能正确传递 --remote-debugging-port 参数，改为直接二进制启动。
-2. 修正 Antigravity 配置：bundleId (com.google.antigravity)、binPath (/Contents/MacOS/Antigravity)。
-3. 支持启动多个不同端口的 Antigravity 实例。
-4. 自动增量同步主 IDE 的 .gemini 目录及用户配置，修复多实例启动后会话记录丢失和登录状态过期的问题。
+【重大修复】恢复了 Scheduler 的内部三栏 Tab 界面，现在简单、流水线、异构任务被清晰分流。
+同时：
+1. 彻底移除了新建弹窗内迷惑的流水线开关。
+2. 修复并加固了针对 Codex 与 Antigravity 环境的 Project 自动关联（选择项目下拉框）。
+3. 单元测试全量绿色通过，移除过时快捷键废代码。
+请更新后尽情试用全新的任务调度体系！

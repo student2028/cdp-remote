@@ -637,7 +637,7 @@ fun AppItem(page: CdpPage, onClick: () -> Unit, onCloseClick: () -> Unit, showDr
             Icon(
                 imageVector = when (page.appType) {
                     ElectronAppType.ANTIGRAVITY -> Icons.Default.AutoAwesome
-                    ElectronAppType.WINDSURF -> Icons.Default.Air
+                    ElectronAppType.DEVIN -> Icons.Default.Air
                     ElectronAppType.CURSOR -> Icons.Default.Mouse
                     ElectronAppType.DSME -> Icons.Default.Terminal
                     ElectronAppType.UITTY -> Icons.Default.Terminal
@@ -1033,7 +1033,7 @@ fun LaunchIdeDialog(
     val appOptions = remember {
         listOf(
             IdeAppOption("Antigravity", 9333, Icons.Default.AutoAwesome, Color(0xFF6C5CE7), Color(0xFFF3F0FF)),
-            IdeAppOption("Windsurf", 9444, Icons.Default.Air, Color(0xFF00B894), Color(0xFFECFDF5)),
+            IdeAppOption("Devin", 9444, Icons.Default.Air, Color(0xFF00B894), Color(0xFFECFDF5)),
             IdeAppOption("Cursor", 9555, Icons.Default.Mouse, Color(0xFF00CEC9), Color(0xFFE0F7FA)),
             IdeAppOption("Codex", 9666, Icons.Default.Code, Color(0xFFE17055), Color(0xFFFFF0ED))
         )
@@ -1303,7 +1303,7 @@ fun TvFrameCard(
                     Icon(
                         imageVector = when (page.appType) {
                             ElectronAppType.ANTIGRAVITY -> Icons.Default.AutoAwesome
-                            ElectronAppType.WINDSURF -> Icons.Default.Air
+                            ElectronAppType.DEVIN -> Icons.Default.Air
                             ElectronAppType.CURSOR -> Icons.Default.Mouse
                             ElectronAppType.DSME -> Icons.Default.Terminal
                             ElectronAppType.UITTY -> Icons.Default.Terminal

@@ -149,7 +149,7 @@ fun ChatScreen(
     val showAntigravityGlobalRule = appName.contains("Antigravity", ignoreCase = true)
     val isCodexApp = appName.contains("Codex", ignoreCase = true) || appName.contains("Antigravity", ignoreCase = true)
     val showGlobalRuleForUitty = state.isUitty
-    val showUsageButton = isCodexApp || state.isWindsurf || showAntigravityGlobalRule
+    val showUsageButton = isCodexApp || state.isDevin || showAntigravityGlobalRule
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -355,7 +355,7 @@ fun ChatScreen(
                     isGenerating = state.isGenerating,
                     tvMode = state.tvMode,
                     currentModel = state.currentModel,
-                    isWindsurf = state.isWindsurf,
+                    isDevin = state.isDevin,
                     isCodex = isCodexApp,
                     isUitty = state.isUitty,
                     onNewSession = { viewModel.startNewSession(context.applicationContext) },
@@ -789,7 +789,7 @@ fun ModelSwitchDialog(
             Column(
                 modifier = Modifier.heightIn(max = 420.dp).verticalScroll(scroll)
             ) {
-                val isWindsurf = appName.contains("Windsurf", ignoreCase = true)
+                val isDevin = appName.contains("Devin", ignoreCase = true)
                 val isCodex = appName.contains("Codex", ignoreCase = true)
                 val isAntigravity = appName.contains("Antigravity", ignoreCase = true)
 
@@ -809,7 +809,7 @@ fun ModelSwitchDialog(
                 val models = when {
                     ideOptions.isNotEmpty() -> ideOptions
                     isCursor -> cursorFixedModels
-                    isWindsurf -> listOf("Claude Opus 4.7", "Claude Opus 4.6", "Claude Sonnet 4.6", "GPT-5.3-Codex", "GPT-5.4", "Kimi K2.6", "SWE-1.6", "Gemini 3.1 Pro", "Adaptive")
+                    isDevin -> listOf("Claude Opus 4.7", "Claude Opus 4.6", "Claude Sonnet 4.6", "GPT-5.3-Codex", "GPT-5.4", "Kimi K2.6", "SWE-1.6", "Gemini 3.1 Pro", "Adaptive")
                     isCodex -> listOf(
                         // 智能等级
                         "Extra High", "High", "Medium", "Low",

@@ -11,7 +11,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * AntigravityCommands / WindsurfCommands 集成测试。
+ * AntigravityCommands / DevinCommands 集成测试。
  *
  * 使用 MockCdpServer 模拟真实的 CDP WebSocket 连接。
  * 通过 Robolectric 提供 android.util.Log 等 Android API 支持。
@@ -367,30 +367,30 @@ class CommandsIntegrationTest {
         assertTrue("JS 异常应返回 Error", result is CdpResult.Error)
     }
 
-    // ─── WindsurfCommands override 验证 ──────────────────────────────
+    // ─── DevinCommands override 验证 ──────────────────────────────
 
     @Test
-    fun `WindsurfCommands inherits focusInput from parent`() = runBlocking {
-        val windsurfCommands = WindsurfCommands(cdpClient)
-        val result = windsurfCommands.focusInput()
-        assertTrue("Windsurf 应继承 focusInput", result.isSuccess)
+    fun `DevinCommands inherits focusInput from parent`() = runBlocking {
+        val devinCommands = DevinCommands(cdpClient)
+        val result = devinCommands.focusInput()
+        assertTrue("Devin 应继承 focusInput", result.isSuccess)
     }
 
     @Test
-    fun `WindsurfCommands inherits setInputText from parent`() = runBlocking {
-        val windsurfCommands = WindsurfCommands(cdpClient)
-        val result = windsurfCommands.setInputText("test from windsurf")
-        assertTrue("Windsurf 应继承 setInputText", result.isSuccess)
+    fun `DevinCommands inherits setInputText from parent`() = runBlocking {
+        val devinCommands = DevinCommands(cdpClient)
+        val result = devinCommands.setInputText("test from devin")
+        assertTrue("Devin 应继承 setInputText", result.isSuccess)
 
         val expressions = mockServer.receivedExpressions
         assertTrue(
-            "应包含 windsurf 的输入文本",
-            expressions.any { it.contains("test from windsurf") }
+            "应包含 devin 的输入文本",
+            expressions.any { it.contains("test from devin") }
         )
     }
 
     @Test
-    fun `WindsurfCommands stopGeneration uses Cascade shortcut`() = runBlocking {
+    fun `DevinCommands stopGeneration uses Cascade shortcut`() = runBlocking {
         mockServer.onRequest { req ->
             val method = req.get("method")?.asString
             if (method == "Runtime.evaluate") {
@@ -414,10 +414,10 @@ class CommandsIntegrationTest {
             } else null
         }
 
-        val windsurfCommands = WindsurfCommands(cdpClient)
-        windsurfCommands.stopGeneration()
+        val devinCommands = DevinCommands(cdpClient)
+        devinCommands.stopGeneration()
 
-        // WindsurfCommands.stopGeneration 应发送 Escape 键事件
+        // DevinCommands.stopGeneration 应发送 Escape 键事件
         val keyEvents = mockServer.receivedMessages.filter {
             it.get("method")?.asString == "Input.dispatchKeyEvent"
         }

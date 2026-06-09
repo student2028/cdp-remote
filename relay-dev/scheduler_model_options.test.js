@@ -9,7 +9,7 @@ assert.deepStrictEqual(
     ['Gemini 3.1 Pro', 'Claude Sonnet 4.6', 'deepseek-v4-flash']
 );
 
-assert.ok(defaultSchedulerModelOptions('DSME').includes('Gemini 3.1 Pro'));
+assert.ok(defaultSchedulerModelOptions('DSME').includes('Gemini 3.1 Pro (High)'));
 assert.ok(defaultSchedulerModelOptions('Codex').includes('GPT-5.5'));
 assert.deepStrictEqual(defaultSchedulerModelOptions('uitty:26954'), []);
 

@@ -16,7 +16,7 @@ class SchedulerViewModelTest {
     @Test
     fun `parse interval task - all fields`() {
         val json = """{"tasks":[{
-            "id":"task-1","targetIde":"Windsurf","targetPort":9444,
+            "id":"task-1","targetIde":"Devin","targetPort":9444,
             "prompt":"设计表达式 回测 检查 提交三个 regular alpha",
             "scheduleType":"INTERVAL","intervalMinutes":30,
             "cronExpression":"","isRunning":true,"paused":false,"executionCount":15
@@ -25,7 +25,7 @@ class SchedulerViewModelTest {
         assertEquals(1, tasks.size)
         val t = tasks[0]
         assertEquals("task-1", t.id)
-        assertEquals("Windsurf", t.targetIde)
+        assertEquals("Devin", t.targetIde)
         assertEquals(9444, t.targetPort)
         assertEquals("设计表达式 回测 检查 提交三个 regular alpha", t.prompt)
         assertEquals("每 30 分钟", t.ruleLabel)
@@ -57,7 +57,7 @@ class SchedulerViewModelTest {
     @Test
     fun `parse paused task`() {
         val json = """{"tasks":[{
-            "id":"task-p","targetIde":"Windsurf","targetPort":9444,
+            "id":"task-p","targetIde":"Devin","targetPort":9444,
             "prompt":"hello","scheduleType":"INTERVAL","intervalMinutes":10,
             "isRunning":false,"paused":true,"executionCount":5
         }]}"""
@@ -71,7 +71,7 @@ class SchedulerViewModelTest {
     @Test
     fun `parse multiple tasks`() {
         val json = """{"tasks":[
-            {"id":"t1","targetIde":"Windsurf","targetPort":9444,"prompt":"a","scheduleType":"INTERVAL","intervalMinutes":30,"isRunning":true,"paused":false,"executionCount":10},
+            {"id":"t1","targetIde":"Devin","targetPort":9444,"prompt":"a","scheduleType":"INTERVAL","intervalMinutes":30,"isRunning":true,"paused":false,"executionCount":10},
             {"id":"t2","targetIde":"Cursor","targetPort":9555,"prompt":"b","scheduleType":"INTERVAL","intervalMinutes":31,"isRunning":false,"paused":true,"executionCount":5},
             {"id":"t3","targetIde":"Codex","targetPort":9666,"prompt":"c","scheduleType":"CRON","cronExpression":"0 */2 * * *","intervalMinutes":5,"isRunning":true,"paused":false,"executionCount":0}
         ]}"""
@@ -80,7 +80,7 @@ class SchedulerViewModelTest {
         assertEquals("t1", tasks[0].id)
         assertEquals("t2", tasks[1].id)
         assertEquals("t3", tasks[2].id)
-        assertEquals("Windsurf", tasks[0].targetIde)
+        assertEquals("Devin", tasks[0].targetIde)
         assertEquals("Cursor", tasks[1].targetIde)
         assertEquals("Codex", tasks[2].targetIde)
         assertFalse(tasks[0].paused)
@@ -113,7 +113,7 @@ class SchedulerViewModelTest {
     @Test
     fun `parse task with missing optional fields`() {
         val json = """{"tasks":[{
-            "id":"t-minimal","targetIde":"Windsurf","prompt":"test"
+            "id":"t-minimal","targetIde":"Devin","prompt":"test"
         }]}"""
         val tasks = SchedulerViewModel.parseTasksJson(json)
         assertEquals(1, tasks.size)
@@ -147,7 +147,7 @@ class SchedulerViewModelTest {
     fun `parse 3 IDEs`() {
         val json = """{"targets":[
             {"cdpPort":9333,"appName":"Antigravity","appEmoji":"🚀","pages":[{"type":"page","url":"file:///workbench.html","title":"Antigravity","webSocketDebuggerUrl":"ws://t/1"}]},
-            {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[{"type":"page","url":"file:///workbench.html","title":"Windsurf","webSocketDebuggerUrl":"ws://t/2"}]},
+            {"cdpPort":9444,"appName":"Devin","appEmoji":"🏄","pages":[{"type":"page","url":"file:///workbench.html","title":"Devin","webSocketDebuggerUrl":"ws://t/2"}]},
             {"cdpPort":9555,"appName":"Cursor","appEmoji":"🖱️","pages":[{"type":"page","url":"file:///workbench.html","title":"Cursor","webSocketDebuggerUrl":"ws://t/3"}]}
         ]}"""
         val ides = SchedulerViewModel.parseIdesJson(json)
@@ -155,7 +155,7 @@ class SchedulerViewModelTest {
         assertEquals("Antigravity", ides[0].name)
         assertEquals(9333, ides[0].port)
         assertEquals("🚀", ides[0].emoji)
-        assertEquals("Windsurf", ides[1].name)
+        assertEquals("Devin", ides[1].name)
         assertEquals("Cursor", ides[2].name)
     }
 
@@ -175,14 +175,14 @@ class SchedulerViewModelTest {
     @Test
     fun `filter Launchpad pages`() {
         val json = """{"targets":[
-            {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[
-                {"type":"page","url":"file:///launchpad.html","title":"Windsurf Launchpad","webSocketDebuggerUrl":"ws://t/3"},
-                {"type":"page","url":"file:///workbench.html","title":"Windsurf","webSocketDebuggerUrl":"ws://t/4"}
+            {"cdpPort":9444,"appName":"Devin","appEmoji":"🏄","pages":[
+                {"type":"page","url":"file:///launchpad.html","title":"Devin Launchpad","webSocketDebuggerUrl":"ws://t/3"},
+                {"type":"page","url":"file:///workbench.html","title":"Devin","webSocketDebuggerUrl":"ws://t/4"}
             ]}
         ]}"""
         val ides = SchedulerViewModel.parseIdesJson(json)
         assertEquals(1, ides.size) // Launchpad 被过滤
-        assertEquals("Windsurf", ides[0].title)
+        assertEquals("Devin", ides[0].title)
     }
 
     @Test
@@ -199,14 +199,14 @@ class SchedulerViewModelTest {
     @Test
     fun `IDE with multiple valid workbench pages is shown once per port`() {
         val json = """{"targets":[
-            {"cdpPort":9444,"appName":"Windsurf","appEmoji":"🏄","pages":[
+            {"cdpPort":9444,"appName":"Devin","appEmoji":"🏄","pages":[
                 {"type":"page","url":"file:///workbench-jetski-agent.html","title":"Settings","webSocketDebuggerUrl":"ws://t/1"},
-                {"type":"page","url":"file:///workbench.html","title":"Windsurf Main","webSocketDebuggerUrl":"ws://t/2"}
+                {"type":"page","url":"file:///workbench.html","title":"Devin Main","webSocketDebuggerUrl":"ws://t/2"}
             ]}
         ]}"""
         val ides = SchedulerViewModel.parseIdesJson(json)
         assertEquals(1, ides.size)
-        assertEquals("Windsurf Main", ides[0].title)
+        assertEquals("Devin Main", ides[0].title)
     }
 
     @Test
@@ -363,7 +363,7 @@ class SchedulerViewModelTest {
     fun `parse task without pipeline defaults to empty`() {
         val json = """{
             "tasks":[{
-                "id":"task-old","targetIde":"Windsurf","prompt":"hello",
+                "id":"task-old","targetIde":"Devin","prompt":"hello",
                 "scheduleType":"INTERVAL","intervalMinutes":5,
                 "isRunning":true,"paused":false,"executionCount":0
             }]
@@ -410,7 +410,7 @@ class SchedulerViewModelTest {
     @Test
     fun `TaskDraft pipeline default has 2 stages`() {
         val d = TaskDraft()
-        assertFalse(d.pipelineEnabled)
+        assertFalse(d.isPipeline)
         assertEquals(2, d.pipeline.size)
         assertEquals(0, d.pipeline[0].delayMinutes)
         assertEquals(5, d.pipeline[1].delayMinutes)
@@ -422,5 +422,38 @@ class SchedulerViewModelTest {
         assertEquals("", s.prompt)
         assertEquals("", s.model)
         assertEquals(0, s.delayMinutes)
+        assertEquals("", s.targetIde)
+        assertEquals(0, s.targetPort)
+    }
+
+    @Test
+    fun `parse task with heterogeneous pipeline stages`() {
+        val json = """{
+            "tasks":[{
+                "id":"task-hetero","targetIde":"","targetPort":0,
+                "prompt":"写代码","scheduleType":"INTERVAL","intervalMinutes":30,
+                "isRunning":true,"paused":false,"executionCount":2,
+                "isHeterogeneous":true,
+                "pipeline":[
+                    {"prompt":"请实现用户登录功能","model":"","delayMinutes":0,"targetIde":"Cursor","targetPort":9555},
+                    {"prompt":"请审查上面的代码变更","model":"claude-4-opus","delayMinutes":5,"targetIde":"Devin","targetPort":9444}
+                ],
+                "currentStage":1
+            }]
+        }"""
+        val tasks = SchedulerViewModel.parseTasksJson(json)
+        assertEquals(1, tasks.size)
+        val t = tasks[0]
+        assertEquals("task-hetero", t.id)
+        assertTrue(t.isHeterogeneous)
+        assertEquals(2, t.pipeline.size)
+        // Stage 1
+        assertEquals("请实现用户登录功能", t.pipeline[0].prompt)
+        assertEquals("Cursor", t.pipeline[0].targetIde)
+        assertEquals(9555, t.pipeline[0].targetPort)
+        // Stage 2
+        assertEquals("请审查上面的代码变更", t.pipeline[1].prompt)
+        assertEquals("Devin", t.pipeline[1].targetIde)
+        assertEquals(9444, t.pipeline[1].targetPort)
     }
 }

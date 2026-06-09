@@ -4,7 +4,7 @@ import kotlin.time.Duration
 
 data class TaskConfig(
     val id: String,
-    val targetIde: String, // e.g., "Windsurf", "Codex", "Antigravity"
+    val targetIde: String, // e.g., "Devin", "Codex", "Antigravity"
     val scheduleRule: ScheduleRule, // e.g., Interval(60000 milliseconds) or Cron("*/5 * * * *")
     val prompt: String
 ) {

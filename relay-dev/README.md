@@ -1,6 +1,6 @@
 # CDP Relay Server
 
-将本地 Electron IDE（Cursor / Windsurf / Codex）通过 WebSocket 中继转发到安卓手机，实现远程查看和操控。
+将本地 Electron IDE（Cursor / Devin / Codex）通过 WebSocket 中继转发到安卓手机，实现远程查看和操控。
 
 ## 🚀 快速安装
 
@@ -37,4 +37,4 @@ node cdp_relay.js
 ## 📋 系统要求
 
 - Node.js >= 16
-- 电脑上已安装并启动 Cursor / Windsurf / Codex 等支持 CDP 协议的 IDE
+- 电脑上已安装并启动 Cursor / Devin / Codex 等支持 CDP 协议的 IDE

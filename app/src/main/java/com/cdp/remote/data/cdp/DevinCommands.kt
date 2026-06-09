@@ -6,28 +6,28 @@ import com.google.gson.JsonParser
 import kotlinx.coroutines.delay
 
 /**
- * Windsurf IDE 专用 CDP 命令集
+ * Devin IDE 专用 CDP 命令集
  *
  * 继承 [AntigravityCommands]，复用消息发送、回复获取、Accept/Reject 等通用逻辑。
- * 仅 override Windsurf 独有的差异方法：
- *   - pasteImage: Windsurf 容器选择器优先级不同
+ * 仅 override Devin 独有的差异方法：
+ *   - pasteImage: Devin 容器选择器优先级不同
  *   - isGenerating: 额外检测 lucide-square SVG 停止按钮
- *   - stopGeneration: Windsurf 圆形停止按钮
- *   - startNewSession: Windsurf Cascade 快捷键 Cmd+L
- *   - showRecentSessions: Windsurf 时钟 SVG 按钮
- *   - switchSession / getRecentSessionsList / switchSessionByIndex: Windsurf 标签栏
- *   - getCurrentModel / switchModel: Windsurf chat-client-root 模型选择器
+ *   - stopGeneration: Devin 圆形停止按钮
+ *   - startNewSession: Devin Cascade 快捷键 Cmd+L
+ *   - showRecentSessions: Devin 时钟 SVG 按钮
+ *   - switchSession / getRecentSessionsList / switchSessionByIndex: Devin 标签栏
+ *   - getCurrentModel / switchModel: Devin chat-client-root 模型选择器
  */
-class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
+class DevinCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Devin") {
 
     companion object {
-        private const val TAG = "WindsurfCmds"
+        private const val TAG = "DevinCmds"
     }
 
-    // ─────────────────── 发送消息 (Windsurf Lexical 编辑器) ───────────────────
+    // ─────────────────── 发送消息 (Devin Lexical 编辑器) ───────────────────
 
     /**
-     * Windsurf 使用 Lexical 编辑器 (data-lexical-editor="true")：
+     * Devin 使用 Lexical 编辑器 (data-lexical-editor="true")：
      * - 没有 <form>，button[type=submit] 的 .click() 无法触发发送
      * - 发送由 React fiber 上的 onEnter(KeyboardEvent) 回调控制
      * - onEnter 内部会检查 am (isGenerating)，为 true 时直接拒绝
@@ -44,11 +44,21 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
     override suspend fun sendMessage(text: String): CdpResult<Unit> {
         // Step 1: 等待 isGenerating=false（最多 60 秒）
         // 用 altKey 技巧检测: onEnter({altKey:true}) 如果返回 false 说明 am=true
-        Log.d(TAG, "Windsurf sendMessage: 检查生成状态...")
+        Log.d(TAG, "Devin sendMessage: 检查生成状态...")
         for (i in 0 until 120) {
             val amCheck = cdp.evaluate("""
                 (function() {
-                    var el = document.querySelector('[data-lexical-editor="true"]');
+                    var els = document.querySelectorAll('[data-lexical-editor="true"]');
+                    var el = null;
+                    for (var i = 0; i < els.length; i++) {
+                        var e = els[i];
+                        var r = e.getBoundingClientRect();
+                        if (e.offsetParent !== null && r.width > 0 && r.height > 0) {
+                            el = e;
+                            break;
+                        }
+                    }
+                    if (!el) el = document.querySelector('[data-lexical-editor="true"]');
                     if (!el) return 'no-lexical';
                     var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
                     if (!fiberKey) return 'no-fiber';
@@ -67,7 +77,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
             if (amCheck.getOrNull() != "generating") break
             if (i == 119) {
                 Log.w(TAG, "等待生成完毕超时")
-                return CdpResult.Error("Windsurf 仍在生成中，无法发送新消息")
+                return CdpResult.Error("Devin 仍在生成中，无法发送新消息")
             }
             delay(500)
         }
@@ -75,9 +85,18 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         // Step 2: CDP 鼠标点击 Lexical 输入框获取真实焦点
         val clickResult = cdp.evaluate("""
             (function() {
-                var el = document.querySelector('[data-lexical-editor="true"]');
+                var els = document.querySelectorAll('[data-lexical-editor="true"]');
+                var el = null;
+                for (var i = 0; i < els.length; i++) {
+                    var e = els[i];
+                    var r = e.getBoundingClientRect();
+                    if (e.offsetParent !== null && r.width > 0 && r.height > 0) {
+                        el = e;
+                        break;
+                    }
+                }
+                if (!el) el = document.querySelector('[data-lexical-editor="true"]');
                 if (!el) return 'no-lexical';
-                if (!el.offsetParent) return 'not-visible';
                 var r = el.getBoundingClientRect();
                 return JSON.stringify({x: Math.round(r.x + 10), y: Math.round(r.y + r.height / 2)});
             })()
@@ -136,7 +155,17 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         // Step 5: 通过 React fiber 调用 onEnter 发送
         val sendResult = cdp.evaluate("""
             (function() {
-                var el = document.querySelector('[data-lexical-editor="true"]');
+                var els = document.querySelectorAll('[data-lexical-editor="true"]');
+                var el = null;
+                for (var i = 0; i < els.length; i++) {
+                    var e = els[i];
+                    var r = e.getBoundingClientRect();
+                    if (e.offsetParent !== null && r.width > 0 && r.height > 0) {
+                        el = e;
+                        break;
+                    }
+                }
+                if (!el) el = document.querySelector('[data-lexical-editor="true"]');
                 if (!el) return 'no-lexical';
                 
                 var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
@@ -165,7 +194,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         """.trimIndent())
 
         val sendValue = sendResult.getOrNull() ?: ""
-        Log.d(TAG, "Windsurf onEnter result: $sendValue")
+        Log.d(TAG, "Devin onEnter result: $sendValue")
 
         if (sendValue == "sent") {
             return CdpResult.Success(Unit)
@@ -235,7 +264,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
                 }
 
                 var roots = [];
-                var panel = document.getElementById('windsurf.cascadePanel');
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 if (panel) roots.push(panel);
                 var chatRoot = document.querySelector('[class*="chat-client-root"]');
                 if (chatRoot && chatRoot !== panel) roots.push(chatRoot);
@@ -271,113 +300,45 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
     // ─────────────────── 用量面板 (Plan / Quota) ───────────────────
 
     override suspend fun showUsagePanel(): CdpResult<String> {
-        val openResult = cdp.evaluate("""
-            (function() {
-                function isVisible(el) {
-                    if (!el) return false;
-                    var r = el.getBoundingClientRect();
-                    var s = window.getComputedStyle(el);
-                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-                }
-                function fullClick(el) {
-                    try {
-                        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
-                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
-                        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
-                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
-                    } catch (e) {}
-                    el.click();
-                }
-                function quotaSummary() {
-                    var plan = document.getElementById('codeium.windsurf.settings.planInfo');
-                    if (plan) {
-                        var label = plan.getAttribute('aria-label') || '';
-                        if (label) return label;
-                    }
-                    var text = document.body ? (document.body.innerText || '') : '';
-                    var daily = text.match(/Daily quota usage:\s*([0-9]+%)/i);
-                    var weekly = text.match(/Weekly quota usage:\s*([0-9]+%)/i);
-                    if (daily || weekly) {
-                        return 'Daily: ' + (daily ? daily[1] : '?') + ' · Weekly: ' + (weekly ? weekly[1] : '?');
-                    }
-                    return '';
-                }
-
-                var planStatus = document.getElementById('codeium.windsurf.settings.planInfo');
-                var clickTarget = planStatus ? (planStatus.querySelector('[role="button"], a, button') || planStatus) : null;
-                if (!clickTarget || !isVisible(clickTarget)) {
-                    var all = document.querySelectorAll('button, [role="button"], a, [aria-label]');
-                    for (var i = 0; i < all.length; i++) {
-                        if (!isVisible(all[i])) continue;
-                        var t = ((all[i].textContent || '') + ' ' + (all[i].getAttribute('aria-label') || '')).toLowerCase();
-                        if (t.indexOf('quota') >= 0 || t.indexOf('plan') >= 0 || t.indexOf('windsurf settings') >= 0) {
-                            clickTarget = all[i];
-                            break;
-                        }
-                    }
-                }
-                if (!clickTarget) return JSON.stringify({ ok: false, error: '未找到 Windsurf 用量入口' });
-
-                var summary = quotaSummary();
-                fullClick(clickTarget);
-                return JSON.stringify({ ok: true, summary: summary });
-            })()
-        """.trimIndent())
-
-        if (openResult is CdpResult.Error) return CdpResult.Error(openResult.message)
-        val openStr = openResult.getOrNull() ?: return CdpResult.Error("无返回结果")
-        val summary = try {
-            val json = JsonParser.parseString(openStr).asJsonObject
-            if (json.get("ok")?.asBoolean != true) {
-                return CdpResult.Error(json.get("error")?.asString ?: "未找到 Windsurf 用量入口")
-            }
-            json.get("summary")?.asString.orEmpty()
-        } catch (e: Exception) {
-            return CdpResult.Error("解析失败: ${e.message}")
-        }
-
-        delay(300)
-        cdp.evaluate("""
-            (function() {
-                function isVisible(el) {
-                    if (!el) return false;
-                    var r = el.getBoundingClientRect();
-                    var s = window.getComputedStyle(el);
-                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-                }
-                var tabs = document.querySelectorAll('button, [role="tab"], [role="button"], a');
-                for (var i = 0; i < tabs.length; i++) {
-                    if (!isVisible(tabs[i])) continue;
-                    var t = (tabs[i].innerText || tabs[i].textContent || '').trim().toLowerCase();
-                    if (t === 'plan info' || t === 'plan') {
-                        tabs[i].click();
-                        return 'clicked';
-                    }
-                }
-                return 'no-tab';
-            })()
-        """.trimIndent())
-
-        delay(200)
         val detail = cdp.evaluate("""
             (function() {
+                // 新版 Devin 将用量信息直接写在了底部状态栏的 aria-label 中
+                // 例如: "pro, daily: 0% quota used · weekly: 0% quota used"
+                var els = document.querySelectorAll('.statusbar-item, [aria-label]');
+                var quotaAria = '';
+                for (var i = 0; i < els.length; i++) {
+                    var aria = (els[i].getAttribute('aria-label') || '');
+                    if (aria.toLowerCase().indexOf('quota used') >= 0 || aria.toLowerCase().indexOf('daily:') >= 0) {
+                        quotaAria = aria;
+                        break;
+                    }
+                }
+                
+                if (quotaAria) {
+                    return quotaAria;
+                }
+                
+                // fallback 旧版抓取屏幕文本
                 var text = document.body ? (document.body.innerText || '') : '';
                 var daily = text.match(/Daily quota usage:\s*([0-9]+%)/i);
                 var weekly = text.match(/Weekly quota usage:\s*([0-9]+%)/i);
                 var resetDaily = text.match(/Resets[^\\n]*/i);
+                var plan = text.match(/(Pro|Standard|Enterprise|Free)\s*\n/i);
                 var out = [];
+                if (plan) out.push('Plan: ' + plan[1]);
                 if (daily) out.push('Daily ' + daily[1]);
                 if (weekly) out.push('Weekly ' + weekly[1]);
                 if (resetDaily) out.push(resetDaily[0].trim());
+                
                 return out.join(' · ');
             })()
         """.trimIndent()).getOrNull().orEmpty()
 
-        val info = detail.ifBlank { summary.ifBlank { "Windsurf Plan Info" } }
+        val info = detail.ifBlank { "Devin Plan Info (无法在状态栏提取到具体用量)" }
         return CdpResult.Success(info)
     }
 
-    // ─────────────────── 图片粘贴 (Windsurf 容器优先) ───────────────────
+    // ─────────────────── 图片粘贴 (Devin 容器优先) ───────────────────
 
     override suspend fun pasteImage(base64Data: String, mimeType: String, fileName: String): CdpResult<Boolean> {
         focusInput().let { if (it is CdpResult.Error) return CdpResult.Error("聚焦失败: ${it.message}") }
@@ -400,14 +361,14 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
             (function() {
                 try {
                     var editableDiv = null;
-                    // 1. Windsurf: #chat 内的 contenteditable
+                    // 1. Devin: #chat 内的 contenteditable
                     var chatDiv = document.getElementById('chat');
                     if (chatDiv) {
                         editableDiv = chatDiv.querySelector('[contenteditable="true"]');
                     }
-                    // 2. Windsurf: #windsurf.cascadePanel
+                    // 2. Devin: #devin.cascadePanel
                     if (!editableDiv) {
-                        var panel = document.getElementById('windsurf.cascadePanel');
+                        var panel = document.getElementById('devin.cascadePanel') || document.body;
                         if (panel) editableDiv = panel.querySelector('[contenteditable="true"]');
                     }
                     // 3. Antigravity 兼容
@@ -486,13 +447,13 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         }
     }
 
-    // ─────────────────── 停止生成 (Windsurf 圆形按钮) ───────────────────
+    // ─────────────────── 停止生成 (Devin 圆形按钮) ───────────────────
 
     override suspend fun stopGeneration(): CdpResult<Unit> {
         val result = cdp.evaluate("""
             (function(){
-                // 1. Windsurf 专属: 圆形停止按钮 (rounded-full, 内含 lucide-square rect)
-                var panel = document.getElementById('windsurf.cascadePanel');
+                // 1. Devin 专属: 圆形停止按钮 (rounded-full, 内含 lucide-square rect)
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 if (panel) {
                     var roundBtns = panel.querySelectorAll('button[class*="rounded-full"]');
                     for (var i = 0; i < roundBtns.length; i++) {
@@ -566,10 +527,10 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         return CdpResult.Success(Unit)
     }
 
-    // ─────────────────── 取消运行中的任务 (Windsurf 专属) ───────────────────
+    // ─────────────────── 取消运行中的任务 (Devin 专属) ───────────────────
 
     /**
-     * 取消 Windsurf Cascade 中正在运行的长时间任务（如 Step、Tool 执行）
+     * 取消 Devin Cascade 中正在运行的长时间任务（如 Step、Tool 执行）
      *
      * DOM 定位策略（按优先级）：
      * 1. `hover:text-red-500` CSS class + lucide SVG 图标 (circle+rect)
@@ -577,13 +538,13 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
      * 3. `title` 属性包含 cancel/stop
      * 4. 可见文本 "Cancel" / "取消"
      *
-     * 注意: 选择器依赖 Windsurf Cascade 前端结构，版本更新后可能需要调整。
-     * 已验证版本: Windsurf 2025.4.x
+     * 注意: 选择器依赖 Devin Cascade 前端结构，版本更新后可能需要调整。
+     * 已验证版本: Devin 2025.4.x
      */
     override suspend fun cancelRunningTask(): CdpResult<Unit> {
         val result = cdp.evaluate("""
             (function(){
-                var panel = document.getElementById('windsurf.cascadePanel');
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 if (!panel) return 'no-panel';
                 
                 // 策略1: hover:text-red-500 类 + SVG 图标验证（取消按钮特有样式）
@@ -640,84 +601,84 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         if (result is CdpResult.Error) return CdpResult.Error(result.message)
         return when (result.getOrNull()) {
             "clicked" -> CdpResult.Success(Unit)
-            "no-panel" -> CdpResult.Error("未找到 Windsurf Cascade 面板")
+            "no-panel" -> CdpResult.Error("未找到 Devin Cascade 面板")
             else -> CdpResult.Error("未找到取消按钮，请确认 Cascade 中有正在运行的任务")
         }
     }
 
-    // ─────────────────── 新建会话 (Windsurf Cmd+L) ───────────────────
+    // ─────────────────── 新建会话 (Devin Cmd+L) ───────────────────
 
     override suspend fun startNewSession(): CdpResult<Unit> {
         val result = cdp.evaluate("""
             (function(){
-                // Windsurf 专用: Cascade 面板顶部的 + 按钮
-                var panel = document.getElementById('windsurf.cascadePanel');
-                if (panel) {
-                    var btns = panel.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        var btn = btns[i];
-                        if (!btn.offsetParent) continue;
-                        var svg = btn.querySelector('svg.lucide-plus');
-                        if (svg) {
-                            var rect = btn.getBoundingClientRect();
-                            if (rect.y < 100) {
-                                btn.click();
-                                return 'clicked';
-                            }
-                        }
-                    }
+                function isPlusButton(btn) {
+                    var svg = btn.querySelector('svg');
+                    if (!svg) return false;
+                    var svgClass = (typeof svg.className === 'object' && svg.className.baseVal) 
+                        ? svg.className.baseVal : (svg.getAttribute('class') || '');
+                    return svgClass.includes('lucide-plus') || svgClass.includes('plus') || svg.outerHTML.includes('plus');
                 }
-                // Windsurf: 标题栏的 Cascade 按钮
+
                 var allBtns = document.querySelectorAll('button');
-                for (var b = 0; b < allBtns.length; b++) {
-                    if (!allBtns[b].offsetParent) continue;
-                    var svg2 = allBtns[b].querySelector('svg.lucide-plus');
-                    if (svg2) {
-                        var r2 = allBtns[b].getBoundingClientRect();
-                        if (r2.y < 100) {
-                            allBtns[b].click();
+                for (var i = 0; i < allBtns.length; i++) {
+                    var btn = allBtns[i];
+                    if (!btn.offsetParent) continue;
+                    
+                    // 策略1: 匹配 tooltip 或 aria-label 为 "Start a New Conversation"
+                    var title = (btn.getAttribute('title') || '').toLowerCase();
+                    var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    if (title.includes('start a new conversation') || aria.includes('start a new conversation')) {
+                        btn.click();
+                        return 'clicked';
+                    }
+                    
+                    // 策略2: 如果是加号按钮，且与时钟按钮在一起（右上角），则点击
+                    if (isPlusButton(btn)) {
+                        // 寻找其兄弟节点或父节点的相邻元素是否有历史记录按钮 (时钟)
+                        var parent = btn.parentElement;
+                        if (parent && parent.innerHTML.includes('M3 12a9 9 0 1 0 9-9')) {
+                            btn.click();
                             return 'clicked';
                         }
                     }
-                }
-                var cascadeEl = document.querySelector('a[aria-label*="Cascade"], a[aria-label*="cascade"]');
-                if (cascadeEl && cascadeEl.offsetParent) {
-                    cascadeEl.click();
-                    return 'clicked';
                 }
                 return 'no-button';
             })()
         """.trimIndent())
 
-        if (result.getOrNull() == "clicked") return CdpResult.Success(Unit)
+        if (result.getOrNull() == "clicked") {
+            Log.d(TAG, "startNewSession: 点击了右上角的新建按钮")
+            return CdpResult.Success(Unit)
+        }
 
-        // 降级: Cmd+L 快捷键 (Windsurf 的 New Cascade 快捷键)
-        Log.d(TAG, "未找到新建按钮，使用 Cmd+L")
+        // 降级: Shift+Cmd+L 快捷键 (Devin 的 Start a New Conversation 快捷键)
+        Log.d(TAG, "startNewSession: 使用 Shift+Cmd+L 触发新建会话")
+        
         cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
             addProperty("type", "keyDown")
-            addProperty("key", "l")
+            addProperty("key", "L")
             addProperty("code", "KeyL")
-            addProperty("modifiers", 4) // Meta only
+            addProperty("modifiers", 12) // Meta (4) + Shift (8) = 12
             addProperty("windowsVirtualKeyCode", 76)
         })
         delay(50)
         cdp.call("Input.dispatchKeyEvent", JsonObject().apply {
             addProperty("type", "keyUp")
-            addProperty("key", "l")
+            addProperty("key", "L")
             addProperty("code", "KeyL")
-            addProperty("modifiers", 4)
+            addProperty("modifiers", 12)
             addProperty("windowsVirtualKeyCode", 76)
         })
 
         return CdpResult.Success(Unit)
     }
 
-    // ─────────────────── 历史会话 (Windsurf SVG 时钟按钮) ───────────────────
+    // ─────────────────── 历史会话 (Devin SVG 时钟按钮) ───────────────────
 
     override suspend fun showRecentSessions(): CdpResult<Unit> {
         val result = cdp.evaluate("""
             (function() {
-                var panel = document.getElementById('windsurf.cascadePanel') || document.body;
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 var btns = panel.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
                     if (!btns[i].offsetParent) continue;
@@ -741,12 +702,12 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         }
     }
 
-    // ─────────────────── 会话切换 (Windsurf 标签栏) ───────────────────
+    // ─────────────────── 会话切换 (Devin 标签栏) ───────────────────
 
     override suspend fun switchSession(isNext: Boolean): CdpResult<Unit> {
         val script = """
             (function() {
-                var panel = document.getElementById('windsurf.cascadePanel');
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 if (!panel) return 'no-panel';
                 var tabs = panel.querySelectorAll('[class*="h-[34px]"][class*="min-w-[80px]"][class*="cursor-pointer"]');
                 var items = [];
@@ -784,7 +745,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
     override suspend fun getRecentSessionsList(): CdpResult<List<String>> {
         val script = """
             (function() {
-                var panel = document.getElementById('windsurf.cascadePanel');
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 if (!panel) return JSON.stringify({status: 'no-panel'});
                 var tabs = panel.querySelectorAll('[class*="h-[34px]"][class*="min-w-[80px]"][class*="cursor-pointer"]');
                 var sessions = [];
@@ -823,7 +784,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
     override suspend fun switchSessionByIndex(index: Int): CdpResult<Unit> {
         val script = """
             (function() {
-                var panel = document.getElementById('windsurf.cascadePanel');
+                var panel = document.getElementById('devin.cascadePanel') || document.body;
                 if (!panel) return 'no-panel';
                 var tabs = panel.querySelectorAll('[class*="h-[34px]"][class*="min-w-[80px]"][class*="cursor-pointer"]');
                 var items = [];
@@ -851,10 +812,10 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
         }
     }
 
-    // ─────────────────── 模型切换 (Windsurf cascadePanel) ───────────────────
+    // ─────────────────── 模型切换 (Devin cascadePanel) ───────────────────
 
     /**
-     * Windsurf 模型选择器 DOM 结构:
+     * Devin 模型选择器 DOM 结构:
      * - 当前模型按钮: cascadePanel 内, class 含 "cursor-pointer" + "flex-row" + "items-center"
      * - 模型下拉菜单项: class 含 "flex w-full flex-col gap-1" + "cursor-pointer"
      * - 菜单项结构: 第一个文本节点 = 模型名（如 "Claude Sonnet 4.6"），
@@ -865,13 +826,13 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
     override suspend fun getCurrentModel(): CdpResult<String> {
         val result = cdp.evaluate("""
             (function() {
-                var panel = document.getElementById('windsurf.cascadePanel');
-                if (panel) {
-                    var btns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (!btns[i].offsetParent) continue;
-                        var t = (btns[i].textContent || '').trim();
-                        if (t.length > 0 && t.length < 40) return t;
+                var popupBtns = document.querySelectorAll('button');
+                for (var p = 0; p < popupBtns.length; p++) {
+                    var pb = popupBtns[p];
+                    if (!pb.offsetParent) continue;
+                    var cls = pb.className || '';
+                    if (cls.indexOf('data-[popup-open]') >= 0 && (pb.innerText || '').trim().length > 0) {
+                        return (pb.innerText || '').trim();
                     }
                 }
                 var roots = document.querySelectorAll('[class*="chat-client-root"]');
@@ -905,17 +866,19 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
                 (async function() {
                     try {
                         var input = ${com.google.gson.JsonPrimitive(modelName.lowercase())};
-                        var panel = document.getElementById('windsurf.cascadePanel');
+                        var panel = document.getElementById('devin.cascadePanel') || document.body;
                         if (!panel) return JSON.stringify({ok:false, err:'找不到 cascadePanel'});
 
                         // Step 1: 找到并点击当前模型按钮（打开下拉菜单）
                         var modelBtn = null;
-                        // 精确匹配: cursor-pointer + flex-row + items-center
-                        var precBtns = panel.querySelectorAll('button[class*="cursor-pointer"][class*="flex-row"][class*="items-center"]');
-                        for (var pb = 0; pb < precBtns.length; pb++) {
-                            if (!precBtns[pb].offsetParent) continue;
-                            var pt = (precBtns[pb].textContent || '').trim();
-                            if (pt.length > 0 && pt.length < 40) { modelBtn = precBtns[pb]; break; }
+                        var popupBtns = document.querySelectorAll('button');
+                        for (var p = 0; p < popupBtns.length; p++) {
+                            var pb = popupBtns[p];
+                            if (!pb.offsetParent) continue;
+                            var cls = pb.className || '';
+                            if (cls.indexOf('data-[popup-open]') >= 0 && (pb.innerText || '').trim().length > 0) {
+                                modelBtn = pb; break;
+                            }
                         }
                         // 降级: chat-client-root 内关键词匹配
                         if (!modelBtn) {
@@ -939,7 +902,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
                         await new Promise(function(r) { setTimeout(r, 500); });
 
                         // Step 2: 点击 "See more" 展开完整列表
-                        var allBtns = panel.querySelectorAll('button');
+                        var allBtns = document.querySelectorAll('button');
                         for (var sm = 0; sm < allBtns.length; sm++) {
                             if (!allBtns[sm].offsetParent) continue;
                             if ((allBtns[sm].textContent || '').trim() === 'See more') {
@@ -950,8 +913,15 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
                         }
 
                         // Step 3: 在菜单项中匹配模型
-                        // 菜单项: class 含 "flex w-full flex-col" 的 button
-                        var menuItems = panel.querySelectorAll('button[class*="flex"][class*="w-full"][class*="flex-col"]');
+                        var menus = document.querySelectorAll('[role="menu"], [data-radix-menu-content], [role="listbox"], [class*="menu"], [class*="dropdown"], [class*="popover"]');
+                        var menuItems = [];
+                        for (var m = 0; m < menus.length; m++) {
+                            if (!menus[m].offsetParent) continue;
+                            var els = menus[m].querySelectorAll('[role="menuitem"], [role="option"], button, a, div[class*="item"]');
+                            for (var e = 0; e < els.length; e++) {
+                                if (els[e].offsetParent) menuItems.push(els[e]);
+                            }
+                        }
                         var bestMatch = null;
                         var bestScore = -1;
                         var available = [];
@@ -1040,7 +1010,7 @@ class WindsurfCommands(cdp: ICdpClient) : AntigravityCommands(cdp, "Windsurf") {
             val json = JsonParser.parseString(value).asJsonObject
             if (json.get("ok")?.asBoolean == true) {
                 val info = json.get("info")?.asString ?: ""
-                Log.d(TAG, "Windsurf 切换模型成功: $info")
+                Log.d(TAG, "Devin 切换模型成功: $info")
                 CdpResult.Success(Unit)
             } else {
                 val err = json.get("err")?.asString ?: "切换失败"

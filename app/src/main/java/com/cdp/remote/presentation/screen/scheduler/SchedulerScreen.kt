@@ -36,7 +36,7 @@ private data class IdeStyle(
 
 private val ideStyles = mapOf(
     "Antigravity" to IdeStyle(Icons.Default.AutoAwesome, Color(0xFF6C5CE7), Color(0xFFF3F0FF), Color(0xFFE8E0FF)),
-    "Windsurf" to IdeStyle(Icons.Default.Air, Color(0xFF00B894), Color(0xFFECFDF5), Color(0xFFD0F5E8)),
+    "Devin" to IdeStyle(Icons.Default.Air, Color(0xFF00B894), Color(0xFFECFDF5), Color(0xFFD0F5E8)),
     "Cursor" to IdeStyle(Icons.Default.Mouse, Color(0xFF00CEC9), Color(0xFFE0F7FA), Color(0xFFB2EBF2)),
     "Codex" to IdeStyle(Icons.Default.Code, Color(0xFFE17055), Color(0xFFFFF0ED), Color(0xFFFFDDD6)),
     "DSME" to IdeStyle(Icons.Default.Terminal, Color(0xFF636E72), Color(0xFFF1F2F6), Color(0xFFE8EAED)),
@@ -54,6 +54,7 @@ fun SchedulerScreen(
     viewModel: SchedulerViewModel = viewModel()
 ) {
     val state = viewModel.uiState
+    var selectedTab by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(hostIp, hostPort) {
         viewModel.init(hostIp, hostPort)
@@ -69,10 +70,11 @@ fun SchedulerScreen(
     LaunchedEffect(
         state.editing?.targetIde,
         state.editing?.targetPort,
-        state.editing?.pipelineEnabled
+        state.editing?.isPipeline,
+        state.editing?.isHeterogeneous
     ) {
         val draft = state.editing
-        if (draft != null && draft.pipelineEnabled) {
+        if (draft != null && draft.isPipeline && !draft.isHeterogeneous) {
             viewModel.loadModelOptionsForIde(draft.targetIde, draft.targetPort)
         }
     }
@@ -108,11 +110,29 @@ fun SchedulerScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { viewModel.openNewTaskDialog() },
+                onClick = {
+                    when(selectedTab) {
+                        0 -> viewModel.openNewTaskDialog(isPipeline = false, isHeterogeneous = false)
+                        1 -> viewModel.openNewTaskDialog(isPipeline = true, isHeterogeneous = false)
+                        2 -> viewModel.openNewTaskDialog(isPipeline = true, isHeterogeneous = true)
+                    }
+                },
                 containerColor = purpleAccent,
                 contentColor = Color.White,
-                icon = { Icon(Icons.Default.Add, null) },
-                text = { Text("新建") }
+                icon = {
+                    when(selectedTab) {
+                        0 -> Icon(Icons.Default.Add, null)
+                        1 -> Icon(Icons.Default.AccountTree, null)
+                        else -> Icon(Icons.Default.AltRoute, null)
+                    }
+                },
+                text = {
+                    when(selectedTab) {
+                        0 -> Text("新建简单")
+                        1 -> Text("新建流水线")
+                        else -> Text("新建异构")
+                    }
+                }
             )
         },
         snackbarHost = {
@@ -132,12 +152,48 @@ fun SchedulerScreen(
             // IDE 状态
             item {
                 IdeStatusSection(ides = state.availableIdes, isLoading = state.isLoadingIdes)
+                Spacer(modifier = Modifier.height(16.dp))
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = Color.Transparent,
+                    contentColor = purpleAccent,
+                    divider = {}
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        icon = { Icon(Icons.Default.Send, null, modifier = Modifier.size(20.dp)) },
+                        text = { Text("简单调度", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        icon = { Icon(Icons.Default.AccountTree, null, modifier = Modifier.size(20.dp)) },
+                        text = { Text("流水线", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) }
+                    )
+                    Tab(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        icon = { Icon(Icons.Default.AltRoute, null, modifier = Modifier.size(20.dp)) },
+                        text = { Text("异构流水线", fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
             }
 
-            if (state.tasks.isEmpty()) {
-                item { EmptyHint() }
+            val filteredTasks = state.tasks.filter { task ->
+                when (selectedTab) {
+                    0 -> task.pipeline.isEmpty() && !task.isHeterogeneous
+                    1 -> task.pipeline.isNotEmpty() && !task.isHeterogeneous
+                    2 -> task.isHeterogeneous
+                    else -> true
+                }
+            }
+
+            if (filteredTasks.isEmpty()) {
+                item { EmptyHint(selectedTab) }
             } else {
-                items(state.tasks, key = { it.id }) { task ->
+                items(filteredTasks, key = { it.id }) { task ->
                     TaskCard(
                         task = task,
                         onEdit = { viewModel.editTask(task) },
@@ -158,8 +214,15 @@ fun SchedulerScreen(
         TaskCreateSheet(
             draft = state.editing,
             availableIdes = state.availableIdes,
-            liveModelOptions = state.modelOptionsByPort[state.editing.targetPort].orEmpty(),
-            isLoadingModelOptions = state.loadingModelOptionsPort == state.editing.targetPort,
+            modelOptionsByPort = state.modelOptionsByPort,
+            loadingModelOptionsPorts = state.loadingModelOptionsPorts,
+            loadModelOptionsForIde = { name, port -> viewModel.loadModelOptionsForIde(name, port) },
+            projectOptionsByPort = state.projectOptionsByPort,
+            loadingProjectsPorts = state.loadingProjectsPorts,
+            loadProjectOptionsForIde = { name, port -> viewModel.loadProjectOptionsForIde(name, port) },
+            sessionOptionsByKey = state.sessionOptionsByKey,
+            loadingSessionsKeys = state.loadingSessionsKeys,
+            loadSessionOptionsForIde = { name, port, project -> viewModel.loadSessionOptionsForIde(name, port, project) },
             onDismiss = { viewModel.closeDialog() },
             onUpdate = { viewModel.updateDraft(it) },
             onSave = { viewModel.saveTask() }
@@ -238,7 +301,13 @@ private fun IdeStatusSection(ides: List<IdeInfo>, isLoading: Boolean) {
 // ─── 空状态 ─────────────────────────────────────────────────
 
 @Composable
-private fun EmptyHint() {
+private fun EmptyHint(selectedTab: Int = 0) {
+    val text = when (selectedTab) {
+        0 -> "暂无简单调度任务"
+        1 -> "暂无流水线任务"
+        2 -> "暂无异构流水线任务"
+        else -> "暂无调度任务"
+    }
     Box(
         modifier = Modifier.fillMaxWidth().padding(vertical = 80.dp),
         contentAlignment = Alignment.Center
@@ -250,7 +319,7 @@ private fun EmptyHint() {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
             )
             Spacer(modifier = Modifier.height(12.dp))
-            Text("暂无调度任务", style = MaterialTheme.typography.bodyLarge,
+            Text(text, style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
             Text("点击下方「新建」开始", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
@@ -529,8 +598,15 @@ private fun TaskCard(
 private fun TaskCreateSheet(
     draft: TaskDraft,
     availableIdes: List<IdeInfo>,
-    liveModelOptions: List<String>,
-    isLoadingModelOptions: Boolean,
+    modelOptionsByPort: Map<Int, List<String>>,
+    loadingModelOptionsPorts: Set<Int>,
+    loadModelOptionsForIde: (String, Int) -> Unit,
+    projectOptionsByPort: Map<Int, List<String>>,
+    loadingProjectsPorts: Set<Int>,
+    loadProjectOptionsForIde: (String, Int) -> Unit,
+    sessionOptionsByKey: Map<String, List<String>>,
+    loadingSessionsKeys: Set<String>,
+    loadSessionOptionsForIde: (String, Int, String) -> Unit,
     onDismiss: () -> Unit,
     onUpdate: (TaskDraft) -> Unit,
     onSave: () -> Unit
@@ -554,8 +630,13 @@ private fun TaskCreateSheet(
         ) {
             // ── 标题 ──
             val isEditing = draft.id.isNotBlank()
+            val titleText = when {
+                draft.isHeterogeneous -> "新建异构流水线任务"
+                draft.isPipeline -> "新建流水线任务"
+                else -> "新建简单调度任务"
+            }
             Text(
-                if (isEditing) "编辑调度任务" else "新建调度任务",
+                if (isEditing) "编辑调度任务" else titleText,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
@@ -689,19 +770,130 @@ private fun TaskCreateSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ── 绑定固定对话 (可选) ──
-            Text("绑定固定对话标题 (可选)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = draft.fixedSessionTitle,
-                onValueChange = { onUpdate(draft.copy(fixedSessionTitle = it)) },
-                placeholder = { Text("例如: Bug Fix #123 (留空则在当前对话发送)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
+            val needsProject = draft.targetIde.contains("antigravity", ignoreCase = true) || 
+                               draft.targetIde.contains("codex", ignoreCase = true) || 
+                               draft.pipeline.any { 
+                                   it.targetIde.contains("antigravity", ignoreCase = true) || 
+                                   it.targetIde.contains("codex", ignoreCase = true) 
+                               }
 
+            // ── 会话模式选择 ──
+            Text("会话模式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                data class SessionModeOption(val mode: SessionMode, val label: String, val icon: ImageVector)
+                val modeOptions = listOf(
+                    SessionModeOption(SessionMode.NEW_EACH_TIME, "每次新建", Icons.Default.Add),
+                    SessionModeOption(SessionMode.SPECIFIED, "指定会话", Icons.Default.Reorder),
+                    SessionModeOption(SessionMode.SHARED, "共用会话", Icons.Default.Share)
+                )
+                modeOptions.forEach { opt ->
+                    FilterChip(
+                        selected = draft.sessionMode == opt.mode,
+                        onClick = {
+                            onUpdate(draft.copy(
+                                sessionMode = opt.mode,
+                                fixedSessionTitle = if (opt.mode == SessionMode.NEW_EACH_TIME) "" else draft.fixedSessionTitle
+                            ))
+                        },
+                        label = { Text(opt.label, style = MaterialTheme.typography.labelSmall) },
+                        leadingIcon = if (draft.sessionMode == opt.mode) {{
+                            Icon(opt.icon, null, modifier = Modifier.size(16.dp))
+                        }} else null,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // 指定会话模式：需要先选项目，再选会话
+            if (draft.sessionMode == SessionMode.SPECIFIED) {
+                Spacer(modifier = Modifier.height(8.dp))
+                val sessionCacheKey = "${draft.targetPort}:${draft.projectName}"
+                val sessionOptions = sessionOptionsByKey[sessionCacheKey].orEmpty()
+                val isLoadingSessions = loadingSessionsKeys.contains(sessionCacheKey)
+
+                if (needsProject && draft.projectName.isBlank()) {
+                    Text(
+                        "请先选择项目，再选择会话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LaunchedEffect(draft.targetIde, draft.targetPort, draft.projectName, draft.sessionMode) {
+                        if (draft.targetIde.isNotBlank() && draft.targetPort > 0) {
+                            loadSessionOptionsForIde(draft.targetIde, draft.targetPort, draft.projectName)
+                        }
+                    }
+                    SchedulerSessionDropdown(
+                        selected = draft.fixedSessionTitle,
+                        options = sessionOptions,
+                        isLoading = isLoadingSessions,
+                        onSelect = { onUpdate(draft.copy(fixedSessionTitle = it)) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            // 共用会话模式：说明文字
+            if (draft.sessionMode == SessionMode.SHARED) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "所有调度任务将在同一个会话中执行，不会新建对话",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(modifier = Modifier.height(16.dp))
+
+            // ── 指定模型（可选） ──
+            if (!draft.isPipeline) {
+                val liveModelOptions = modelOptionsByPort[draft.targetPort].orEmpty()
+                val isLoadingModelOpts = loadingModelOptionsPorts.contains(draft.targetPort)
+                LaunchedEffect(draft.targetIde, draft.targetPort) {
+                    if (draft.targetIde.isNotBlank() && draft.targetPort > 0) {
+                        loadModelOptionsForIde(draft.targetIde, draft.targetPort)
+                    }
+                }
+                val allModelOptions = schedulerModelOptionsForIde(draft.targetIde, liveModelOptions)
+                if (allModelOptions.size > 1 || isLoadingModelOpts) {
+                    var modelExpanded by remember { mutableStateOf(false) }
+                    val modelLabel = allModelOptions.find { it.value == draft.model }?.label
+                        ?: draft.model.takeIf { it.isNotBlank() }
+                        ?: "默认 (IDE 当前模型)"
+                    ExposedDropdownMenuBox(
+                        expanded = modelExpanded,
+                        onExpandedChange = { modelExpanded = it },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = modelLabel,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text(if (isLoadingModelOpts) "指定模型 (加载中...)" else "指定模型 (可选)") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            textStyle = MaterialTheme.typography.bodySmall
+                        )
+                        ExposedDropdownMenu(
+                            expanded = modelExpanded,
+                            onDismissRequest = { modelExpanded = false }
+                        ) {
+                            allModelOptions.forEach { opt ->
+                                DropdownMenuItem(
+                                    text = { Text(opt.label, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    onClick = { onUpdate(draft.copy(model = opt.value)); modelExpanded = false }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+            }
 
             // ── 最大轮次（可选） ──
             OutlinedTextField(
@@ -721,41 +913,31 @@ private fun TaskCreateSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ── 流水线模式开关 ──
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.AccountTree, null,
-                        tint = purpleAccent,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("流水线模式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (needsProject) {
+                val projectOptions = projectOptionsByPort[draft.targetPort].orEmpty()
+                val isLoadingProjects = loadingProjectsPorts.contains(draft.targetPort)
+                LaunchedEffect(draft.targetIde, draft.targetPort) {
+                    if (draft.targetIde.isNotBlank() && draft.targetPort > 0) {
+                        loadProjectOptionsForIde(draft.targetIde, draft.targetPort)
+                    }
                 }
-                Switch(
-                    checked = draft.pipelineEnabled,
-                    onCheckedChange = { enabled ->
-                        onUpdate(draft.copy(pipelineEnabled = enabled))
-                    },
-                    colors = SwitchDefaults.colors(checkedTrackColor = purpleAccent)
+                SchedulerProjectDropdown(
+                    selected = draft.projectName,
+                    options = projectOptions,
+                    isLoading = isLoadingProjects,
+                    onSelect = { onUpdate(draft.copy(projectName = it)) },
+                    modifier = Modifier.fillMaxWidth()
                 )
-            }
-            if (draft.pipelineEnabled) {
-                Text(
-                    "多阶段按完成状态串行执行，每个阶段可切换不同模型",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Spacer(modifier = Modifier.height(16.dp))
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (draft.pipelineEnabled) {
+            if (draft.isPipeline) {
                 // ── 流水线阶段编辑 ──
+                val liveModelOptions = modelOptionsByPort[draft.targetPort].orEmpty()
+                val isLoadingModelOptions = loadingModelOptionsPorts.contains(draft.targetPort)
+
                 val modelOptions = schedulerModelOptionsForIde(draft.targetIde, liveModelOptions)
                 if (isLoadingModelOptions) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -774,11 +956,30 @@ private fun TaskCreateSheet(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
                 draft.pipeline.forEachIndexed { idx, stage ->
+                    val stageLiveModels = if (draft.isHeterogeneous) {
+                        modelOptionsByPort[stage.targetPort].orEmpty()
+                    } else liveModelOptions
+
+                    val stageModelOptions = if (draft.isHeterogeneous) {
+                        schedulerModelOptionsForIde(stage.targetIde, stageLiveModels)
+                    } else {
+                        schedulerModelOptionsForIde(draft.targetIde, stageLiveModels)
+                    }
+                    val isLoadingModel = if (draft.isHeterogeneous) {
+                        loadingModelOptionsPorts.contains(stage.targetPort)
+                    } else {
+                        loadingModelOptionsPorts.contains(draft.targetPort)
+                    }
+
                     PipelineStageEditor(
                         index = idx,
                         stage = stage,
-                        modelOptions = modelOptions,
+                        modelOptions = stageModelOptions,
                         canDelete = draft.pipeline.size > 2,
+                        isHeterogeneous = draft.isHeterogeneous,
+                        availableIdes = availableIdes,
+                        isLoadingModel = isLoadingModel,
+                        loadModelOptions = loadModelOptionsForIde,
                         onChange = { updated ->
                             val newPipeline = draft.pipeline.toMutableList()
                             newPipeline[idx] = updated
@@ -858,7 +1059,10 @@ private fun TaskCreateSheet(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp)
                 ) { Text("取消") }
-                val canSave = if (draft.pipelineEnabled) {
+                val canSave = if (draft.isHeterogeneous) {
+                    val validStages = draft.pipeline.filter { it.prompt.isNotBlank() }
+                    validStages.size >= 2 && validStages.all { it.targetIde.isNotBlank() && it.targetPort > 0 }
+                } else if (draft.isPipeline) {
                     draft.targetIde.isNotBlank() && draft.pipeline.count { it.prompt.isNotBlank() } >= 2
                 } else {
                     draft.targetIde.isNotBlank() && draft.prompt.isNotBlank()
@@ -883,9 +1087,19 @@ private fun PipelineStageEditor(
     stage: PipelineStage,
     modelOptions: List<SchedulerModelOption>,
     canDelete: Boolean,
+    isHeterogeneous: Boolean,
+    availableIdes: List<IdeInfo>,
+    isLoadingModel: Boolean,
+    loadModelOptions: (String, Int) -> Unit,
     onChange: (PipelineStage) -> Unit,
     onDelete: () -> Unit
 ) {
+    if (isHeterogeneous && stage.targetIde.isNotBlank() && stage.targetPort > 0) {
+        LaunchedEffect(stage.targetIde, stage.targetPort) {
+            loadModelOptions(stage.targetIde, stage.targetPort)
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -939,6 +1153,20 @@ private fun PipelineStageEditor(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // 异构流水线 IDE 选择
+            if (isHeterogeneous) {
+                SchedulerIdeDropdown(
+                    selectedIde = stage.targetIde,
+                    selectedPort = stage.targetPort,
+                    options = availableIdes,
+                    onSelect = { name, port ->
+                        onChange(stage.copy(targetIde = name, targetPort = port, model = ""))
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // 模型 + 延迟 (同行)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -948,6 +1176,7 @@ private fun PipelineStageEditor(
                     selected = stage.model,
                     options = modelOptions,
                     onSelect = { onChange(stage.copy(model = it)) },
+                    isLoading = isLoadingModel,
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
@@ -990,6 +1219,7 @@ private fun SchedulerModelDropdown(
     selected: String,
     options: List<SchedulerModelOption>,
     onSelect: (String) -> Unit,
+    isLoading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -1006,7 +1236,7 @@ private fun SchedulerModelDropdown(
             value = selectedLabel,
             onValueChange = {},
             readOnly = true,
-            label = { Text("模型") },
+            label = { Text(if (isLoading) "模型 (加载中...)" else "模型") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier.menuAnchor().fillMaxWidth(),
             singleLine = true,
@@ -1029,6 +1259,163 @@ private fun SchedulerModelDropdown(
                     },
                     onClick = {
                         onSelect(option.value)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SchedulerIdeDropdown(
+    selectedIde: String,
+    selectedPort: Int,
+    options: List<IdeInfo>,
+    onSelect: (String, Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = if (selectedPort > 0) "$selectedIde:$selectedPort" else "选择执行 IDE"
+    val uniqueOptions = options.distinctBy { it.name to it.port }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("目标 IDE") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            uniqueOptions.forEach { ide ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "${ide.name}:${ide.port}",
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    onClick = {
+                        onSelect(ide.name, ide.port)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SchedulerProjectDropdown(
+    selected: String,
+    options: List<String>,
+    isLoading: Boolean,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = selected.takeIf { it.isNotBlank() } ?: "未选择 (当前工作区)"
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(if (isLoading) "目标项目 (加载中...)" else "目标项目") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { proj ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            proj,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    onClick = {
+                        onSelect(proj)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SchedulerSessionDropdown(
+    selected: String,
+    options: List<String>,
+    isLoading: Boolean,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = selected.takeIf { it.isNotBlank() } ?: "选择会话..."
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(if (isLoading) "目标会话 (加载中...)" else "目标会话") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { session ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            session,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    onClick = {
+                        onSelect(session)
                         expanded = false
                     }
                 )
